@@ -12,3 +12,27 @@ index d585a16..be389f6 100644
      const manualLogin = Boolean(config.manualLogin);
      if (manualLogin && usingCopiedProfile) {
          throw new BrowserAutomationError("--copy-profile cannot be combined with --browser-manual-login: choose either a throwaway copied profile or the persistent manual-login profile.", { stage: "profile-config" });
+@@ -1070,9 +1073,9 @@ export async function runBrowserMode(options) {
+                 : "Model picker: skipped (strategy=ignore)");
+         }
+         const deepResearch = config.researchMode === "deep";
+-        // Handle thinking time selection if specified. Deep Research owns its own effort flow.
++        // Handle thinking time selection before every submission path, including Deep Research.
+         const thinkingTime = config.thinkingTime;
+-        if (thinkingTime && !deepResearch) {
++        if (thinkingTime) {
+             const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
+             await raceWithDisconnect(withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel), {
+                 retries: 2,
+@@ -2384,9 +2387,9 @@ async function runRemoteBrowserMode(promptText, attachments, config, logger, opt
+                 : "Model picker: skipped (strategy=ignore)");
+         }
+         const deepResearch = config.researchMode === "deep";
+-        // Handle thinking time selection if specified. Deep Research owns its own effort flow.
++        // Handle thinking time selection before every submission path, including Deep Research.
+         const thinkingTime = config.thinkingTime;
+-        if (thinkingTime && !deepResearch) {
++        if (thinkingTime) {
+             const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
+             await withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel), {
+                 retries: 2,

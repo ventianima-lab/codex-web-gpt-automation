@@ -192,6 +192,44 @@ def test_model_selection_verifies_the_family_row_and_defers_effort_to_thinking_t
     assert "Medium/High/Extra High" in patch
 
 
+def test_gpt56_heavy_selection_is_extra_high_verified_and_fails_closed() -> None:
+    compat = load_compat()
+    contract = compat.PATCHES["dist/src/browser/actions/thinkingTime.js"]
+    patch = (
+        MODULE_PATH.parent
+        / "oracle-compat"
+        / "0.16.1"
+        / contract["patch"]
+    ).read_text(encoding="utf-8")
+
+    assert "strictRegularExtraHigh" in patch
+    assert "requested=Very High resolved=Extra High verified=yes" in patch
+    assert "refusing to submit without confirmed Extra High" in patch
+    assert "'매우 높음'" in patch
+    assert "\\\\uac00-\\\\ud7a3" in patch
+    assert contract["pristine"] == "7d475ed81ccee29a5b4107ed166584bcd3b0266bfd25e02ca7743bf24301e7f0"
+    assert contract["patched"] == "f526acb4d187b9833f423832e2ed9c2f001c0424e78af574da050ea50df0474a"
+
+
+def test_deep_research_does_not_bypass_thinking_time_verification() -> None:
+    compat = load_compat()
+    contract = compat.PATCHES["dist/src/browser/index.js"]
+    patch = (
+        MODULE_PATH.parent
+        / "oracle-compat"
+        / "0.16.1"
+        / contract["patch"]
+    ).read_text(encoding="utf-8")
+
+    assert patch.count("+        if (thinkingTime)") == 2
+    assert patch.count("-        if (thinkingTime && !deepResearch)") == 2
+    assert "including Deep Research" in patch
+    assert contract["legacy_patched"] == [
+        "9168df2b3e8c4d1c962d05b198ceab1a9df9e50c7573453673212905e2bc5eba"
+    ]
+    assert contract["patched"] == "bf9097d613baadc7b04f4bed6670857bd7c50a584289fbbf1e65a8ec962bca8c"
+
+
 def test_copy_profile_recovery_patch_reuses_only_the_persisted_profile_seed() -> None:
     compat = load_compat()
     contract = compat.PATCHES["dist/src/browser/recoverConversation.js"]

@@ -17,6 +17,7 @@
     "bin/oracle-compat/0.16.1/browserIndex.patch",
     "bin/oracle-compat/0.16.1/chromeLifecycle.patch",
     "bin/oracle-compat/0.16.1/modelSelection.patch",
+    "bin/oracle-compat/0.16.1/thinkingTime.patch",
     "bin/oracle-compat/0.16.1/profileCopy.patch",
     "bin/oracle-compat/0.16.1/promptComposer.patch",
     "bin/oracle-compat/0.16.1/recoverConversation.patch",

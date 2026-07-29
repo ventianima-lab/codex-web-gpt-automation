@@ -1,0 +1,83 @@
+diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions/thinkingTime.js
+index 9802ff9..99cf89a 100644
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -23,8 +23,8 @@ function logPickerDiagnostic(result, logger) {
+ /**
+  * Selects a thinking-time level in ChatGPT's composer.
+  *
+- * Missing controls remain best-effort except Pro Extended, which fails closed
+- * unless the selected option is confirmed.
++ * Missing controls remain best-effort except Pro Extended and GPT-5.6 heavy,
++ * which fail closed unless the selected option is confirmed.
+  */
+ export async function ensureThinkingTime(Runtime, level, logger, desiredModel) {
+     const result = await evaluateThinkingTimeSelection(Runtime, level, desiredModel);
+@@ -32,12 +32,23 @@ export async function ensureThinkingTime(Runtime, level, logger, desiredModel) {
+     const targetModelKind = inferThinkingTargetModelKind(desiredModel);
+     const observedModelKind = result && "modelKind" in result ? result.modelKind : null;
+     const strictProEffort = (targetModelKind === "pro" || observedModelKind === "pro") && level === "extended";
++    const strictRegularExtraHigh = level === "heavy" &&
++        targetModelKind !== "pro" &&
++        observedModelKind !== "pro" &&
++        /(?:^|[^0-9])5[._ -]6(?:[^0-9]|$)/i.test(desiredModel ?? "");
++    const logVerifiedSelection = (label, alreadySelected = false) => {
++        if (strictRegularExtraHigh) {
++            logger(formatBrowserThinkingLog(`requested=Very High resolved=Extra High verified=yes${alreadySelected ? " (already selected)" : ""}; label=${label ?? "Extra High"}`));
++            return;
++        }
++        logger(formatBrowserThinkingLog(`${label ?? capitalizedLevel}${alreadySelected ? " (already selected)" : ""}`));
++    };
+     switch (result?.status) {
+         case "already-selected":
+-            logger(formatBrowserThinkingLog(`${result.label ?? capitalizedLevel} (already selected)`));
++            logVerifiedSelection(result.label, true);
+             return;
+         case "switched":
+-            logger(formatBrowserThinkingLog(result.label ?? capitalizedLevel));
++            logVerifiedSelection(result.label);
+             return;
+         case "chip-not-found":
+         case "menu-not-found":
+@@ -52,7 +63,10 @@ export async function ensureThinkingTime(Runtime, level, logger, desiredModel) {
+                     ? ` for ${targetModelKind}`
+                     : "";
+             const message = `Thinking time: ${result.status.replaceAll("-", " ")}${kindHint} (requested ${capitalizedLevel})`;
+-            if (strictProEffort) {
++            if (strictProEffort || strictRegularExtraHigh) {
++                if (strictRegularExtraHigh) {
++                    throw new Error(`${message}; requested=Very High resolved=unavailable verified=no; refusing to submit without confirmed Extra High.`);
++                }
+                 throw new Error(`${message}; refusing to submit without confirmed Pro Extended.`);
+             }
+             logger(formatBrowserThinkingLog(`${message}; continuing with ChatGPT default.`));
+@@ -61,7 +75,10 @@ export async function ensureThinkingTime(Runtime, level, logger, desiredModel) {
+         default: {
+             await logDomFailure(Runtime, logger, "thinking-time-unknown");
+             logPickerDiagnostic(result, logger);
+-            if (strictProEffort) {
++            if (strictProEffort || strictRegularExtraHigh) {
++                if (strictRegularExtraHigh) {
++                    throw new Error(`Thinking time: unknown outcome selecting ${capitalizedLevel}; requested=Very High resolved=unavailable verified=no; refusing to submit without confirmed Extra High.`);
++                }
+                 throw new Error(`Thinking time: unknown outcome selecting ${capitalizedLevel}; refusing to submit without confirmed Pro Extended.`);
+             }
+             logger(formatBrowserThinkingLog(`unknown outcome selecting ${capitalizedLevel}; continuing with ChatGPT default.`));
+@@ -140,7 +157,7 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       light: ['light', 'instant', '轻', '极速'],
+       standard: ['standard', 'medium', '标准', '中'],
+       extended: ['extended', 'high', '扩展', '深度', '加强', '高'],
+-      heavy: ['heavy', 'extra high', '重度', '加重', '极高'],
++      heavy: ['heavy', 'extra high', 'very high', '매우 높음', '重度', '加重', '极高'],
+     };
+     const targetTokens = LEVEL_TOKENS[TARGET_LEVEL] || [TARGET_LEVEL];
+ 
+@@ -156,7 +173,7 @@ function buildThinkingTimeExpression(level, desiredModel) {
+     // Keep CJK characters so we can match Chinese labels against LEVEL_TOKENS.
+     const normalize = (value) => (value || '')
+       .toLowerCase()
+-      .replace(/[^a-z0-9\\u4e00-\\u9fa5]+/g, ' ')
++      .replace(/[^a-z0-9\\u4e00-\\u9fa5\\uac00-\\ud7a3]+/g, ' ')
+       .replace(/\\s+/g, ' ')
+       .trim();
+     const hasToken = (text, token) => normalize(text).split(' ').includes(token);

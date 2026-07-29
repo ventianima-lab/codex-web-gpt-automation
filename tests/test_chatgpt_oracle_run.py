@@ -168,7 +168,7 @@ def test_missing_copy_dependency_still_launches_without_profile_copy(
     profile = tmp_path.parent / f"{tmp_path.name}-signed-in-oracle-profile"
     profile.mkdir()
     monkeypatch.setenv("ORACLE_BROWSER_PROFILE_DIR", str(profile.resolve()))
-    monkeypatch.setattr(runner.STATE.shutil, "which", lambda name: None)
+    monkeypatch.setattr(runner.STATE, "profile_copy_is_supported", lambda: False)
 
     result = execute_run(runner, manifest(tmp_path), dry_run=True)
 

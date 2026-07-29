@@ -85,7 +85,7 @@ def _resolve_reasoning(requested: str | None) -> str:
     if requested is None or not str(requested).strip():
         return REGULAR_REASONING_LEVELS[0]
     normalized = str(requested).strip().casefold()
-    if normalized in {"very high", "very-high", "extra high", "extra-high", "매우 높음"}:
+    if normalized in {"very high", "very-high", "extra high", "extra-high", "매우 높음", "heavy"}:
         return "Very High"
     if normalized == "high":
         return "High"
