@@ -327,10 +327,10 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
             "thinking_time must be light, standard, extended, or heavy",
         )
     if transport == "pro-attachment-only":
-        if model.casefold() != "gpt-5.5-pro":
+        if model.casefold() != "pro":
             raise OracleStateError(
                 "PRO_MODEL_INVALID",
-                "Pro attachment-only runs require Oracle's current Pro alias gpt-5.5-pro; no downgrade is allowed",
+                "Pro attachment-only runs require Oracle's versionless Pro alias 'pro' (currently GPT-5.6 Sol Pro); no downgrade is allowed",
                 {"model": model},
             )
         if model_strategy != "select":

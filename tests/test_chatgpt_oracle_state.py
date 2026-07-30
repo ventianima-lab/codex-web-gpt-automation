@@ -75,7 +75,7 @@ def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) 
             prompt.resolve(),
             transport="pro-attachment-only",
             app_name=None,
-            model="gpt-5.5-pro",
+            model="pro",
             thinking_time="heavy",
             attachments=[str(prompt.resolve()), str(packet.resolve())],
         )
@@ -117,7 +117,7 @@ def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path
             prompt.resolve(),
             transport="pro-attachment-only",
             app_name=None,
-            model="gpt-5.5-pro",
+            model="pro",
             thinking_time="heavy",
             attachments=[str(prompt.resolve()), str(packet.resolve())],
         ))
@@ -138,6 +138,7 @@ def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path
         ({"attachments": []}, "PRO_ATTACHMENTS_REQUIRED"),
         ({"attachments": None}, "PRO_ATTACHMENTS_REQUIRED"),
         ({"attachments": ["missing.txt"]}, "ATTACHMENT_0_ABSOLUTE_REQUIRED"),
+        ({"model": "gpt-5.5-pro"}, "PRO_MODEL_INVALID"),
         ({"model": "gpt-5.6"}, "PRO_MODEL_INVALID"),
         ({"model_strategy": "current"}, "PRO_MODEL_STRATEGY_INVALID"),
         ({"thinking_time": "extended"}, "PRO_THINKING_TIME_INVALID"),
@@ -152,7 +153,7 @@ def test_pro_manifest_fails_closed_without_exact_contract(tmp_path: Path, extra:
     value = {
         "transport": "pro-attachment-only",
         "app_name": None,
-        "model": "gpt-5.5-pro",
+        "model": "pro",
         "thinking_time": "heavy",
         "attachments": [str(prompt.resolve())],
     }

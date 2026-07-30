@@ -48,7 +48,7 @@ def pro_manifest(tmp_path: Path, **extra) -> Path:
         tmp_path,
         transport="pro-attachment-only",
         app_name=None,
-        model="gpt-5.5-pro",
+        model="pro",
         model_strategy="select",
         thinking_time="heavy",
         attachments=[str(prompt.resolve()), str(packet.resolve())],
@@ -194,7 +194,7 @@ def test_pro_dry_run_uses_oracle_attachments_and_no_app_mention(tmp_path: Path) 
     attachments = [argv[index + 1] for index, value in enumerate(argv) if value == "--file"]
     assert result["transport"] == "pro-attachment-only"
     assert result["contains_file_flag"] is True
-    assert argv[argv.index("--model") + 1] == "gpt-5.5-pro"
+    assert argv[argv.index("--model") + 1] == "pro"
     assert argv[argv.index("--browser-attachments") + 1] == "always"
     assert attachments == [
         str((tmp_path / "prompt.txt").resolve()),
