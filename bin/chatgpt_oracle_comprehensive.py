@@ -355,7 +355,7 @@ def _oracle_manifest(
         "project_root": str(config["project_root"]),
         "mission_path": str(mission),
         "mode": "browser",
-        "model": "gpt-5.5-pro" if stage == "pro" else config["model"],
+        "model": "pro" if stage == "pro" else config["model"],
         "model_strategy": "select",
         "thinking_time": "heavy",
         "research": "off",

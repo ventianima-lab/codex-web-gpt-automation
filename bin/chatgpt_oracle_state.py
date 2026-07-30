@@ -68,16 +68,18 @@ ORACLE_DUPLICATE_PROMPT_RE = re.compile(
     r'Reattach with "oracle session (?P=locator)" or rerun with --force to start another run\.',
     re.IGNORECASE,
 )
-# Oracle copies a signed-in browser profile with rsync.  On hosts without
-# rsync the copy fails after launch, which historically produced a pre-submit
-# failure for every run.  Decide feasibility while loading the manifest so the
-# run either starts with a working isolation strategy or is rejected with an
-# actionable local error instead of a mid-launch crash.
+# The validated Oracle 0.16.1 compatibility patch uses Node's recursive `cp`
+# on Windows and rsync on other platforms. Decide feasibility while loading
+# the manifest so profile isolation fails before launch when its platform
+# dependency is unavailable.
 PROFILE_COPY_DEPENDENCY = "rsync"
 
 
-def profile_copy_is_supported(*, which_runner: Any = None) -> bool:
+def profile_copy_is_supported(*, which_runner: Any = None, platform_name: str | None = None) -> bool:
     """Report whether Oracle can actually copy a signed-in browser profile."""
+    platform = os.name if platform_name is None else platform_name
+    if platform == "nt":
+        return True
     resolver = shutil.which if which_runner is None else which_runner
     return bool(resolver(PROFILE_COPY_DEPENDENCY))
 APP_RE = re.compile(r"^[^\r\n]+$")
@@ -325,10 +327,10 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
             "thinking_time must be light, standard, extended, or heavy",
         )
     if transport == "pro-attachment-only":
-        if model.casefold() != "gpt-5.5-pro":
+        if model.casefold() != "pro":
             raise OracleStateError(
                 "PRO_MODEL_INVALID",
-                "Pro attachment-only runs require Oracle's current Pro alias gpt-5.5-pro; no downgrade is allowed",
+                "Pro attachment-only runs require Oracle's versionless Pro alias 'pro' (currently GPT-5.6 Sol Pro); no downgrade is allowed",
                 {"model": model},
             )
         if model_strategy != "select":
@@ -359,7 +361,7 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
             if copy_profile_raw:
                 raise OracleStateError(
                     "COPY_PROFILE_DEPENDENCY_MISSING",
-                    f"copy_profile requires {PROFILE_COPY_DEPENDENCY} on PATH; "
+                    f"copy_profile requires {PROFILE_COPY_DEPENDENCY} on PATH on this platform; "
                     "install it or omit copy_profile to reuse the signed-in profile",
                     {"dependency": PROFILE_COPY_DEPENDENCY, "copy_profile": str(copy_profile)},
                 )

@@ -75,7 +75,7 @@ def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) 
             prompt.resolve(),
             transport="pro-attachment-only",
             app_name=None,
-            model="gpt-5.5-pro",
+            model="pro",
             thinking_time="heavy",
             attachments=[str(prompt.resolve()), str(packet.resolve())],
         )
@@ -117,7 +117,7 @@ def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path
             prompt.resolve(),
             transport="pro-attachment-only",
             app_name=None,
-            model="gpt-5.5-pro",
+            model="pro",
             thinking_time="heavy",
             attachments=[str(prompt.resolve()), str(packet.resolve())],
         ))
@@ -138,6 +138,7 @@ def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path
         ({"attachments": []}, "PRO_ATTACHMENTS_REQUIRED"),
         ({"attachments": None}, "PRO_ATTACHMENTS_REQUIRED"),
         ({"attachments": ["missing.txt"]}, "ATTACHMENT_0_ABSOLUTE_REQUIRED"),
+        ({"model": "gpt-5.5-pro"}, "PRO_MODEL_INVALID"),
         ({"model": "gpt-5.6"}, "PRO_MODEL_INVALID"),
         ({"model_strategy": "current"}, "PRO_MODEL_STRATEGY_INVALID"),
         ({"thinking_time": "extended"}, "PRO_THINKING_TIME_INVALID"),
@@ -152,7 +153,7 @@ def test_pro_manifest_fails_closed_without_exact_contract(tmp_path: Path, extra:
     value = {
         "transport": "pro-attachment-only",
         "app_name": None,
-        "model": "gpt-5.5-pro",
+        "model": "pro",
         "thinking_time": "heavy",
         "attachments": [str(prompt.resolve())],
     }
@@ -282,7 +283,7 @@ def test_default_profile_copy_is_skipped_when_the_copy_dependency_is_absent(
     seed = tmp_path.parent / f"{tmp_path.name}-oracle-profile"
     seed.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ORACLE_BROWSER_PROFILE_DIR", str(seed.resolve()))
-    monkeypatch.setattr(state.shutil, "which", lambda name: None)
+    monkeypatch.setattr(state, "profile_copy_is_supported", lambda: False)
 
     config = state.load_manifest(manifest(tmp_path, mission.resolve()))
 
@@ -309,6 +310,15 @@ def test_default_profile_copy_is_used_when_the_copy_dependency_exists(
     assert config.copy_profile == seed.resolve()
 
 
+def test_windows_profile_copy_uses_validated_node_cp_without_rsync() -> None:
+    state = load_state()
+
+    assert state.profile_copy_is_supported(
+        which_runner=lambda name: None,
+        platform_name="nt",
+    )
+
+
 def test_explicit_profile_copy_fails_closed_without_the_copy_dependency(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -317,7 +327,7 @@ def test_explicit_profile_copy_fails_closed_without_the_copy_dependency(
     mission.write_text("work", encoding="utf-8")
     seed = tmp_path.parent / f"{tmp_path.name}-explicit-profile"
     seed.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(state.shutil, "which", lambda name: None)
+    monkeypatch.setattr(state, "profile_copy_is_supported", lambda: False)
 
     with pytest.raises(state.OracleStateError) as exc:
         state.load_manifest(

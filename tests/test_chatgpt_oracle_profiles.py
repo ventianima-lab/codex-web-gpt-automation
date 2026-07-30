@@ -50,6 +50,17 @@ def test_deep_research_is_only_a_mode_flag() -> None:
     assert contract["attachments"] == []
 
 
+@pytest.mark.parametrize("level", ["Very High", "Extra High", "매우 높음", "heavy"])
+def test_regular_reasoning_aliases_normalize_to_very_high(tmp_path: Path, level: str) -> None:
+    profiles = load_profiles()
+    contract = profiles.build_launch_contract(
+        "plan",
+        mission_path=(tmp_path / "mission.md").resolve(),
+        reasoning_level=level,
+    )
+    assert contract["reasoning_level"] == "Very High"
+
+
 @pytest.mark.parametrize("level", ["xhigh", "Medium"])
 def test_regular_reasoning_rejects_unsupported_level_without_downgrade(tmp_path: Path, level: str) -> None:
     profiles = load_profiles()
@@ -69,7 +80,7 @@ def test_pro_is_oracle_attachment_only_and_manual_launches_nothing(tmp_path: Pat
     assert pro["app_policy"] == "forbidden"
     assert pro["oracle_launch"] is True
     assert pro["devspace_required"] is False
-    assert pro["model"] == "gpt-5.5-pro"
+    assert pro["model"] == "pro"
     assert pro["attachment_policy"] == "always"
     assert pro["attachments"] == [str(mission), str(packet)]
     assert pro["composer_prompt"] == "Read the attached prompt/instructions and all attached files, then complete the task."

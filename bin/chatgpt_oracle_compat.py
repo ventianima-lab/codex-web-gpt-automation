@@ -31,11 +31,14 @@ PATCHES = {
         "pristine": "2e4bbf102eed4276e105671244c5bfcdf6870ea72f304d8bb7d2ede10b8872c6",
         "patched": "52de31fff0ee71a9f9ed96400565104ff19226274335433732dfc4a932ff2e93",
     },
-    "dist/src/browser/index.js": {
-        "patch": "browserIndex.patch",
-        "pristine": "ea7461262078363517ad16fe57ac8766f06f037782954987520375dcbfd1c7af",
-        "patched": "9168df2b3e8c4d1c962d05b198ceab1a9df9e50c7573453673212905e2bc5eba",
-    },
+      "dist/src/browser/index.js": {
+          "patch": "browserIndex.patch",
+          "pristine": "ea7461262078363517ad16fe57ac8766f06f037782954987520375dcbfd1c7af",
+          "patched": "bf9097d613baadc7b04f4bed6670857bd7c50a584289fbbf1e65a8ec962bca8c",
+          "legacy_patched": [
+              "9168df2b3e8c4d1c962d05b198ceab1a9df9e50c7573453673212905e2bc5eba",
+          ],
+      },
     "dist/src/browser/actions/promptComposer.js": {
         "patch": "promptComposer.patch",
         "pristine": "db090a5fb6d13c4c88a68b5e474a53a19c3857295a64c3ba4a0eef1868d06000",
@@ -52,6 +55,11 @@ PATCHES = {
         "patch": "modelSelection.patch",
         "pristine": "62351158216c0f9f81652f072413487d2db12cd20a1cf7c21575a3f3a2074573",
         "patched": "7e19a5bfd10668929d24961259c4ddedfdd8c26bc85b3ac4672c29f1f40f74fc",
+    },
+    "dist/src/browser/actions/thinkingTime.js": {
+        "patch": "thinkingTime.patch",
+        "pristine": "7d475ed81ccee29a5b4107ed166584bcd3b0266bfd25e02ca7743bf24301e7f0",
+        "patched": "f526acb4d187b9833f423832e2ed9c2f001c0424e78af574da050ea50df0474a",
     },
 }
 
