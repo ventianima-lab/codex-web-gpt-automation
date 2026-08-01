@@ -1,6 +1,6 @@
 ---
 name: chatgpt-oracle-runtime
-description: Current Oracle runtime path for new ChatGPT work: regular modes use the manually registered DevSpace app, Pro is attachment-only, and it includes recovery, comprehensive relay, and genuine multi-session Web Multi-GPT.
+description: "Current Oracle runtime path for new ChatGPT work: regular modes use the manually registered DevSpace app, Pro is attachment-only, and it includes recovery, comprehensive relay, and genuine multi-session Web Multi-GPT."
 ---
 
 # ChatGPT Oracle Runtime
