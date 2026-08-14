@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="docs/assets/brand/banner.svg" alt="Codex Web GPT Automation" width="100%">
+  <img src="docs/assets/brand/banner.svg" alt="Agent Web GPT Automation" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml"><img alt="CI" src="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml/badge.svg"></a>
-  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases"><img alt="Release" src="https://img.shields.io/github/v/release/ventianima-lab/codex-web-gpt-automation?display_name=tag&sort=semver"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
+  <a href="https://github.com/dbc-hbin/agent-web-gpt-automation/actions/workflows/release-portability.yml"><img alt="CI" src="https://github.com/dbc-hbin/agent-web-gpt-automation/actions/workflows/release-portability.yml/badge.svg"></a>
+  <a href="https://github.com/dbc-hbin/agent-web-gpt-automation/releases"><img alt="Release" src="https://img.shields.io/github/v/release/dbc-hbin/agent-web-gpt-automation?display_name=tag&sort=semver"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/dbc-hbin/agent-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
   <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.17.1-8B5CF6">
   <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.4-14B8A6">
 </p>
 
 <p align="center">
-  <strong>A guarded, recoverable web ChatGPT execution layer for local Codex projects.</strong>
+  <strong>A guarded, recoverable web ChatGPT execution layer for local agent projects.</strong>
 </p>
 
 <p align="center">
@@ -30,14 +30,15 @@
 |---|---|---|---|
 | Exact project roots and mission hashes are bound before execution. | Interrupted work is harvested from its existing Oracle session, never blindly resubmitted. | Planning, research, implementation, and review run in separate web ChatGPT sessions. | Receipt-backed install and rollback are tested on Windows and macOS. |
 
-Codex Web GPT Automation uses [Oracle](https://github.com/steipete/oracle) to
+Agent Web GPT Automation uses [Oracle](https://github.com/steipete/oracle) to
 run signed-in ChatGPT browser sessions and
 [DevSpace](https://github.com/Waishnav/devspace) to expose only project roots
-approved by the user. Local Codex owns transport identity, recovery, hashes,
-and the final deterministic gate.
+approved by the user. The checked-in CLI is agent-agnostic; the bundled lifecycle
+installer targets Codex as the default local commander. A regular web ChatGPT
+agent can inspect or execute against the exact approved root through DevSpace.
 
 ```text
-Local Codex
+Local agent (Codex by default)
   `- UTF-8 mission + exact project root + SHA-256
        `- Oracle -> signed-in web ChatGPT session
             `- DevSpace -> approved projects only
@@ -49,8 +50,8 @@ Local Codex
 ### Windows
 
 ```powershell
-git clone https://github.com/ventianima-lab/codex-web-gpt-automation.git
-cd codex-web-gpt-automation
+git clone https://github.com/dbc-hbin/agent-web-gpt-automation.git
+cd agent-web-gpt-automation
 .\install.ps1 -WhatIf
 .\install.ps1
 python doctor.py
@@ -59,8 +60,8 @@ python doctor.py
 ### macOS
 
 ```bash
-git clone https://github.com/ventianima-lab/codex-web-gpt-automation.git
-cd codex-web-gpt-automation
+git clone https://github.com/dbc-hbin/agent-web-gpt-automation.git
+cd agent-web-gpt-automation
 python3 install.py --dry-run
 python3 install.py
 python3 doctor.py

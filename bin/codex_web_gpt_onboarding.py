@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-PRODUCT_NAME = "Codex Web GPT Automation"
+PRODUCT_NAME = "Agent Web GPT Automation"
 APP_NAME = "codex"
 DEFAULT_LOCAL_PORT = 7676
 PROVIDERS = ("tailscale", "cloudflare", "ngrok", "custom")

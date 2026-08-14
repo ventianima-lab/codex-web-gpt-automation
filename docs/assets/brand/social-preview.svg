@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
-  <title id="title">Codex Web GPT Automation social preview</title>
+  <title id="title">Agent Web GPT Automation social preview</title>
   <desc id="desc">GitHub social preview for guarded and recoverable web ChatGPT automation.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -23,7 +23,7 @@
     <circle cx="344" cy="256" r="24" fill="#8B5CF6"/>
     <path fill="#8B5CF6" d="M256 206c8 28 22 42 50 50-28 8-42 22-50 50-8-28-22-42-50-50 28-8 42-22 50-50Z"/>
   </g>
-  <text x="500" y="250" fill="#F8FAFC" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="68" font-weight="760" letter-spacing="-2">Codex Web GPT</text>
+  <text x="500" y="250" fill="#F8FAFC" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="68" font-weight="760" letter-spacing="-2">Agent Web GPT</text>
   <text x="504" y="322" fill="#CBD5E1" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="41" font-weight="570" letter-spacing="7">AUTOMATION</text>
   <text x="504" y="391" fill="#94A3B8" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="25">Guarded. Recoverable. Web-first.</text>
   <text x="504" y="438" fill="#64748B" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="20">Oracle · DevSpace · Web Multi-GPT · Windows · macOS</text>

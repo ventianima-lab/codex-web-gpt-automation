@@ -2,15 +2,17 @@
 
 ## Name
 
-- Product: **Codex Web GPT Automation**
-- Repository and package: `codex-web-gpt-automation`
+- Product: **Agent Web GPT Automation**
+- Repository and package: `agent-web-gpt-automation`
 - Short descriptive phrase: **guarded, recoverable web ChatGPT execution for
-  local Codex projects**
+  local agent projects**
 - ChatGPT app name used by setup examples: `codex`
 
-Do not call the current product “CodexPro.” `codexpro-*` remains only where an
-internal schema, receipt, service label, plugin ID, or frozen recovery asset
-requires stable backward compatibility.
+The bundled lifecycle installer and native subagent helpers still target Codex,
+while Oracle dispatch and DevSpace workspace execution are usable by other
+agents. Keep the manually registered `codex` app name and `codexpro-*` internal
+schemas, receipts, service labels, plugin IDs, and frozen recovery assets stable
+for backward compatibility.
 
 This is a community project and must not be presented as an official OpenAI,
 Oracle, or DevSpace product.
@@ -18,7 +20,7 @@ Oracle, or DevSpace product.
 ## Visual idea
 
 The mark combines two code brackets into a guarded portal. Two edge nodes and a
-central spark represent a controlled handoff between local Codex, a web GPT
+central spark represent a controlled handoff between a local agent, a web GPT
 session, and an approved workspace.
 
 | Asset | Use |

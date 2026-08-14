@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 포크 공개 이름과 package metadata를 `Agent Web GPT Automation` /
+  `agent-web-gpt-automation`으로 일반화했습니다. Oracle dispatch·DevSpace 경로는
+  다른 에이전트도 사용할 수 있음을 명시하고, Codex 전용 lifecycle·호환 ID와
+  수동 등록 앱 이름 `codex`는 기존 설치 복구를 위해 유지합니다.
 - macOS에서 Oracle 0.17.1의 실제 `~/.npm/_npx` 캐시를 탐색하도록 호환성
   검사를 수정해, Funnel·DevSpace가 정상이어도 제출 전
   `ORACLE_PACKAGE_NOT_FOUND`로 중단되던 경로를 복구했습니다.

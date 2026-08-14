@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 280" role="img" aria-labelledby="title desc">
-  <title id="title">Codex Web GPT Automation</title>
+  <title id="title">Agent Web GPT Automation</title>
   <desc id="desc">Product wordmark with a guarded portal and connected automation path.</desc>
   <g transform="translate(24 24) scale(.453125)">
     <path fill="#0B1020" d="M200 72 80 192v128l120 120 48-48-96-96v-80l96-96-48-48Z"/>
@@ -10,6 +10,6 @@
     <circle cx="344" cy="256" r="24" fill="#8B5CF6"/>
     <path fill="#8B5CF6" d="M256 206c8 28 22 42 50 50-28 8-42 22-50 50-8-28-22-42-50-50 28-8 42-22 50-50Z"/>
   </g>
-  <text x="286" y="116" fill="#0B1020" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="62" font-weight="750" letter-spacing="-1.8">Codex Web GPT</text>
+  <text x="286" y="116" fill="#0B1020" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="62" font-weight="750" letter-spacing="-1.8">Agent Web GPT</text>
   <text x="289" y="180" fill="#475569" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="38" font-weight="550" letter-spacing="5.5">AUTOMATION</text>
 </svg>

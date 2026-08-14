@@ -146,8 +146,8 @@ def test_package_is_publishable_and_lockfile_matches() -> None:
     assert package['name'] == lock['name'] == lock['packages']['']['name']
     assert package['version'] == lock['version'] == lock['packages']['']['version']
     assert package['license'] == lock['packages']['']['license'] == 'MIT'
-    assert package['repository']['url'] == 'git+https://github.com/ventianima-lab/codex-web-gpt-automation.git'
-    assert package['homepage'].startswith('https://github.com/ventianima-lab/codex-web-gpt-automation')
+    assert package['repository']['url'] == 'git+https://github.com/dbc-hbin/agent-web-gpt-automation.git'
+    assert package['homepage'].startswith('https://github.com/dbc-hbin/agent-web-gpt-automation')
     assert {
         'bin/chatgpt_agbrowse_bridge.py',
         'skills/chatgpt-thinking-browser/SKILL.md',

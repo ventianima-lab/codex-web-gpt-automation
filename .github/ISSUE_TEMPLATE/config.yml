@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/ventianima-lab/codex-web-gpt-automation/security/policy
+    url: https://github.com/dbc-hbin/agent-web-gpt-automation/security/policy
     about: Report vulnerabilities privately; never post credentials or tokens in an issue.
   - name: Documentation index
-    url: https://github.com/ventianima-lab/codex-web-gpt-automation/blob/main/docs/README.md
+    url: https://github.com/dbc-hbin/agent-web-gpt-automation/blob/main/docs/README.md
     about: Check the canonical install, routing, architecture, and recovery guides first.

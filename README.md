@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="docs/assets/brand/banner.svg" alt="Codex Web GPT Automation" width="100%">
+  <img src="docs/assets/brand/banner.svg" alt="Agent Web GPT Automation" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml"><img alt="CI" src="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml/badge.svg"></a>
-  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases"><img alt="Release" src="https://img.shields.io/github/v/release/ventianima-lab/codex-web-gpt-automation?display_name=tag&sort=semver"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
+  <a href="https://github.com/dbc-hbin/agent-web-gpt-automation/actions/workflows/release-portability.yml"><img alt="CI" src="https://github.com/dbc-hbin/agent-web-gpt-automation/actions/workflows/release-portability.yml/badge.svg"></a>
+  <a href="https://github.com/dbc-hbin/agent-web-gpt-automation/releases"><img alt="Release" src="https://img.shields.io/github/v/release/dbc-hbin/agent-web-gpt-automation?display_name=tag&sort=semver"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/dbc-hbin/agent-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
   <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.17.1-8B5CF6">
   <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.4-14B8A6">
 </p>
 
 <p align="center">
-  <strong>로컬 Codex 프로젝트에 웹 ChatGPT를 안전하고 복구 가능한 실행 계층으로 연결합니다.</strong>
+  <strong>로컬 에이전트 프로젝트에 웹 ChatGPT를 안전하고 복구 가능한 실행 계층으로 연결합니다.</strong>
 </p>
 
 <p align="center">
@@ -29,14 +29,15 @@
 |---|---|---|---|
 | 정확한 프로젝트 루트와 미션 SHA를 실행 전에 고정합니다. | 끊긴 실행을 새로 보내지 않고 기존 Oracle 세션에서 회수합니다. | 계획·리서치·구현·검토를 웹 ChatGPT 세션에 분리해 맡깁니다. | 영수증 기반 설치·롤백을 Windows와 macOS에서 검증합니다. |
 
-Codex Web GPT Automation은 [Oracle](https://github.com/steipete/oracle)로
+Agent Web GPT Automation은 [Oracle](https://github.com/steipete/oracle)로
 로그인된 ChatGPT 브라우저 세션을 실행하고,
 [DevSpace](https://github.com/Waishnav/devspace)로 사용자가 허용한 프로젝트만
-웹 GPT에 노출합니다. 로컬 Codex는 제출 신원, 복구, 해시, 최종 결정론적
-테스트를 책임집니다.
+웹 GPT에 노출합니다. 저장소의 CLI는 에이전트에 종속되지 않으며, 번들 lifecycle
+설치기는 기본 로컬 지휘자로 Codex를 지원합니다. 일반 웹 ChatGPT 에이전트도
+DevSpace로 승인된 exact root를 직접 검사하거나 작업할 수 있습니다.
 
 ```text
-로컬 Codex
+로컬 에이전트(Codex 기본)
   └─ UTF-8 미션 + exact project root + SHA-256
        └─ Oracle → 로그인된 웹 ChatGPT 세션
             └─ DevSpace → 승인된 프로젝트만 읽기/작업
@@ -48,8 +49,8 @@ Codex Web GPT Automation은 [Oracle](https://github.com/steipete/oracle)로
 ### Windows
 
 ```powershell
-git clone https://github.com/ventianima-lab/codex-web-gpt-automation.git
-cd codex-web-gpt-automation
+git clone https://github.com/dbc-hbin/agent-web-gpt-automation.git
+cd agent-web-gpt-automation
 .\install.ps1 -WhatIf
 .\install.ps1
 python doctor.py
@@ -58,8 +59,8 @@ python doctor.py
 ### macOS
 
 ```bash
-git clone https://github.com/ventianima-lab/codex-web-gpt-automation.git
-cd codex-web-gpt-automation
+git clone https://github.com/dbc-hbin/agent-web-gpt-automation.git
+cd agent-web-gpt-automation
 python3 install.py --dry-run
 python3 install.py
 python3 doctor.py

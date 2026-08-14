@@ -1,6 +1,6 @@
 # Architecture
 
-Codex Web GPT Automation is a guarded bridge between local Codex work and
+Agent Web GPT Automation is a guarded bridge between local agent work and
 signed-in web ChatGPT sessions. It does not replace Codex, Oracle, DevSpace, or
 ChatGPT; it binds their identities and lifecycle into a recoverable workflow.
 

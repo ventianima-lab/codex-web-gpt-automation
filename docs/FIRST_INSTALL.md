@@ -1,4 +1,4 @@
-# Codex Web GPT Automation 최초 설치
+# Agent Web GPT Automation 최초 설치
 
 이 문서는 설치, 공개 주소, DevSpace, Oracle 전용 브라우저, ChatGPT 앱 등록을
 한 번에 끝내는 기준 절차입니다. 순서를 바꾸면 OAuth 주소나 허용 루트가 어긋날
@@ -6,8 +6,8 @@
 
 ## 결론부터
 
-- 제품 이름: **Codex Web GPT Automation**
-- 저장소: `codex-web-gpt-automation`
+- 제품 이름: **Agent Web GPT Automation**
+- 저장소: `agent-web-gpt-automation`
 - ChatGPT에 표시할 앱 이름: **`codex`**
 - 권장 공개 경로: **Tailscale Funnel**
 - DevSpace 기본 로컬 주소: `http://127.0.0.1:7676/mcp`
@@ -35,8 +35,8 @@ Funnel입니다. Cloudflare/ngrok/custom은 고정 주소와 부팅 서비스를
 Windows PowerShell:
 
 ```powershell
-git clone https://github.com/ventianima-lab/codex-web-gpt-automation.git
-cd codex-web-gpt-automation
+git clone https://github.com/dbc-hbin/agent-web-gpt-automation.git
+cd agent-web-gpt-automation
 python install.py --dry-run
 python install.py
 python doctor.py
@@ -72,8 +72,8 @@ medium입니다. 생성 작업의 하드 상한은 3개이고 정책상 기본 �
 macOS:
 
 ```bash
-git clone https://github.com/ventianima-lab/codex-web-gpt-automation.git
-cd codex-web-gpt-automation
+git clone https://github.com/dbc-hbin/agent-web-gpt-automation.git
+cd agent-web-gpt-automation
 python3 install.py --dry-run
 python3 install.py
 python3 doctor.py

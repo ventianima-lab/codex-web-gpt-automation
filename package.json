@@ -1,18 +1,19 @@
 {
-  "name": "codex-web-gpt-automation",
+  "name": "agent-web-gpt-automation",
   "version": "1.14.2",
   "private": false,
-  "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
+  "description": "Guarded, recoverable web ChatGPT automation for local agent projects on Windows and macOS",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ventianima-lab/codex-web-gpt-automation.git"
+    "url": "git+https://github.com/dbc-hbin/agent-web-gpt-automation.git"
   },
-  "homepage": "https://github.com/ventianima-lab/codex-web-gpt-automation#readme",
+  "homepage": "https://github.com/dbc-hbin/agent-web-gpt-automation#readme",
   "bugs": {
-    "url": "https://github.com/ventianima-lab/codex-web-gpt-automation/issues"
+    "url": "https://github.com/dbc-hbin/agent-web-gpt-automation/issues"
   },
   "keywords": [
+    "agent",
     "codex",
     "chatgpt",
     "oracle",

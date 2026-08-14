@@ -24,7 +24,7 @@ def test_plan_orders_the_complete_first_install_without_secrets(tmp_path: Path) 
         registration_url="https://host.tailnet.ts.net/mcp",
         roots=[str(project)],
     )
-    assert plan["product"] == "Codex Web GPT Automation"
+    assert plan["product"] == "Agent Web GPT Automation"
     assert plan["app_name"] == "codex"
     assert [stage["id"] for stage in plan["stages"]] == [
         "01_install",

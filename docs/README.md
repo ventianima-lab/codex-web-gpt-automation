@@ -1,6 +1,6 @@
 # Documentation
 
-This index is the single map for Codex Web GPT Automation documentation.
+This index is the single map for Agent Web GPT Automation documentation.
 Operational commands live in one authoritative guide and are linked instead of
 being copied into several files.
 
@@ -57,8 +57,8 @@ The following documents are historical implementation references:
 
 ## Documentation conventions
 
-- Product name: **Codex Web GPT Automation**
-- Repository/package name: `codex-web-gpt-automation`
+- Product name: **Agent Web GPT Automation**
+- Repository/package name: `agent-web-gpt-automation`
 - Manually registered ChatGPT app name in examples: `codex`
 - Current transport: Oracle + DevSpace
 - Legacy identifiers remain lowercase/code-form and are explained as

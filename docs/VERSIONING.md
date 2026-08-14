@@ -1,6 +1,6 @@
 # Versioning and releases
 
-Codex Web GPT Automation follows [Semantic Versioning](https://semver.org/) as
+Agent Web GPT Automation follows [Semantic Versioning](https://semver.org/) as
 `MAJOR.MINOR.PATCH`.
 
 ## What changes the number?

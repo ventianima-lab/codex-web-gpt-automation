@@ -106,7 +106,7 @@ def check_repository(root: Path) -> list[str]:
     for name, text in readmes.items():
         if "docs/assets/brand/banner.svg" not in text:
             errors.append(f"{name} does not use the canonical banner")
-        if "Codex Web GPT Automation" not in text:
+        if "Agent Web GPT Automation" not in text:
             errors.append(f"{name} is missing the product name")
         missing_modes = sorted(mode for mode in REQUIRED_MODES if mode not in text)
         if missing_modes:
