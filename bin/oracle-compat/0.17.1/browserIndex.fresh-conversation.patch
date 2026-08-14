@@ -1,0 +1,130 @@
+--- a/dist/src/browser/index.js
++++ b/dist/src/browser/index.js
+@@ -990,6 +990,9 @@
+         }));
+         if (chatMode === "switched") {
+             await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
++        }
++        if (config.researchMode === "deep" && !isResumingConversation && !config.browserTabRef) {
++            await raceWithDisconnect(ensureFreshDeepResearchConversation(Page, Runtime, config, logger));
+         }
+         logger(`Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`);
+         const captureRuntimeSnapshot = async () => {
+@@ -1239,6 +1242,7 @@
+                 ignoredTargetKeys: deepResearchTargetKeys,
+                 targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+             }));
++            assertFreshDeepResearchResult(researchResult.text, baselineAssistantText);
+             await updateConversationHint("post-deep-research", 15_000).catch(() => false);
+             runStatus = "complete";
+             const durationMs = Date.now() - startedAt;
+@@ -1462,6 +1466,15 @@
+                     if (refreshed) {
+                         turnAnswer = refreshed;
+                     }
++                    else {
++                        throw new BrowserAutomationError("ChatGPT returned the pre-existing assistant response instead of a response to this submission.", {
++                            stage: "assistant-response-stale",
++                            code: "assistant-response-stale",
++                            details: {
++                                baselineLength: baselineNormalized.length,
++                            },
++                        });
++                    }
+                 }
+             }
+             let turnAnswerText = turnAnswer.text;
+@@ -2354,6 +2367,9 @@
+         if (chatMode === "switched") {
+             await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+         }
++        if (config.researchMode === "deep" && !config.resumeConversationUrl && !attachedExistingTab) {
++            await ensureFreshDeepResearchConversation(Page, Runtime, config, logger);
++        }
+         logger(`Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`);
+         try {
+             const { result } = await Runtime.evaluate({
+@@ -2511,6 +2527,7 @@
+                 ignoredTargetKeys: deepResearchTargetKeys,
+                 targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+             });
++            assertFreshDeepResearchResult(researchResult.text, baselineAssistantText);
+             await activeConversationUrlMonitor.update("post-deep-research", 15_000).catch(() => false);
+             const durationMs = Date.now() - startedAt;
+             const tokens = estimateTokenCount(researchResult.text);
+@@ -2732,6 +2749,15 @@
+                     if (refreshed) {
+                         turnAnswer = refreshed;
+                     }
++                    else {
++                        throw new BrowserAutomationError("ChatGPT returned the pre-existing assistant response instead of a response to this submission.", {
++                            stage: "assistant-response-stale",
++                            code: "assistant-response-stale",
++                            details: {
++                                baselineLength: baselineNormalized.length,
++                            },
++                        });
++                    }
+                 }
+             }
+             let turnAnswerText = turnAnswer.text;
+@@ -3239,6 +3265,59 @@
+     };
+   })()`;
+ }
++async function ensureFreshDeepResearchConversation(Page, Runtime, config, logger) {
++    const initialTurnCount = await readConversationTurnCount(Runtime, logger);
++    if (initialTurnCount === 0) {
++        return;
++    }
++    if (initialTurnCount == null) {
++        throw new BrowserAutomationError("Could not prove that Deep Research started from a fresh conversation before submission.", {
++            stage: "deep-research-fresh-conversation",
++            code: "deep-research-fresh-conversation-unproven",
++        });
++    }
++    const freshUrl = new URL(CHATGPT_URL);
++    freshUrl.searchParams.set("oracle-new-chat", `${Date.now()}-${Math.random().toString(16).slice(2)}`);
++    logger(`Deep Research opened with ${initialTurnCount} existing conversation turns; reopening a fresh ChatGPT root before submission.`);
++    await navigateToChatGPT(Page, Runtime, freshUrl.toString(), logger);
++    await ensureNotBlocked(Runtime, config.headless, logger);
++    await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
++    const refreshedTurnCount = await readConversationTurnCount(Runtime, logger);
++    if (refreshedTurnCount !== 0) {
++        throw new BrowserAutomationError("Deep Research could not establish an empty conversation before submission.", {
++            stage: "deep-research-fresh-conversation",
++            code: "deep-research-fresh-conversation-unproven",
++            details: {
++                initialTurnCount,
++                refreshedTurnCount,
++            },
++        });
++    }
++}
++function assertFreshDeepResearchResult(answerText, baselineAssistantText) {
++    const baselineNormalized = baselineAssistantText
++        ? normalizeForComparison(baselineAssistantText)
++        : "";
++    if (!baselineNormalized) {
++        return;
++    }
++    const normalizedAnswer = normalizeForComparison(answerText ?? "");
++    const baselinePrefix = baselineNormalized.length >= 80
++        ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
++        : "";
++    const isBaseline = normalizedAnswer === baselineNormalized ||
++        (baselinePrefix.length > 0 && normalizedAnswer.startsWith(baselinePrefix));
++    if (isBaseline) {
++        throw new BrowserAutomationError("ChatGPT returned the pre-existing assistant response instead of the new Deep Research report.", {
++            stage: "deep-research-stale-response",
++            code: "deep-research-stale-response",
++            details: {
++                baselineLength: baselineNormalized.length,
++                answerLength: normalizedAnswer.length,
++            },
++        });
++    }
++}
+ async function readConversationTurnCount(Runtime, logger) {
+     const expression = buildConversationTurnCountExpression();
+     const attempts = 4;

@@ -174,6 +174,20 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert set(compat.PATCHES) <= touched
     node = shutil.which("node")
     assert node is not None, "Node.js is required to validate the patched Oracle source"
+    browser_target = package / "dist/src/browser/index.js"
+    browser_text = browser_target.read_text(encoding="utf-8")
+    assert "ensureFreshDeepResearchConversation" in browser_text
+    assert "deep-research-fresh-conversation-unproven" in browser_text
+    assert "assertFreshDeepResearchResult(researchResult.text, baselineAssistantText)" in browser_text
+    assert "assistant-response-stale" in browser_text
+    browser_syntax = subprocess.run(
+        [node, "--check", str(browser_target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert browser_syntax.returncode == 0, browser_syntax.stderr
+    assert compat.sha256_file(browser_target) == compat.PATCHES["dist/src/browser/index.js"]["patched"]
     recovery_target = package / "dist/src/browser/recoverConversation.js"
     recovery_text = recovery_target.read_text(encoding="utf-8")
     assert "copyProfileSource" in recovery_text

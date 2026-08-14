@@ -16,6 +16,7 @@
     "bin/devspace-compat/1.0.4/oauth-resource-origin.patch",
     "bin/devspace-compat/1.0.4/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
+    "bin/oracle-compat/0.17.1/browserIndex.fresh-conversation.patch",
     "bin/oracle-compat/0.17.1/profileCopy.windows-native.patch",
     "bin/oracle-compat/0.17.1/browserConfig.copy-profile-windows.patch",
     "bin/oracle-compat/0.17.1/recoverConversation.copy-profile.patch",
