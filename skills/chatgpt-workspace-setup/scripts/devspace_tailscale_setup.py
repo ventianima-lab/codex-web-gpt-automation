@@ -381,6 +381,7 @@ def recover_service(
     runner: Callable[..., Any] = subprocess.run,
     popen_factory: Callable[..., Any] = subprocess.Popen,
     sleeper: Callable[[float], None] = time.sleep,
+    platform_name: str | None = None,
 ) -> dict[str, Any]:
     """Idempotently restore the managed DevSpace service and its exact Funnel."""
     local = http_probe(config.local_mcp_url, opener=opener)
@@ -393,9 +394,10 @@ def recover_service(
             runner=runner,
         )
         launch_hidden(
-            bash_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"]),
+            command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform_name),
             popen_factory=popen_factory,
             environment=devspace_service_environment(),
+            platform_name=platform_name,
         )
         run_checked(
             devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
@@ -412,6 +414,7 @@ def refresh_after_app_registration(
     runner: Callable[..., Any] = subprocess.run,
     popen_factory: Callable[..., Any] = subprocess.Popen,
     sleeper: Callable[[float], None] = time.sleep,
+    platform_name: str | None = None,
 ) -> dict[str, Any]:
     """Recycle the managed server after manual ChatGPT OAuth registration.
 
@@ -428,9 +431,10 @@ def refresh_after_app_registration(
         runner=runner,
     )
     launch_hidden(
-        bash_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"]),
+        command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform_name),
         popen_factory=popen_factory,
         environment=devspace_service_environment(),
+        platform_name=platform_name,
     )
     run_checked(
         devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
@@ -682,7 +686,7 @@ def persist_existing_setup_config(config_path: Path, config: SetupConfig) -> Pat
             "host": payload.get("host") or "127.0.0.1",
             "port": config.local_port,
             "allowedRoots": [str(root) for root in config.roots],
-            "publicBaseUrl": f"https://{config.hostname}",
+            "publicBaseUrl": config.public_origin,
         }
     )
     temporary = config_path.with_name(f".{config_path.name}.tmp-{time.time_ns()}")

@@ -1,0 +1,13 @@
+diff --git a/dist/server.js b/dist/server.js
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -1340,7 +1340,8 @@ function createApp(config, oauthProvider, workspaces, reviewCheckpoints, proces
+         });
+         if (res.headersSent)
+             return;
+-        if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
++        const resourceOk = !req.auth?.resource || checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl }) || (new URL(req.auth.resource).origin === resourceServerUrl.origin);
++        if (!resourceOk) {
+             logEvent(config.logging, "warn", "auth_denied", {
+                 requestId,
+                 method: req.method,

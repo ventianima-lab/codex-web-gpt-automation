@@ -54,6 +54,43 @@ def test_exact_version_patch_is_hash_gated_idempotent_and_backed_up(tmp_path: Pa
     assert (backup / "sample.txt").read_bytes() == b"before\n"
 
 
+def test_patch_chain_applies_base_and_post_patch(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
+    target = package / "sample.txt"
+    target.write_bytes(b"before\n")
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    (patches / "base.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+        "@@ -1 +1 @@\n-before\n+middle\n",
+        encoding="utf-8",
+    )
+    (patches / "post.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+        "@@ -1 +1 @@\n-middle\n+after\n",
+        encoding="utf-8",
+    )
+    compat.PATCHES = {
+        "sample.txt": {
+            "patch": "base.patch",
+            "post_patches": ["post.patch"],
+            "pristine": digest(b"before\n"),
+            "patched": digest(b"after\n"),
+        }
+    }
+    compat.patch_root = lambda: patches
+
+    result = compat.ensure_oracle_compatibility(
+        "oracle 0.17.1", package_root=package, backup_root=tmp_path / "backup"
+    )
+
+    assert result["changed"] == ["sample.txt"]
+    assert target.read_bytes() == b"after\n"
+
+
 def test_hash_specific_legacy_patch_migrates_without_backup(tmp_path: Path) -> None:
     compat = load_compat()
     package = tmp_path / "package"
@@ -111,20 +148,22 @@ def test_unknown_oracle_version_or_file_hash_fails_closed(tmp_path: Path) -> Non
     assert mismatch.value.code == "ORACLE_FILE_HASH_MISMATCH"
 
 
+def test_posix_candidate_roots_use_the_npm_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compat = load_compat()
+    package = tmp_path / "_npx" / "cache-key" / "node_modules" / "@steipete" / "oracle"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
+    monkeypatch.delenv("ORACLE_PACKAGE_ROOT", raising=False)
+    monkeypatch.setenv("npm_config_cache", str(tmp_path))
+
+    assert compat.resolve_package_root("0.17.1") == package.resolve()
+
+
 def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_path: Path) -> None:
     compat = load_compat()
-    source = (
-        Path.home()
-        / "AppData"
-        / "Local"
-        / "npm-cache"
-        / "_npx"
-        / "0a10f56e3ba43148"
-        / "node_modules"
-        / "@steipete"
-        / "oracle"
-    )
-    if not source.is_dir():
+    try:
+        source = compat.resolve_package_root()
+    except compat.OracleCompatError:
         pytest.skip("published Oracle 0.17.1 cache is unavailable")
     package = tmp_path / "oracle"
     shutil.copytree(source, package)
@@ -157,10 +196,11 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert "strictRequestedEffort" in source_text
     assert "composer-model-picker-slider-simple-view" in source_text
     assert ").find(isVisible) ?? null" in source_text
-    assert "label: 'Power ' + current + ' of 5'" in source_text
+    assert "readPowerMaximum(view) ?? '?'" in source_text
     assert "`Power ${current} of 5`" not in source_text
     assert "const compact = Array.from(text)" in source_text
-    assert "compact.includes(String(candidate) + 'of5')" in source_text
+    assert "for (const maximum of [5, 4])" in source_text
+    assert "String(candidate) + 'of' + String(maximum)" in source_text
     assert "targetPower: POWER_TARGET" in source_text
     assert "exactGpt56ProProof" in source_text
     assert "composer-model-picker-slider-advanced-view" in source_text
@@ -199,6 +239,26 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     )
     assert slider.returncode == 0, slider.stderr
     assert json.loads(slider.stdout) == ["[browser] Thinking time: Power 5 of 5 (already selected)"]
+
+    extra_high_script = slider_script.replace(
+        "Pro,\\u200b 5\\u00a0of\\u202f5", "Extra High,\\u200b 4\\u00a0of\\u202f4"
+    ).replace(
+        "ensureThinkingTime(Runtime,'heavy'", "ensureThinkingTime(Runtime,'extra-high'"
+    ).replace(
+        "querySelector:()=>null,getAttribute:()=>null,getBoundingClientRect",
+        "querySelector:()=>({getAttribute:(name)=>name==='aria-valuenow'?'3':null}),"
+        "getAttribute:()=>null,getBoundingClientRect",
+    )
+    extra_high = subprocess.run(
+        [node, "--input-type=module", "-e", extra_high_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert extra_high.returncode == 0, extra_high.stderr
+    assert json.loads(extra_high.stdout) == [
+        "[browser] Thinking time: Power 4 of 4 (already selected)"
+    ]
 
     exact_diagnostic_script = (
         f"import {{ ensureThinkingTime }} from {json.dumps(target.as_uri())};"

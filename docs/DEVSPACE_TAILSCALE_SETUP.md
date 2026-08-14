@@ -16,6 +16,16 @@ From this repository, preview the plan and check the roots:
 python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py setup --root C:\projects\one --root C:\projects\two --hostname your-device.your-tailnet.ts.net --dry-run
 ```
 
+On macOS, the same helper runs `npx` directly; Git Bash is not required:
+
+```bash
+python3 skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py setup \
+  --root "$HOME/projects/one" \
+  --root "$HOME/projects/two" \
+  --hostname your-device.your-tailnet.ts.net \
+  --dry-run
+```
+
 If DevSpace is already configured, a preview that names only a new root safely
 merges the current `allowedRoots` and displays the complete list. It never
 silently plans a subset that would remove an existing project. The interactive
@@ -31,6 +41,8 @@ explicitly, for example `--public-port 8443`; the registration URL then becomes
 ```powershell
 python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py setup --root C:\projects\one --root C:\projects\two --hostname your-device.your-tailnet.ts.net --apply
 ```
+
+For macOS, replace `--dry-run` with `--apply` in the preceding command.
 
 DevSpace prints an Owner password during initialization and stores it in its standard local configuration. Do not put that password in a script, manifest, issue, or repository.
 
@@ -66,6 +78,12 @@ database, or Funnel hostname:
 
 ```powershell
 python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py post-register --root C:\projects\one --hostname your-device.your-tailnet.ts.net
+```
+
+```bash
+python3 skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py post-register \
+  --root "$HOME/projects/one" \
+  --hostname your-device.your-tailnet.ts.net
 ```
 
 Verify the registered app with a fresh regular, non-Pro Oracle `@codex`

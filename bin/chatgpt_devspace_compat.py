@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -15,9 +16,17 @@ SUPPORTED_VERSION = "1.0.4"
 CREATE_NO_WINDOW = 0x08000000
 PATCHES = {
     "dist/server.js": {
-        "patch": "directory-read.patch",
+        "patches": ["directory-read.patch", "oauth-resource-origin.patch"],
         "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0",
+        "patched": "e4ec82668aaa17913f6e29964f9a2b40e43f49bc7c0498001fadc22e62c4c788",
+        "legacy_patches": {
+            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0":
+                "oauth-resource-origin.patch",
+        },
+        "legacy_reverse_patches": {
+            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0":
+                "directory-read.patch",
+        },
     },
     "dist/workspaces.js": {
         "patch": "workspaces.patch",
@@ -330,12 +339,14 @@ def _git_kwargs() -> dict[str, Any]:
     return {"creationflags": CREATE_NO_WINDOW, "startupinfo": startup}
 
 
-def _apply_patch(package_root: Path, patch_path: Path) -> None:
+def _apply_patch(package_root: Path, patch_path: Path, *, reverse: bool = False) -> None:
     isolated_env = os.environ.copy()
     isolated_env["GIT_CEILING_DIRECTORIES"] = str(package_root.parent)
     patch_bytes = patch_path.read_bytes().replace(b"\r\n", b"\n")
     for check_only in (True, False):
         argv = ["git", "-c", "core.autocrlf=false", "apply"]
+        if reverse:
+            argv.append("-R")
         if check_only:
             argv.append("--check")
         argv.append("-")
@@ -389,6 +400,47 @@ def ensure_devspace_compatibility(
             if current == contract["patched"]:
                 already.append(item)
                 continue
+            backup_path = backup / Path(relative)
+            legacy_patches = contract.get("legacy_patches")
+            legacy_patch = legacy_patches.get(current) if isinstance(legacy_patches, dict) else None
+            if isinstance(legacy_patch, str) and legacy_patch:
+                if not backup_path.exists() or sha256_file(backup_path) != contract["pristine"]:
+                    reverse_patches = contract.get("legacy_reverse_patches")
+                    reverse_patch = (
+                        reverse_patches.get(current)
+                        if isinstance(reverse_patches, dict)
+                        else None
+                    )
+                    if not isinstance(reverse_patch, str) or not reverse_patch:
+                        raise DevSpaceCompatError(
+                            "DEVSPACE_LEGACY_PATCH_BACKUP_INVALID",
+                            "A known DevSpace compatibility level cannot be migrated without pristine recovery evidence",
+                            {"path": str(target), "backup": str(backup_path), "actual": current},
+                        )
+                    with tempfile.TemporaryDirectory(prefix="devspace-compat-migrate-") as temporary:
+                        staged_root = Path(temporary)
+                        staged_target = staged_root / Path(relative)
+                        staged_target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(target, staged_target)
+                        _apply_patch(staged_root, patch_root() / reverse_patch, reverse=True)
+                        if sha256_file(staged_target) != contract["pristine"]:
+                            raise DevSpaceCompatError(
+                                "DEVSPACE_LEGACY_PATCH_RESTORE_INVALID",
+                                "Known DevSpace compatibility bytes did not restore the exact pristine file",
+                                {"path": str(target), "patch": reverse_patch},
+                            )
+                        backup_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(staged_target, backup_path)
+                _apply_patch(root, patch_root() / legacy_patch)
+                actual = sha256_file(target)
+                if actual != contract["patched"]:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_PATCH_HASH_MISMATCH",
+                        "DevSpace compatibility patch output hash is unexpected",
+                        {"path": str(target), "actual": actual, "expected": contract["patched"]},
+                    )
+                changed.append(item)
+                continue
             if current != contract["pristine"]:
                 raise DevSpaceCompatError(
                     "DEVSPACE_FILE_HASH_MISMATCH",
@@ -399,11 +451,14 @@ def ensure_devspace_compatibility(
                         "expected": [contract["pristine"], contract["patched"]],
                     },
                 )
-            backup_path = backup / Path(relative)
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             if not backup_path.exists():
                 shutil.copy2(target, backup_path)
-            _apply_patch(root, patch_root() / str(contract["patch"]))
+            patch_names = contract.get("patches")
+            if not isinstance(patch_names, list):
+                patch_names = [contract["patch"]]
+            for patch_name in patch_names:
+                _apply_patch(root, patch_root() / str(patch_name))
             actual = sha256_file(target)
             if actual != contract["patched"]:
                 raise DevSpaceCompatError(

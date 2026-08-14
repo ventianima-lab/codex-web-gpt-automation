@@ -116,6 +116,22 @@ def test_existing_setup_config_is_backed_up_and_atomically_replaced_without_init
     assert persisted["custom"] == "preserved"
 
 
+def test_existing_setup_preserves_nondefault_funnel_port_in_public_origin(tmp_path: Path) -> None:
+    module = load_module()
+    root = tmp_path / "project"
+    root.mkdir()
+    current = module.validate_config(
+        [str(root)], "device.tailnet.ts.net", public_port=8443
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"allowedRoots": [str(root)]}), encoding="utf-8")
+
+    module.persist_existing_setup_config(config_path, current)
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["publicBaseUrl"] == "https://device.tailnet.ts.net:8443"
+
+
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="PowerShell is unavailable")
 def test_unicode_setup_config_parses_with_windows_powershell_default_get_content(tmp_path: Path) -> None:
     module = load_module()
@@ -320,14 +336,8 @@ def test_windows_launch_is_hidden() -> None:
     assert kwargs["creationflags"] & module.subprocess.CREATE_NO_WINDOW
 
 
-def test_recover_starts_missing_service_then_restores_exact_funnel(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_recover_starts_missing_service_then_restores_exact_funnel(tmp_path: Path) -> None:
     module, current = config(tmp_path)
-    bash = tmp_path / "bash.exe"
-    bash.write_text("", encoding="utf-8")
-    monkeypatch.setenv("DEVSPACE_GIT_BASH", str(bash))
     probes = 0
     calls: list[list[str]] = []
     launches: list[list[str]] = []
@@ -362,23 +372,18 @@ def test_recover_starts_missing_service_then_restores_exact_funnel(
         runner=runner,
         popen_factory=lambda argv, **kwargs: launches.append(list(argv)),
         sleeper=lambda _: None,
+        platform_name="posix",
     )
 
     assert report["ok"] is True
     assert report["service_started"] is True
-    assert len(launches) == 1
+    assert launches == [["npx", "--yes", module.DEVSPACE_PACKAGE, "serve"]]
     assert any("--stop-exact-service" in call for call in calls)
     assert any("--confirm-service-restarted" in call for call in calls)
 
 
-def test_post_register_always_recycles_service_and_preserves_oauth_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_post_register_always_recycles_service_and_preserves_oauth_state(tmp_path: Path) -> None:
     module, current = config(tmp_path)
-    bash = tmp_path / "bash.exe"
-    bash.write_text("", encoding="utf-8")
-    monkeypatch.setenv("DEVSPACE_GIT_BASH", str(bash))
     calls: list[list[str]] = []
     launches: list[tuple[list[str], dict[str, str] | None]] = []
 
@@ -410,6 +415,7 @@ def test_post_register_always_recycles_service_and_preserves_oauth_state(
         runner=runner,
         popen_factory=lambda argv, **kwargs: launches.append((list(argv), kwargs.get("env"))),
         sleeper=lambda _: None,
+        platform_name="posix",
     )
 
     assert report["ok"] is True
@@ -427,15 +433,13 @@ def test_post_register_always_recycles_service_and_preserves_oauth_state(
     assert [
         "tailscale", "funnel", "--bg", "--https=443", f"http://127.0.0.1:{current.local_port}"
     ] in calls
+    assert launches[0][0] == ["npx", "--yes", module.DEVSPACE_PACKAGE, "serve"]
     assert launches[0][1]["DEVSPACE_TOOL_MODE"] == "full"
     assert launches[0][1]["DEVSPACE_OAUTH_SCOPES"] == "devspace,offline_access"
 
 
-def test_post_register_preserves_shared_funnel_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_post_register_preserves_shared_funnel_port(tmp_path: Path) -> None:
     module, current = config(tmp_path)
-    bash = tmp_path / "bash.exe"
-    bash.write_text("", encoding="utf-8")
-    monkeypatch.setenv("DEVSPACE_GIT_BASH", str(bash))
     calls: list[list[str]] = []
 
     class Response:
@@ -464,6 +468,7 @@ def test_post_register_preserves_shared_funnel_port(tmp_path: Path, monkeypatch:
         runner=runner,
         popen_factory=lambda *args, **kwargs: SimpleNamespace(),
         sleeper=lambda _: None,
+        platform_name="posix",
     )
 
     assert report["ok"] is True

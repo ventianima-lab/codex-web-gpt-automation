@@ -1,0 +1,62 @@
+diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions/thinkingTime.js
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -384,9 +384,9 @@
+         diagnostic,
+       };
+     };
+-    // Current ChatGPT presents GPT-5.6 effort as a Power slider.  The simple
+-    // view exposes an accessible "N of 5" value; 4 is Extra High and 5 is
+-    // Pro.  Use keyboard input so React receives the same interaction as a
++    // Current ChatGPT presents GPT-5.6 effort as a Power slider. The simple
++    // view exposes either an "N of 4" or legacy "N of 5" value. Four is
++    // Extra High on both scales; five remains the legacy Pro value. Use keyboard input like a
+     // user, then prove the final numeric value before the prompt is sent.
+     const POWER_TARGET = {
+       light: 1,
+@@ -408,16 +408,24 @@
+           (character >= 'a' && character <= 'z') ||
+           (character >= '0' && character <= '9'))
+         .join('');
+-      for (let candidate = 1; candidate <= 5; candidate += 1) {
+-        if (compact.includes(String(candidate) + 'of5')) return candidate;
++      for (const maximum of [5, 4]) {
++        for (let candidate = 1; candidate <= maximum; candidate += 1) {
++          if (compact.includes(String(candidate) + 'of' + String(maximum))) return candidate;
++        }
+       }
+       return null;
++    };
++    const readPowerMaximum = (view) => {
++      const compact = String(view?.textContent ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
++      return compact.includes('of5') ? 5 : compact.includes('of4') ? 4 : null;
+     };
+     const readPowerValue = (view) => {
+       const control = powerSliderControl(view);
++      const textValue = readPowerTextValue(view);
++      if (textValue !== null) return textValue;
+       const ariaValue = Number(control?.getAttribute?.('aria-valuenow') ?? '');
+       if (Number.isInteger(ariaValue) && ariaValue >= 1 && ariaValue <= 5) return ariaValue;
+-      return readPowerTextValue(view);
++      return null;
+     };
+     const proofCandidates = (selector) => {
+       const candidates = Array.from(document.querySelectorAll(selector));
+@@ -510,7 +518,7 @@
+       let current = readPowerValue(view);
+       if (current === POWER_TARGET) {
+         closeOpenMenus();
+-        return { status: 'already-selected', label: 'Power ' + current + ' of 5' };
++        return { status: 'already-selected', label: 'Power ' + current + ' of ' + (readPowerMaximum(view) ?? '?') };
+       }
+       if (current === null || !control) return failure('selection-unverified');
+       try { control.focus?.(); } catch {}
+@@ -524,7 +532,7 @@
+       current = readPowerValue(view);
+       if (current === POWER_TARGET) {
+         closeOpenMenus();
+-        return { status: 'switched', label: 'Power ' + current + ' of 5' };
++        return { status: 'switched', label: 'Power ' + current + ' of ' + (readPowerMaximum(view) ?? '?') };
+       }
+       return failure('selection-unverified', { power: current, targetPower: POWER_TARGET });
+     };

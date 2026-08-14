@@ -92,8 +92,9 @@ PATCHES = {
     },
     "dist/src/browser/actions/thinkingTime.js": {
         "patch": "thinkingTime.strict.patch",
+        "post_patches": ["thinkingTime.power-scale-4.patch"],
         "pristine": "508f1fbc175b82e6bfd4c978da6199306800615f432e28d7721c155c402795ca",
-        "patched": "f2244ec9e113cffbae073673c9adc3cfc70adb58a4fc64b241f85700ff3def8c",
+        "patched": "dd6768b8c05f0765cebf940a9513b125d86844c88b2f07db75ba23fdf3d53033",
         "legacy_patched": [
             "536571fccc3f8137bfbf0ea96dfd827f1eabdaf92f93fe7cff92af242ef01d53",
             "fe6db3c1d48ccf7eff212dab7e69a2b3c7439f44b5cc823d474aa4fbd0925151",
@@ -109,6 +110,8 @@ PATCHES = {
             "b55897a9d90627b226e39e77339819e446927ffc66f78181f5c2851cbcfe5f97",
             "3f969712b184588d1f34ef4f55b439c86256d112bb0fa1688bb473b61fd3dcc3",
             "d01b1d254041c35a300d44f7b3940a89d5406bdf30027bdc7c579a074c5ca5f3",
+            "f2244ec9e113cffbae073673c9adc3cfc70adb58a4fc64b241f85700ff3def8c",
+            "be2351cba5eea3c76e2009edcb2207436d3777c2e57f0212a500299e6d0faf7a",
         ],
         "legacy_patch": "thinkingTime.strict.pre-power.patch",
         "legacy_patches": {
@@ -138,6 +141,14 @@ PATCHES = {
                 "thinkingTime.strict.pre-stable-pro-proof.patch",
             "d01b1d254041c35a300d44f7b3940a89d5406bdf30027bdc7c579a074c5ca5f3":
                 "thinkingTime.strict.pre-menu-scoped-proof.patch",
+            "f2244ec9e113cffbae073673c9adc3cfc70adb58a4fc64b241f85700ff3def8c":
+                "thinkingTime.strict.patch",
+        },
+        "legacy_patch_chains": {
+            "be2351cba5eea3c76e2009edcb2207436d3777c2e57f0212a500299e6d0faf7a": [
+                "thinkingTime.power-scale-4-pre-visible.patch",
+                "thinkingTime.strict.patch",
+            ],
         },
     },
 }
@@ -166,8 +177,17 @@ def _candidate_roots() -> list[Path]:
     override = str(os.environ.get("ORACLE_PACKAGE_ROOT") or "").strip()
     if override:
         return [Path(override).expanduser().resolve()]
-    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    roots = list((local / "npm-cache" / "_npx").glob("*/node_modules/@steipete/oracle"))
+    cache_override = str(
+        os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE") or ""
+    ).strip()
+    if cache_override:
+        npm_cache = Path(cache_override).expanduser()
+    elif os.name == "nt":
+        local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        npm_cache = local / "npm-cache"
+    else:
+        npm_cache = Path.home() / ".npm"
+    roots = list((npm_cache / "_npx").glob("*/node_modules/@steipete/oracle"))
     return sorted((path.resolve() for path in roots if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True)
 
 
@@ -250,7 +270,7 @@ def _migrate_known_legacy_patch(
     package_root: Path,
     target: Path,
     relative: str,
-    patch_path: Path,
+    patch_paths: Sequence[Path],
     pristine_hash: str,
 ) -> None:
     """Restore one known former patch level to its verified pristine bytes."""
@@ -259,12 +279,13 @@ def _migrate_known_legacy_patch(
         staged_target = staged_root / Path(relative)
         staged_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target, staged_target)
-        _apply_patch(staged_root, patch_path, reverse=True)
+        for patch_path in patch_paths:
+            _apply_patch(staged_root, patch_path, reverse=True)
         if sha256_file(staged_target) != pristine_hash:
             raise OracleCompatError(
                 "ORACLE_LEGACY_PATCH_RESTORE_INVALID",
                 "Known legacy Oracle patch did not restore the exact pristine bytes",
-                {"path": str(target), "patch": str(patch_path)},
+                {"path": str(target), "patches": [str(path) for path in patch_paths]},
             )
         shutil.copy2(staged_target, target)
 
@@ -301,19 +322,35 @@ def ensure_oracle_compatibility(
             if current in contract.get("legacy_patched", []):
                 if not backup_path.exists() or sha256_file(backup_path) != contract["pristine"]:
                     legacy_patches = contract.get("legacy_patches")
-                    legacy_patch = (
-                        legacy_patches.get(current)
-                        if isinstance(legacy_patches, dict)
+                    legacy_patch_chains = contract.get("legacy_patch_chains")
+                    legacy_patch_names = (
+                        legacy_patch_chains.get(current)
+                        if isinstance(legacy_patch_chains, dict)
                         else None
-                    ) or contract.get("legacy_patch")
-                    if not isinstance(legacy_patch, str) or not legacy_patch:
+                    )
+                    if legacy_patch_names is None:
+                        legacy_patch = (
+                            legacy_patches.get(current)
+                            if isinstance(legacy_patches, dict)
+                            else None
+                        ) or contract.get("legacy_patch")
+                        legacy_patch_names = [legacy_patch] if isinstance(legacy_patch, str) else []
+                    if (
+                        not isinstance(legacy_patch_names, list)
+                        or not legacy_patch_names
+                        or not all(isinstance(name, str) and name for name in legacy_patch_names)
+                    ):
                         raise OracleCompatError(
                             "ORACLE_LEGACY_PATCH_BACKUP_INVALID",
                             "A legacy Oracle patch cannot be migrated without the exact pristine backup",
                             {"path": str(target), "backup": str(backup_path), "actual": current},
                         )
                     _migrate_known_legacy_patch(
-                        root, target, relative, patches / legacy_patch, str(contract["pristine"])
+                        root,
+                        target,
+                        relative,
+                        [patches / name for name in legacy_patch_names],
+                        str(contract["pristine"]),
                     )
                     backup_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(target, backup_path)
@@ -330,6 +367,8 @@ def ensure_oracle_compatibility(
             if not backup_path.exists():
                 shutil.copy2(target, backup_path)
             _apply_patch(root, patches / str(contract["patch"]))
+            for post_patch in contract.get("post_patches", []):
+                _apply_patch(root, patches / str(post_patch))
             actual = sha256_file(target)
             if actual != contract["patched"]:
                 raise OracleCompatError(

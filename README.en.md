@@ -127,6 +127,16 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
   --dry-run
 ```
 
+```bash
+python3 "$HOME/.codex/bin/chatgpt_oracle_dispatch.py" \
+  --mode orchestrator \
+  --project-root "$PWD" \
+  --mission-path "$PWD/mission.md" \
+  --manifest-output "$PWD/.ai-bridge/oracle.json" \
+  --reasoning-level "Very High" \
+  --dry-run
+```
+
 Remove `--dry-run` only when live execution is authorized.
 
 ## Safety contract

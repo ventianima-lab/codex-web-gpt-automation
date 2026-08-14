@@ -126,6 +126,16 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
   --dry-run
 ```
 
+```bash
+python3 "$HOME/.codex/bin/chatgpt_oracle_dispatch.py" \
+  --mode orchestrator \
+  --project-root "$PWD" \
+  --mission-path "$PWD/mission.md" \
+  --manifest-output "$PWD/.ai-bridge/oracle.json" \
+  --reasoning-level "Very High" \
+  --dry-run
+```
+
 실제 실행 승인이 있을 때만 `--dry-run`을 제거합니다.
 
 ## 안전 계약

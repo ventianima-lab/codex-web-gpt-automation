@@ -107,6 +107,49 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     assert (backup / "sample.txt").read_bytes() == b"before\n"
 
 
+def test_known_intermediate_patch_migrates_and_recovers_pristine_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    target = package / "sample.txt"
+    target.write_bytes(b"middle\n")
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    (patches / "base.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+        "@@ -1 +1 @@\n-before\n+middle\n",
+        encoding="utf-8",
+    )
+    (patches / "finish.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+        "@@ -1 +1 @@\n-middle\n+after\n",
+        encoding="utf-8",
+    )
+    middle = digest(b"middle\n")
+    compat.PATCHES = {
+        "sample.txt": {
+            "patches": ["base.patch", "finish.patch"],
+            "pristine": digest(b"before\n"),
+            "patched": digest(b"after\n"),
+            "legacy_patches": {middle: "finish.patch"},
+            "legacy_reverse_patches": {middle: "base.patch"},
+        }
+    }
+    compat.patch_root = lambda: patches
+    monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
+    backup = tmp_path / "backup"
+
+    result = compat.ensure_devspace_compatibility(package_root=package, backup_root=backup)
+
+    assert result["changed"] == ["sample.txt"]
+    assert target.read_bytes() == b"after\n"
+    assert (backup / "sample.txt").read_bytes() == b"before\n"
+
+
 def test_restart_confirmation_rejects_old_or_foreign_listener(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -284,7 +327,7 @@ def test_bounded_workspace_patch_skips_transient_trees_and_batches_discovery() -
     assert "await Promise.all(batch.map" in patch
 
 
-def test_directory_read_patch_routes_directories_without_widening_read_access() -> None:
+def test_server_patch_routes_directories_and_bounds_oauth_resource_compatibility() -> None:
     compat = load_compat()
     patch = (
         MODULE_PATH.parent
@@ -292,11 +335,25 @@ def test_directory_read_patch_routes_directories_without_widening_read_access() 
         / compat.SUPPORTED_VERSION
         / "directory-read.patch"
     ).read_text(encoding="utf-8")
+    oauth_patch = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "oauth-resource-origin.patch"
+    ).read_text(encoding="utf-8")
 
     assert compat.PATCHES["dist/server.js"] == {
-        "patch": "directory-read.patch",
+        "patches": ["directory-read.patch", "oauth-resource-origin.patch"],
         "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0",
+        "patched": "e4ec82668aaa17913f6e29964f9a2b40e43f49bc7c0498001fadc22e62c4c788",
+        "legacy_patches": {
+            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0":
+                "oauth-resource-origin.patch",
+        },
+        "legacy_reverse_patches": {
+            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0":
+                "directory-read.patch",
+        },
     }
     assert "const readPath = workspaces.resolveReadPath(workspace, input.path);" in patch
     assert "isDirectory = (await stat(readPath.absolutePath)).isDirectory();" in patch
@@ -304,6 +361,9 @@ def test_directory_read_patch_routes_directories_without_widening_read_access() 
     assert "+                root: workspace.root," in patch
     assert ": await readFileTool({ ...input, path: readPath.absolutePath }, {" in patch
     assert "+                readRoots: readPath.readRoots," in patch
+    assert "!req.auth?.resource" in oauth_patch
+    assert "new URL(req.auth.resource).origin === resourceServerUrl.origin" in oauth_patch
+    assert "if (!resourceOk)" in oauth_patch
 
 
 def test_directory_read_patch_unknown_upstream_hash_fails_closed(tmp_path: Path) -> None:

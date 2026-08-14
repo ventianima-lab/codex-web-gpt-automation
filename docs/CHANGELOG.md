@@ -1,5 +1,24 @@
 # 기술 변경 기록
 
+## Unreleased
+
+- macOS에서 Oracle 0.17.1의 실제 `~/.npm/_npx` 캐시를 탐색하도록 호환성
+  검사를 수정해, Funnel·DevSpace가 정상이어도 제출 전
+  `ORACLE_PACKAGE_NOT_FOUND`로 중단되던 경로를 복구했습니다.
+- macOS의 `recover`와 `post-register`가 Windows Git Bash 경로 대신 native
+  `npx`로 DevSpace를 재시작합니다. Windows는 기존 Git Bash 실행을 유지합니다.
+- 기존 설치에 적용된 DevSpace directory-read 패치와 same-origin OAuth resource
+  호환 수정을 하나의 해시 검증 체인으로 승격했습니다. 알려진 중간 패치 상태는
+  pristine 백업을 복원한 뒤 최종 바이트로 이관하고, 다른 수정은 계속 거부합니다.
+- ChatGPT의 일반 Extra High slider가 `4 of 5`에서 `4 of 4`로 바뀐 UI를
+  해시 검증된 Oracle 후속 패치로 지원합니다. 두 scale 모두 실제 최댓값을 읽어
+  제출 전에 `Extra High`를 증명합니다. 새 UI의 내부 `aria-valuenow`와 화면의
+  `4 of 4`가 다를 때는 사용자에게 표시된 exact scale을 우선하며, 확인되지 않은
+  선택은 계속 fail-closed입니다.
+- macOS용 Funnel 설정, post-register, Oracle dry-run 예시를 추가했습니다.
+- 8443·10000 같은 지원 Funnel 포트를 사용할 때 DevSpace `publicBaseUrl`에서
+  포트가 유실되지 않도록 실제 `public_origin` 전체를 저장합니다.
+
 ## 1.14.2 - DevSpace 상주 복구
 
 - Windows DevSpace 부트스트랩을 로그인 시 한 번 실행하고 종료하는 방식에서
