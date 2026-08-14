@@ -84,6 +84,9 @@ def service_plists(
                 str(codex_home / "skills" / "chatgpt-workspace-setup" / "scripts" / "devspace_tailscale_setup.py"),
                 "ensure", "--root", str(project_root), "--public-port", "443",
             ],
+            "EnvironmentVariables": {
+                "PATH": "/opt/homebrew/bin:/usr/local/bin:" + str(Path.home() / ".local" / "bin") + ":/usr/bin:/bin",
+            },
             "RunAtLoad": True,
             "StartInterval": 300,
             "WorkingDirectory": str(project_root),

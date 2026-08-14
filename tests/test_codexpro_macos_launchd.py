@@ -44,3 +44,6 @@ def test_launchd_funnel_uses_standard_https_port_for_chatgpt_oauth(tmp_path: Pat
     values = module.service_plists(codex_home=codex_home, project_root=project.resolve(), python="/usr/bin/python3", npx="/opt/homebrew/bin/npx")
 
     assert values["funnel"]["ProgramArguments"][-3:] == [str(project.resolve()), "--public-port", "443"]
+    funnel_path = values["funnel"]["EnvironmentVariables"]["PATH"]
+    assert funnel_path.startswith("/opt/homebrew/bin:/usr/local/bin:")
+    assert "/Applications/Tailscale.app/" not in funnel_path
