@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.14.2",
+  "version": "1.15.0",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -46,6 +46,8 @@
     "bin/chatgpt_parallel_implementation_runtime.py",
     "bin/chatgpt_prompt_profiles.py",
     "bin/chatgpt_workspace_config.py",
+    "bin/chatgpt_web_provider_bridge.py",
+    "bin/chatgpt_web_provider_setup.py",
     "bin/codex_web_gpt_onboarding.py",
     "bin/codex_global_agents_setup.py",
     "bin/codex_runtime_identity.py",
@@ -102,8 +104,10 @@
     "scripts/run_fast_gate.py",
     "scripts/run_golden_path_smoke.py",
     "scripts/start_devspace_bootstrap.ps1",
+    "scripts/start_chatgpt_web_provider_bridge.ps1",
     "scripts/run_harness_canary.py",
     "docs/FIRST_INSTALL.md",
+    "docs/WEB_CHATGPT_PROVIDER.md",
     "docs/ULTRA_ECONOMY_MODE.md",
     "docs/templates/codex-agents/scout.toml",
     "docs/templates/codex-agents/implementer.toml",

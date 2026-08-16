@@ -1,5 +1,11 @@
 # 기술 변경 기록
 
+## 1.15.0 - OpenCodex Web ChatGPT provider
+
+- OpenCodex/Codex를 가벼운 클라이언트로 사용하면서 실제 작업은 Oracle과 DevSpace가 연결된 일반 Web ChatGPT에서 수행하는 loopback provider를 추가했습니다.
+- 브리지는 단일 제출, bearer 인증, SSE keepalive, 정확한 프로젝트 루트 mission, 로그인 시 자동 복구를 제공합니다.
+- 기존 provider와 기본 모델을 유지한 채 `web-chatgpt/web-gpt-codex`만 추가하며, 실행 중인 OpenCodex에도 재시작 없이 반영합니다.
+
 ## 1.14.2 - DevSpace 상주 복구
 
 - Windows DevSpace 부트스트랩을 로그인 시 한 번 실행하고 종료하는 방식에서
