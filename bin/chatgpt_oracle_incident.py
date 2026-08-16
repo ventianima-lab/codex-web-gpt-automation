@@ -81,19 +81,19 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
     state = STATE.load_state(state_path)
     artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
     output_path = Path(str(artifacts.get("output") or (directory / "output.md")))
+    image_output_path = Path(str(artifacts.get("image_output") or ""))
+    has_output = STATE.durable_output_is_present(state)
     verdict = DIAGNOSE.classify_run(
         state,
         stdout_text=DIAGNOSE._read_text(directory / "stdout.log"),
-        has_output=DIAGNOSE._output_is_nonempty(output_path),
+        has_output=has_output,
         transcript_text=DIAGNOSE._read_text(directory / "transcript.md"),
         user_confirmed_no_submission=(
             STATE.proven_user_confirmed_no_submission(state_path) is not None
         ),
         pre_submit_host_failure=STATE.proven_pre_submit_host_failure(state_path),
     )
-    lifecycle = STATE.resolve_lifecycle(
-        state, output_is_present=DIAGNOSE._output_is_nonempty(output_path)
-    )
+    lifecycle = STATE.resolve_lifecycle(state, output_is_present=has_output)
     bucket = str(verdict["bucket"])
     project_root = Path(str(state.get("project_root") or "")).expanduser().resolve(strict=True)
     owners = STATE.unresolved_project_sessions(
@@ -129,6 +129,7 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
                 directory / "stdout.log",
                 directory / "stderr.log",
                 output_path,
+                image_output_path,
             )
             if path.is_file()
         ),

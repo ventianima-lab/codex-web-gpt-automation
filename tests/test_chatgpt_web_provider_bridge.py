@@ -84,6 +84,24 @@ def test_conversation_uses_only_user_and_assistant_text(bridge) -> None:
     ]
 
 
+def test_image_generation_detection_uses_latest_user_request_only(bridge) -> None:
+    assert bridge.image_generation_requested([
+        {"role": "user", "content": "이전 이미지 생성해줘"},
+        {"role": "assistant", "content": "완료했어"},
+        {"role": "user", "content": "텍스트로 설명해줘"},
+    ]) is False
+    assert bridge.image_generation_requested([
+        {"role": "user", "content": "이미지 생성해줘"},
+    ]) is True
+    assert bridge.image_generation_requested([
+        {"role": "user", "content": "이미지 생성 기능을 provider에 추가해줘"},
+    ]) is False
+    assert bridge.image_generation_requested(
+        [{"role": "user", "content": "anything"}],
+        {"modalities": ["text", "image"]},
+    ) is True
+
+
 def test_mission_binds_exact_root_and_latest_request(bridge, tmp_path: Path) -> None:
     path, root = write_config(bridge, tmp_path)
     config = bridge.load_config(path)
@@ -120,6 +138,51 @@ def test_run_oracle_returns_text_and_preserves_evidence(bridge, tmp_path: Path) 
     assert answer == "done"
     assert evidence["status"] == "complete"
     assert list(config.request_root.glob("*/mission.md"))
+
+
+def test_run_oracle_forwards_image_generation_and_returns_local_markdown(bridge, tmp_path: Path) -> None:
+    path, _ = write_config(bridge, tmp_path)
+    config = bridge.load_config(path)
+    image = tmp_path / "generated-image.png"
+    image.write_bytes(b"fake-png")
+    second_image = tmp_path / "generated-image.2.png"
+    second_image.write_bytes(b"fake-png-2")
+
+    class FakeProcess:
+        def __init__(self, command, **kwargs):
+            assert "--generate-image" in command
+            payload = {
+                "ok": True,
+                "run": {
+                    "ok": True,
+                    "run_dir": str(tmp_path / "run"),
+                    "result": {
+                        "status": "complete",
+                        "artifacts": {
+                            "output": str(tmp_path / "missing-output.md"),
+                            "image_output": str(image),
+                        },
+                    },
+                },
+            }
+            kwargs["stdout"].write(json.dumps(payload).encode("utf-8"))
+            kwargs["stdout"].flush()
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    answer, evidence = bridge.run_oracle(
+        config,
+        [{"role": "user", "content": "이미지 생성해줘"}],
+        popen_factory=FakeProcess,
+    )
+    assert answer.count("![Generated image]") == 2
+    assert str(image.resolve()).replace("\\", "/") in answer
+    assert str(second_image.resolve()).replace("\\", "/") in answer
+    assert evidence["image_output"] == str(image)
 
 
 def test_run_oracle_surfaces_generation_error_without_generic_recovery_message(bridge, tmp_path: Path) -> None:

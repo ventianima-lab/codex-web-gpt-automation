@@ -33,6 +33,7 @@ def compile_manifest(
     reasoning_level: str | None = None,
     attachment_paths: Iterable[Path] | None = None,
     app_name: str | None = None,
+    generate_image: bool = False,
 ) -> dict[str, Any]:
     contract = PROFILES.build_launch_contract(
         mode,
@@ -70,6 +71,8 @@ def compile_manifest(
     else:
         manifest["app_name"] = contract["app_name"]
         manifest["task_outcome_contract"] = "v1"
+        if generate_image:
+            manifest["generate_image"] = True
     target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     result["oracle_manifest_path"] = str(target)
     return result
@@ -84,6 +87,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--reasoning-level")
     parser.add_argument("--attachment", type=Path, action="append", default=[])
     parser.add_argument("--app-name")
+    parser.add_argument("--generate-image", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -95,6 +99,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             reasoning_level=args.reasoning_level,
             attachment_paths=args.attachment,
             app_name=args.app_name,
+            generate_image=args.generate_image,
         )
         if compiled["oracle_manifest_path"]:
             run = RUNNER.execute_run(Path(compiled["oracle_manifest_path"]), dry_run=args.dry_run)

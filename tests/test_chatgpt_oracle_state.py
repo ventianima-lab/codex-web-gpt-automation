@@ -202,6 +202,19 @@ def test_pro_devspace_manifest_is_write_capable_and_stays_inside_project(tmp_pat
     )
 
 
+def test_regular_image_generation_is_validated_and_recorded(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("draw an image", encoding="utf-8")
+    config = state.load_manifest(manifest(tmp_path, mission.resolve(), generate_image=True))
+
+    assert config.generate_image is True
+    layout = state.create_layout(config, run_id="20260725T151414Z-a3aeba967d99")
+    payload = state.state_payload(config, layout, status="prepared", resolved_version="oracle 0.17.1")
+    assert payload["profile"]["generate_image"] is True
+    assert payload["artifacts"]["image_output"].endswith("generated-image.png")
+
+
 def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path: Path) -> None:
     state = load_state()
     prompt = tmp_path / "prompt.txt"
@@ -553,3 +566,22 @@ def test_ledger_completion_without_a_durable_artifact_is_not_complete() -> None:
     verdict = state.resolve_lifecycle({"status": "complete"}, output_is_present=False)
 
     assert verdict == {"lifecycle": "needs_attention", "authority_source": "local-ledger"}
+
+
+def test_image_artifact_is_durable_lifecycle_output(tmp_path: Path) -> None:
+    state = load_state()
+    image = tmp_path / "generated-image.png"
+    image.write_bytes(b"image-bytes")
+
+    payload = {
+        "status": "complete",
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "artifacts": {"output": str(tmp_path / "missing-output.md"), "image_output": str(image)},
+    }
+
+    assert state.durable_output_is_present(payload) is True
+    assert state.resolve_lifecycle(payload) == {
+        "lifecycle": "complete",
+        "authority_source": "exact-terminal-evidence",
+    }

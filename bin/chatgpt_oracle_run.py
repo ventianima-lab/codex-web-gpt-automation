@@ -123,6 +123,10 @@ def build_oracle_argv(config, layout, prompt: str) -> list[str]:
         "--prompt", prompt,
         "--write-output", str(layout.output_path),
     ]
+    if getattr(config, "generate_image", False):
+        command[command.index("--slug"):command.index("--slug")] = [
+            "--generate-image", str(layout.run_dir / "generated-image.png"),
+        ]
     if STATE.is_attachment_transport(config.transport):
         attachment_args: list[str] = []
         for path in config.attachments:
@@ -702,6 +706,7 @@ def execute_run(
     config = STATE.load_manifest(manifest_path, platform_name=platform_name)
     validate_oracle_attachment_sizes(config)
     layout = STATE.create_layout(config, run_id=config.requested_run_id)
+    image_output_path = layout.run_dir / "generated-image.png" if config.generate_image else None
     transport_mission_path = layout.run_dir / "mission.md"
     # The app reads the project mission. The copied bytes below are host-only
     # immutable evidence and are never exposed as the workspace handoff path.
@@ -894,9 +899,11 @@ def execute_run(
     # wait passively; do not prompt a harvest/live relaunch while it works.
     delivery_timeout = provider_delivery_timed_out(layout.stdout_path, layout.stderr_path)
     generation_failed = provider_generation_failed(layout.stdout_path, layout.stderr_path)
+    text_output_present = STATE.output_is_nonempty(layout.output_path)
+    image_output_present = bool(image_output_path and STATE.output_is_nonempty(image_output_path))
     transport_complete = (
         exit_code == 0
-        and STATE.output_is_nonempty(layout.output_path)
+        and (text_output_present or image_output_present)
         and not delivery_timeout
     )
     task_outcome = (
@@ -905,9 +912,11 @@ def execute_run(
             contract=config.task_outcome_contract,
             transport=config.transport,
         )
-        if transport_complete
+        if transport_complete and text_output_present
         else "pending"
     )
+    if image_output_present and task_outcome in {"pending", "unknown"}:
+        task_outcome = "executed"
     semantic_complete = task_outcome in {
         "executed",
         "not_applicable",
@@ -947,7 +956,9 @@ def execute_run(
             exit_code=exit_code,
             session_authority="terminal",
             terminal_harvested=True,
-            artifact_sha256=STATE.sha256_file(layout.output_path),
+            artifact_sha256=STATE.sha256_file(
+                layout.output_path if text_output_present else image_output_path  # type: ignore[arg-type]
+            ),
             transport_status="complete",
             task_outcome=task_outcome,
             task_outcome_reason=(

@@ -224,12 +224,10 @@ def diagnose(state_root: Path | None = None) -> dict[str, Any]:
                 "detail": type(exc).__name__,
             })
             continue
-        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
-        output_path = Path(str(artifacts.get("output") or (run_dir / "output.md")))
         verdict = classify_run(
             state,
             stdout_text=_read_text(run_dir / "stdout.log"),
-            has_output=_output_is_nonempty(output_path),
+            has_output=STATE.durable_output_is_present(state),
             transcript_text=_read_text(run_dir / "transcript.md"),
             user_confirmed_no_submission=(
                 STATE.proven_user_confirmed_no_submission(run_dir / "state.json") is not None

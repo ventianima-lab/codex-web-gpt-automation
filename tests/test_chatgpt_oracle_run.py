@@ -469,6 +469,17 @@ def test_dry_run_never_executes_and_has_no_file_flag(tmp_path: Path) -> None:
     assert not (tmp_path / "runs").exists()
 
 
+def test_image_generation_dry_run_adds_explicit_oracle_output_path(tmp_path: Path) -> None:
+    runner = load_runner()
+    result = execute_run(runner, manifest(tmp_path, generate_image=True), dry_run=True)
+
+    argv = result["argv"]
+    image_index = argv.index("--generate-image")
+    image_path = Path(argv[image_index + 1])
+    assert image_path.name == "generated-image.png"
+    assert image_path.parent.parent.name == "runs"
+
+
 def test_copy_profile_is_first_class_and_outside_project(
     tmp_path: Path, monkeypatch
 ) -> None:

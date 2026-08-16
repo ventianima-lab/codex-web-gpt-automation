@@ -3,8 +3,9 @@ from __future__ import annotations
 
 """Loopback OpenAI-compatible bridge to regular Web ChatGPT via Oracle.
 
-The bridge intentionally emits text only. Web ChatGPT owns workspace tools through
-the registered DevSpace app; Codex/OpenCodex is the thin client and conversation UI.
+Web ChatGPT owns workspace tools through the registered DevSpace app; Codex/OpenCodex
+is the thin client and conversation UI. Text answers are returned directly and
+generated image artifacts are returned as local Markdown image references.
 """
 
 import argparse
@@ -30,6 +31,18 @@ MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_TRANSCRIPT_CHARS = 150_000
 MAX_MESSAGES = 24
 TASK_OUTCOME_RE = re.compile(r"\n?TASK_OUTCOME:\s*(?:EXECUTED|NOT_EXECUTED|BLOCKED|UNKNOWN)\s*\Z", re.I)
+IMAGE_REQUEST_RE = re.compile(
+    r"(?:"
+    r"\b(?:generate|create|draw|make|edit)\s+(?:an?\s+)?image\b|"
+    r"(?:이미지|그림|사진)\s*(?:을|를)?\s*(?:생성|만들|그려|제작|수정)(?:해줘|해주세요|해|줘)?"
+    r")",
+    re.I,
+)
+IMAGE_REQUEST_CODE_CONTEXT_RE = re.compile(
+    r"(?:기능|지원|추가|구현|코드|프로바이더|플러그인|"
+    r"\b(?:feature|support|add|implement|implementation|code|plugin|integration)\b)",
+    re.I,
+)
 
 
 class BridgeError(RuntimeError):
@@ -154,6 +167,34 @@ def conversation_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
     return selected
 
 
+def image_generation_requested(messages: list[dict[str, str]], payload: dict[str, Any] | None = None) -> bool:
+    """Detect only an explicit latest-user image request, not image-related coding work."""
+    if isinstance(payload, dict):
+        modalities = payload.get("modalities")
+        if isinstance(modalities, list) and any(str(item).casefold() == "image" for item in modalities):
+            return True
+    latest_user = next(
+        (item["content"] for item in reversed(messages) if item.get("role") == "user"),
+        "",
+    )
+    if not latest_user or IMAGE_REQUEST_CODE_CONTEXT_RE.search(latest_user):
+        return False
+    return bool(IMAGE_REQUEST_RE.search(latest_user))
+
+
+def image_markdown(path: Path) -> str:
+    display_path = str(path.resolve()).replace("\\", "/")
+    return f"![Generated image](<{display_path}>)"
+
+
+def generated_image_paths(primary: Path) -> list[Path]:
+    """Return the primary Oracle image and any numbered siblings in run order."""
+    candidates = [primary]
+    candidates.extend(primary.parent.glob(f"{primary.stem}.*{primary.suffix}"))
+    unique = {path.resolve() for path in candidates if path.is_file() and path.stat().st_size > 0}
+    return sorted(unique, key=lambda path: (path != primary.resolve(), path.name.casefold()))
+
+
 def build_mission(config: BridgeConfig, request_id: str, messages: list[dict[str, str]]) -> str:
     transcript = json.dumps(messages, ensure_ascii=False, indent=2)
     return (
@@ -200,6 +241,7 @@ def run_oracle(
     config: BridgeConfig,
     messages: list[dict[str, str]],
     *,
+    generate_image: bool | None = None,
     heartbeat: Callable[[float], None] | None = None,
     popen_factory: Callable[..., Any] = subprocess.Popen,
 ) -> tuple[str, dict[str, Any]]:
@@ -209,6 +251,8 @@ def run_oracle(
     manifest_path = request_dir / "oracle-manifest.json"
     stdout_path = request_dir / "dispatch.json"
     stderr_path = config.log_root / f"dispatch-{request_id}.log"
+    if generate_image is None:
+        generate_image = image_generation_requested(messages)
     _atomic_write(mission_path, build_mission(config, request_id, messages))
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
@@ -221,6 +265,8 @@ def run_oracle(
         "--reasoning-level", config.reasoning_level,
         "--app-name", config.app_name,
     ]
+    if generate_image:
+        command.append("--generate-image")
     started = time.monotonic()
     with stdout_path.open("wb") as stdout, stderr_path.open("ab") as stderr:
         process = popen_factory(
@@ -244,6 +290,7 @@ def run_oracle(
         "run_dir": run.get("run_dir") or state.get("run_dir"),
         "status": run.get("status") or state.get("status"),
         "transport_status": state.get("transport_status"),
+        "image_output": (state.get("artifacts") or {}).get("image_output") if isinstance(state.get("artifacts"), dict) else None,
         "exit_code": exit_code,
     }
     if exit_code != 0 or not payload.get("ok"):
@@ -264,9 +311,16 @@ def run_oracle(
     output_value = run.get("output_path") or artifacts.get("output")
     if not isinstance(output_value, str) or not output_value:
         raise BridgeError("ORACLE_OUTPUT_MISSING", "Web ChatGPT run returned no output path", status=502, evidence=evidence)
-    output_path = Path(output_value).expanduser().resolve(strict=True)
-    answer = output_path.read_text(encoding="utf-8-sig").strip()
+    # Image-only runs may legitimately omit output.md; keep this path non-strict
+    # and use the image artifact as the response source in that case.
+    output_path = Path(output_value).expanduser().resolve(strict=False)
+    answer = output_path.read_text(encoding="utf-8-sig").strip() if output_path.is_file() else ""
     answer = TASK_OUTCOME_RE.sub("", answer).rstrip()
+    image_output_value = artifacts.get("image_output")
+    if isinstance(image_output_value, str) and image_output_value:
+        image_output = Path(image_output_value).expanduser().resolve(strict=False)
+        image_references = "\n\n".join(image_markdown(path) for path in generated_image_paths(image_output))
+        answer = "\n\n".join(part for part in (answer, image_references) if part).strip()
     if not answer:
         raise BridgeError("ORACLE_OUTPUT_EMPTY", "Web ChatGPT returned an empty answer", status=502, evidence=evidence)
     return answer, evidence
@@ -382,7 +436,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 connected = self._sse_write(f": web-chatgpt-working {int(elapsed)}s\n\n")
 
         try:
-            answer, _ = run_oracle(self.bridge_server.config, messages, heartbeat=heartbeat)
+            answer, _ = run_oracle(
+                self.bridge_server.config,
+                messages,
+                generate_image=image_generation_requested(messages, payload),
+                heartbeat=heartbeat,
+            )
         except BridgeError as exc:
             if connected:
                 self._sse_write("data: " + json.dumps(exc.payload(), ensure_ascii=False) + "\n\n")
@@ -434,7 +493,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if payload.get("stream", False):
                 self._stream_completion(payload, messages)
             else:
-                answer, _ = run_oracle(self.bridge_server.config, messages)
+                answer, _ = run_oracle(
+                    self.bridge_server.config,
+                    messages,
+                    generate_image=image_generation_requested(messages, payload),
+                )
                 self._json(200, completion_object(answer, str(payload.get("model") or MODEL_ID)))
         except BridgeError as exc:
             self._json(exc.status, exc.payload())

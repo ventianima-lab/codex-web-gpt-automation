@@ -226,6 +226,7 @@ class OracleConfig:
     model: str
     model_strategy: str
     thinking_time: str
+    generate_image: bool
     copy_profile: Path | None
     research: str
     archive: str
@@ -476,6 +477,15 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
             raise OracleStateError("PRO_MODEL_STRATEGY_INVALID", "Pro requires explicit model selection")
         if thinking_time != "heavy":
             raise OracleStateError("PRO_THINKING_TIME_INVALID", "Pro requires heavy reasoning")
+    generate_image_raw = payload.get("generate_image", False)
+    if not isinstance(generate_image_raw, bool):
+        raise OracleStateError("GENERATE_IMAGE_INVALID", "generate_image must be boolean")
+    generate_image = generate_image_raw
+    if generate_image and is_attachment_transport(transport):
+        raise OracleStateError(
+            "PRO_IMAGE_GENERATION_FORBIDDEN",
+            "Pro attachment-only runs must not generate mutable image artifacts",
+        )
     copy_profile_raw = str(payload.get("copy_profile") or "").strip()
     if copy_profile_raw:
         copy_profile = absolute_path(copy_profile_raw, label="copy_profile", must_exist=True)
@@ -561,6 +571,7 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
         model,
         model_strategy,
         thinking_time,
+        generate_image,
         copy_profile,
         research,
         archive,
@@ -653,6 +664,7 @@ def state_payload(config: OracleConfig, layout: RunLayout, *, status: str, resol
             "model": config.model,
             "model_strategy": config.model_strategy,
             "thinking_time": config.thinking_time,
+            "generate_image": config.generate_image,
             "copy_profile": str(config.copy_profile) if config.copy_profile else None,
             "research": config.research,
             "archive": config.archive,
@@ -692,6 +704,7 @@ def state_payload(config: OracleConfig, layout: RunLayout, *, status: str, resol
         },
         "artifacts": {
             "output": str(layout.output_path),
+            "image_output": str(layout.run_dir / "generated-image.png") if config.generate_image else None,
             "transcript": str(layout.transcript_path),
             "stdout": str(layout.stdout_path),
             "stderr": str(layout.stderr_path),
@@ -895,6 +908,16 @@ def output_is_nonempty(path: Path) -> bool:
         return bool(path.read_bytes().strip())
     except OSError:
         return False
+
+
+def durable_output_is_present(state: dict[str, Any]) -> bool:
+    """Recognize text and image artifacts as durable provider output."""
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    return any(
+        isinstance(artifacts.get(name), str)
+        and output_is_nonempty(Path(artifacts[name]))
+        for name in ("output", "image_output")
+    )
 
 
 def _state_has_conversation_url(state: dict[str, Any]) -> bool:
@@ -2936,9 +2959,7 @@ def resolve_lifecycle(state: dict[str, Any], *, output_is_present: bool | None =
     harvested = state.get("terminal_harvested") is True
     outcome = str(state.get("task_outcome") or "")
     if output_is_present is None:
-        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
-        output_path = Path(str(artifacts.get("output") or ""))
-        has_output = bool(str(output_path)) and output_is_nonempty(output_path)
+        has_output = durable_output_is_present(state)
     else:
         has_output = bool(output_is_present)
 
