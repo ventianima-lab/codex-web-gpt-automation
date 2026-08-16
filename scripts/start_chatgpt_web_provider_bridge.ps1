@@ -3,8 +3,8 @@ param(
   [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }),
   [ValidateSet('Once', 'Watch')]
   [string]$Mode = 'Once',
-  [ValidateRange(5, 3600)]
-  [int]$RestartDelaySeconds = 15,
+  [ValidateRange(1, 3600)]
+  [int]$RestartDelaySeconds = 3,
   [ValidateRange(0, 1000000)]
   [int]$MaxCycles = 0
 )
@@ -21,6 +21,10 @@ function Write-BridgeLog([string]$Message) {
   Add-Content -LiteralPath $LauncherLog -Encoding UTF8 -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message)
 }
 
+function Get-CycleLogPath([string]$Suffix) {
+  return Join-Path $LogRoot ("bridge-{0:0000}{1}" -f $Cycle, $Suffix)
+}
+
 $Mutex = New-Object Threading.Mutex($false, 'Local\CodexWebChatGPTBridge')
 $Acquired = $false
 try {
@@ -35,8 +39,10 @@ try {
   $Cycle = 0
   while ($true) {
     $Cycle++
-    Write-BridgeLog "Starting bridge cycle $Cycle."
-    $Process = Start-Process -FilePath $Python -ArgumentList @($BridgePath, '--config', $ConfigPath) -WindowStyle Hidden -Wait -PassThru
+    $BridgeOutLog = Get-CycleLogPath '.out.log'
+    $BridgeErrLog = Get-CycleLogPath '.err.log'
+    Write-BridgeLog "Starting bridge cycle $Cycle (stdout=$BridgeOutLog stderr=$BridgeErrLog)."
+    $Process = Start-Process -FilePath $Python -ArgumentList @($BridgePath, '--config', $ConfigPath) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $BridgeOutLog -RedirectStandardError $BridgeErrLog
     $ExitCode = $Process.ExitCode
     Write-BridgeLog "Bridge cycle $Cycle exited with code $ExitCode."
     if ($Mode -eq 'Once' -or ($MaxCycles -gt 0 -and $Cycle -ge $MaxCycles)) { exit $ExitCode }

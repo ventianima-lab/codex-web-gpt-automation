@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -533,6 +534,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     except BridgeError as exc:
         print(json.dumps(exc.payload(), ensure_ascii=False), file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - keep the launcher log evidence on fatal exits
+        try:
+            config = load_config(args.config.expanduser().resolve())
+            config.log_root.mkdir(parents=True, exist_ok=True)
+            fatal = config.log_root / "bridge-fatal.log"
+            with fatal.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] fatal: {exc!r}\n")
+                handle.write(traceback.format_exc())
+        except Exception:  # noqa: BLE001 - never mask the original failure
+            traceback.print_exc()
+        return 3
 
 
 if __name__ == "__main__":
