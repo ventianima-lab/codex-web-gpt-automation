@@ -102,30 +102,6 @@ def test_prompt_is_plain_app_plus_absolute_mission_instruction(tmp_path: Path) -
     assert "\n" not in prompt
 
 
-def test_loopback_browser_attach_disables_profile_copy(tmp_path: Path) -> None:
-    state = load_state()
-    mission = tmp_path / "mission.md"
-    mission.write_text("work", encoding="utf-8")
-
-    config = state.load_manifest(
-        manifest(tmp_path, mission.resolve(), browser_attach_endpoint="127.0.0.1:9222")
-    )
-
-    assert config.browser_attach_endpoint == "127.0.0.1:9222"
-    assert config.copy_profile is None
-
-
-def test_non_loopback_browser_attach_is_rejected(tmp_path: Path) -> None:
-    state = load_state()
-    mission = tmp_path / "mission.md"
-    mission.write_text("work", encoding="utf-8")
-
-    with pytest.raises(state.OracleStateError) as exc:
-        state.load_manifest(manifest(tmp_path, mission.resolve(), browser_attach_endpoint="0.0.0.0:9222"))
-
-    assert exc.value.code == "BROWSER_ATTACH_ENDPOINT_INVALID"
-
-
 def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) -> None:
     state = load_state()
     prompt = tmp_path / "prompt.txt"

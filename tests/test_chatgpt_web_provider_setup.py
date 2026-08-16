@@ -53,7 +53,6 @@ def test_configure_adds_provider_without_changing_existing_defaults(tmp_path: Pa
         codex_home=codex,
         opencodex_home=ocx,
         python_executable=python,
-        browser_executable=python,
         live_apply=lambda _provider: False,
     )
     assert result["ok"] is True
@@ -67,16 +66,14 @@ def test_configure_adds_provider_without_changing_existing_defaults(tmp_path: Pa
     bridge = json.loads((codex / "config" / "web-chatgpt-provider.json").read_text(encoding="utf-8"))
     assert len(bridge["auth_token"]) >= 32
     assert bridge["project_root"] == str(project.resolve())
-    assert bridge["reuse_browser"] is True
-    assert bridge["browser_executable"] == str(python.resolve())
 
 
 def test_reconfigure_preserves_token_and_deduplicates_model(tmp_path: Path) -> None:
     setup = load_module()
     codex, ocx, project, python = prepare(tmp_path)
-    setup.configure(project_root=project, codex_home=codex, opencodex_home=ocx, python_executable=python, browser_executable=python, live_apply=lambda _provider: False)
+    setup.configure(project_root=project, codex_home=codex, opencodex_home=ocx, python_executable=python, live_apply=lambda _provider: False)
     first = json.loads((codex / "config" / "web-chatgpt-provider.json").read_text(encoding="utf-8"))["auth_token"]
-    setup.configure(project_root=project, codex_home=codex, opencodex_home=ocx, python_executable=python, browser_executable=python, live_apply=lambda _provider: False)
+    setup.configure(project_root=project, codex_home=codex, opencodex_home=ocx, python_executable=python, live_apply=lambda _provider: False)
     second = json.loads((codex / "config" / "web-chatgpt-provider.json").read_text(encoding="utf-8"))["auth_token"]
     config = json.loads((ocx / "config.json").read_text(encoding="utf-8"))
     assert first == second

@@ -13,13 +13,10 @@ import json
 import os
 import re
 import secrets
-import socket
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,10 +63,6 @@ class BridgeConfig:
     request_root: Path
     log_root: Path
     keepalive_seconds: float = 15.0
-    reuse_browser: bool = False
-    browser_profile_dir: Path | None = None
-    browser_executable: Path | None = None
-    browser_start_timeout_seconds: float = 20.0
 
 
 def _resolved_child(root: Path, value: Path, field: str) -> Path:
@@ -113,40 +106,7 @@ def load_config(path: Path) -> BridgeConfig:
     keepalive = float(raw.get("keepalive_seconds") or 15)
     if not 5 <= keepalive <= 60:
         raise BridgeError("CONFIG_KEEPALIVE_INVALID", "keepalive_seconds must be between 5 and 60")
-    reuse_browser = raw.get("reuse_browser", False)
-    if not isinstance(reuse_browser, bool):
-        raise BridgeError("CONFIG_BROWSER_REUSE_INVALID", "reuse_browser must be boolean")
-    browser_profile_dir = None
-    browser_executable = None
-    browser_start_timeout = float(raw.get("browser_start_timeout_seconds") or 20)
-    if not 5 <= browser_start_timeout <= 60:
-        raise BridgeError("CONFIG_BROWSER_TIMEOUT_INVALID", "browser_start_timeout_seconds must be between 5 and 60")
-    if reuse_browser:
-        browser_profile_dir = Path(str(raw.get("browser_profile_dir") or "")).expanduser().resolve(strict=True)
-        browser_executable = Path(str(raw.get("browser_executable") or "")).expanduser().resolve(strict=True)
-        if not browser_profile_dir.is_dir():
-            raise BridgeError("CONFIG_BROWSER_PROFILE_INVALID", "browser_profile_dir must be a directory")
-        if not browser_executable.is_file():
-            raise BridgeError("CONFIG_BROWSER_EXECUTABLE_INVALID", "browser_executable must be a file")
-        if browser_profile_dir == root or browser_profile_dir.is_relative_to(root) or root.is_relative_to(browser_profile_dir):
-            raise BridgeError("CONFIG_BROWSER_PROFILE_OVERLAP", "browser_profile_dir must be outside project_root")
-    return BridgeConfig(
-        host=host,
-        port=port,
-        auth_token=token,
-        project_root=root,
-        app_name=app_name,
-        reasoning_level=reasoning,
-        python_executable=python_executable,
-        dispatch_script=dispatch_script,
-        request_root=request_root,
-        log_root=log_root,
-        keepalive_seconds=keepalive,
-        reuse_browser=reuse_browser,
-        browser_profile_dir=browser_profile_dir,
-        browser_executable=browser_executable,
-        browser_start_timeout_seconds=browser_start_timeout,
-    )
+    return BridgeConfig(host, port, token, root, app_name, reasoning, python_executable, dispatch_script, request_root, log_root, keepalive)
 
 
 def _part_text(value: Any) -> str:
@@ -226,95 +186,6 @@ def _windows_no_window() -> dict[str, Any]:
     return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
 
 
-def _probe_chrome_endpoint(endpoint: str, *, opener: Callable[..., Any] = urllib.request.urlopen) -> bool:
-    try:
-        with opener(f"http://{endpoint}/json/version", timeout=2) as response:
-            payload = json.loads(response.read())
-    except (OSError, urllib.error.URLError, json.JSONDecodeError):
-        return False
-    return isinstance(payload, dict) and bool(payload.get("Browser"))
-
-
-class ReusableChrome:
-    """Keep one loopback-only signed-in Chrome process warm for Oracle tabs."""
-
-    def __init__(self, config: BridgeConfig):
-        self.config = config
-        self._lock = threading.Lock()
-        self._endpoint: str | None = None
-        self._process: Any | None = None
-        self._error: str | None = None
-        self._state_path = config.log_root / "browser-endpoint.json"
-
-    def _remember(self, endpoint: str) -> str:
-        self._endpoint = endpoint
-        self._error = None
-        _atomic_write(self._state_path, json.dumps({"endpoint": endpoint}) + "\n")
-        return endpoint
-
-    def status(self) -> dict[str, Any]:
-        return {
-            "enabled": self.config.reuse_browser,
-            "ready": bool(self._endpoint and _probe_chrome_endpoint(self._endpoint)),
-            **({"error": self._error} if self._error else {}),
-        }
-
-    def ensure(self) -> str | None:
-        if not self.config.reuse_browser:
-            return None
-        assert self.config.browser_profile_dir is not None
-        assert self.config.browser_executable is not None
-        with self._lock:
-            if self._endpoint and _probe_chrome_endpoint(self._endpoint):
-                return self._endpoint
-            try:
-                saved = json.loads(self._state_path.read_text(encoding="utf-8"))
-                saved_endpoint = str(saved.get("endpoint") or "") if isinstance(saved, dict) else ""
-            except (OSError, json.JSONDecodeError):
-                saved_endpoint = ""
-            if re.fullmatch(r"127\.0\.0\.1:[0-9]{4,5}", saved_endpoint) and _probe_chrome_endpoint(saved_endpoint):
-                return self._remember(saved_endpoint)
-            active_port = self.config.browser_profile_dir / "DevToolsActivePort"
-            try:
-                port = int(active_port.read_text(encoding="utf-8").splitlines()[0])
-                candidate = f"127.0.0.1:{port}"
-            except (OSError, ValueError, IndexError):
-                candidate = ""
-            if candidate and _probe_chrome_endpoint(candidate):
-                return self._remember(candidate)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
-                reservation.bind(("127.0.0.1", 0))
-                port = int(reservation.getsockname()[1])
-            endpoint = f"127.0.0.1:{port}"
-            command = [
-                str(self.config.browser_executable),
-                "--remote-debugging-address=127.0.0.1",
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={self.config.browser_profile_dir}",
-                "--window-position=-32000,-32000",
-                "--window-size=1280,720",
-                "--no-first-run",
-                "--disable-default-apps",
-                "https://chatgpt.com/",
-            ]
-            self._process = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **_windows_no_window(),
-            )
-            deadline = time.monotonic() + self.config.browser_start_timeout_seconds
-            while time.monotonic() < deadline:
-                if _probe_chrome_endpoint(endpoint):
-                    return self._remember(endpoint)
-                if self._process.poll() is not None:
-                    break
-                time.sleep(0.25)
-            self._error = "Chrome DevTools endpoint did not become ready"
-            raise BridgeError("BROWSER_REUSE_START_FAILED", self._error, status=502)
-
-
 def _read_dispatch_payload(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -330,7 +201,6 @@ def run_oracle(
     messages: list[dict[str, str]],
     *,
     heartbeat: Callable[[float], None] | None = None,
-    browser_attach_endpoint: str | None = None,
     popen_factory: Callable[..., Any] = subprocess.Popen,
 ) -> tuple[str, dict[str, Any]]:
     request_id = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(6)}"
@@ -351,8 +221,6 @@ def run_oracle(
         "--reasoning-level", config.reasoning_level,
         "--app-name", config.app_name,
     ]
-    if browser_attach_endpoint:
-        command.extend(["--browser-attach-endpoint", browser_attach_endpoint])
     started = time.monotonic()
     with stdout_path.open("wb") as stdout, stderr_path.open("ab") as stderr:
         process = popen_factory(
@@ -415,7 +283,6 @@ class BridgeServer(ThreadingHTTPServer):
         self.config = config
         self.run_slot = threading.BoundedSemaphore(1)
         self.busy = threading.Event()
-        self.browser = ReusableChrome(config)
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -448,7 +315,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/")
         if path == "/health":
-            self._json(200, {"ok": True, "model": MODEL_ID, "busy": self.bridge_server.busy.is_set(), "browser": self.bridge_server.browser.status()})
+            self._json(200, {"ok": True, "model": MODEL_ID, "busy": self.bridge_server.busy.is_set()})
             return
         if not self._authorized():
             self._json(401, {"error": {"message": "unauthorized", "type": "authentication_error", "code": "UNAUTHORIZED"}})
@@ -507,13 +374,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 connected = self._sse_write(f": web-chatgpt-working {int(elapsed)}s\n\n")
 
         try:
-            endpoint = self.bridge_server.browser.ensure()
-            answer, _ = run_oracle(
-                self.bridge_server.config,
-                messages,
-                heartbeat=heartbeat,
-                browser_attach_endpoint=endpoint,
-            )
+            answer, _ = run_oracle(self.bridge_server.config, messages, heartbeat=heartbeat)
         except BridgeError as exc:
             if connected:
                 self._sse_write("data: " + json.dumps(exc.payload(), ensure_ascii=False) + "\n\n")
@@ -565,8 +426,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if payload.get("stream", False):
                 self._stream_completion(payload, messages)
             else:
-                endpoint = self.bridge_server.browser.ensure()
-                answer, _ = run_oracle(self.bridge_server.config, messages, browser_attach_endpoint=endpoint)
+                answer, _ = run_oracle(self.bridge_server.config, messages)
                 self._json(200, completion_object(answer, str(payload.get("model") or MODEL_ID)))
         except BridgeError as exc:
             self._json(exc.status, exc.payload())
@@ -581,19 +441,10 @@ def serve(config: BridgeConfig) -> None:
     config.request_root.mkdir(parents=True, exist_ok=True)
     config.log_root.mkdir(parents=True, exist_ok=True)
     server = BridgeServer((config.host, config.port), config)
-    if config.reuse_browser:
-        threading.Thread(target=_prewarm_browser, args=(server.browser,), daemon=True).start()
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
         server.server_close()
-
-
-def _prewarm_browser(browser: ReusableChrome) -> None:
-    try:
-        browser.ensure()
-    except BridgeError:
-        return
 
 
 def main(argv: Iterable[str] | None = None) -> int:

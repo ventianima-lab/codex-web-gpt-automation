@@ -33,7 +33,6 @@ def compile_manifest(
     reasoning_level: str | None = None,
     attachment_paths: Iterable[Path] | None = None,
     app_name: str | None = None,
-    browser_attach_endpoint: str | None = None,
 ) -> dict[str, Any]:
     contract = PROFILES.build_launch_contract(
         mode,
@@ -71,8 +70,6 @@ def compile_manifest(
     else:
         manifest["app_name"] = contract["app_name"]
         manifest["task_outcome_contract"] = "v1"
-        if browser_attach_endpoint:
-            manifest["browser_attach_endpoint"] = browser_attach_endpoint
     target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     result["oracle_manifest_path"] = str(target)
     return result
@@ -87,7 +84,6 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--reasoning-level")
     parser.add_argument("--attachment", type=Path, action="append", default=[])
     parser.add_argument("--app-name")
-    parser.add_argument("--browser-attach-endpoint")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -99,7 +95,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             reasoning_level=args.reasoning_level,
             attachment_paths=args.attachment,
             app_name=args.app_name,
-            browser_attach_endpoint=args.browser_attach_endpoint,
         )
         if compiled["oracle_manifest_path"]:
             run = RUNNER.execute_run(Path(compiled["oracle_manifest_path"]), dry_run=args.dry_run)

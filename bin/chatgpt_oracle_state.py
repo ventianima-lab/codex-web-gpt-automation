@@ -226,7 +226,6 @@ class OracleConfig:
     model: str
     model_strategy: str
     thinking_time: str
-    browser_attach_endpoint: str | None
     copy_profile: Path | None
     research: str
     archive: str
@@ -477,26 +476,9 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
             raise OracleStateError("PRO_MODEL_STRATEGY_INVALID", "Pro requires explicit model selection")
         if thinking_time != "heavy":
             raise OracleStateError("PRO_THINKING_TIME_INVALID", "Pro requires heavy reasoning")
-    browser_attach_endpoint_raw = str(payload.get("browser_attach_endpoint") or "").strip()
-    if browser_attach_endpoint_raw:
-        match = re.fullmatch(r"127\.0\.0\.1:([0-9]{4,5})", browser_attach_endpoint_raw)
-        if match is None or not 1024 <= int(match.group(1)) <= 65535:
-            raise OracleStateError(
-                "BROWSER_ATTACH_ENDPOINT_INVALID",
-                "browser_attach_endpoint must be loopback 127.0.0.1 with a port between 1024 and 65535",
-            )
-        if is_pro_transport(transport):
-            raise OracleStateError("PRO_BROWSER_ATTACH_FORBIDDEN", "Pro runs cannot use the shared regular browser")
-        browser_attach_endpoint: str | None = browser_attach_endpoint_raw
-    else:
-        browser_attach_endpoint = None
     copy_profile_raw = str(payload.get("copy_profile") or "").strip()
-    if browser_attach_endpoint and copy_profile_raw:
-        raise OracleStateError("BROWSER_ATTACH_COPY_PROFILE_CONFLICT", "browser attach and copy_profile are mutually exclusive")
     if copy_profile_raw:
         copy_profile = absolute_path(copy_profile_raw, label="copy_profile", must_exist=True)
-    elif browser_attach_endpoint:
-        copy_profile = None
     else:
         # The manually signed-in Oracle profile is the immutable seed for a
         # throwaway per-run copy.  This prevents different projects from
@@ -579,7 +561,6 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
         model,
         model_strategy,
         thinking_time,
-        browser_attach_endpoint,
         copy_profile,
         research,
         archive,
@@ -672,7 +653,6 @@ def state_payload(config: OracleConfig, layout: RunLayout, *, status: str, resol
             "model": config.model,
             "model_strategy": config.model_strategy,
             "thinking_time": config.thinking_time,
-            "browser_attach_endpoint": config.browser_attach_endpoint,
             "copy_profile": str(config.copy_profile) if config.copy_profile else None,
             "research": config.research,
             "archive": config.archive,
