@@ -40,6 +40,7 @@ PRE_SUBMIT_HOST = "pre-submit-host-environment"
 PRE_SUBMIT_UI = "pre-submit-ui-contract"
 BROWSER_LIFETIME = "browser-lifetime-lost"
 PROVIDER_INCOMPLETE = "post-submit-provider-incomplete"
+PROVIDER_GENERATION_ERROR = "post-submit-provider-generation-error"
 RECOVERY_BINDING = "post-submit-recovery-binding"
 TASK_NOT_EXECUTED = "terminal-task-not-executed"
 COMPLETE = "complete"
@@ -55,6 +56,7 @@ BUCKETS = (
     PRE_SUBMIT_UI,
     BROWSER_LIFETIME,
     PROVIDER_INCOMPLETE,
+    PROVIDER_GENERATION_ERROR,
     RECOVERY_BINDING,
     TASK_NOT_EXECUTED,
     UNCLASSIFIED,
@@ -71,6 +73,11 @@ SIGNATURE_RULES: tuple[tuple[str, str, str], ...] = (
     ("Chrome window closed", BROWSER_LIFETIME, "browser-window-closed-early"),
     ("disconnected before completion", BROWSER_LIFETIME, "browser-disconnected-early"),
     ("ECONNREFUSED", RECOVERY_BINDING, "recovery-cdp-connection-refused"),
+    (
+        "chatgpt-response-generation-failed:",
+        PROVIDER_GENERATION_ERROR,
+        "chatgpt-visible-generation-error",
+    ),
     ("timed out before completion", PROVIDER_INCOMPLETE, "assistant-response-timeout"),
     (
         "Prompt did not appear in conversation before timeout",
@@ -84,6 +91,9 @@ REMEDIATION = {
     PRE_SUBMIT_UI: "Relax or realign the ChatGPT UI contract; no web submission occurred, so a fresh run is safe.",
     BROWSER_LIFETIME: "Keep the Oracle-owned browser alive for the run; recover the exact slug before any retry.",
     PROVIDER_INCOMPLETE: "Resume the exact slug with live recovery; never resubmit.",
+    PROVIDER_GENERATION_ERROR: (
+        "The provider visibly ended generation with an error. Review that exact conversation before intentionally retrying."
+    ),
     RECOVERY_BINDING: "Reopen only the persisted exact conversation URL; never resubmit.",
     TASK_NOT_EXECUTED: "Transport succeeded but the task did not run; inspect the durable output before deciding.",
     COMPLETE: "None.",

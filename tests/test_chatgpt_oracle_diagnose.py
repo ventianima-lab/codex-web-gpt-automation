@@ -309,6 +309,28 @@ def test_uncertain_submission_timeout_is_a_post_submit_bucket(tmp_path: Path) ->
     assert "post-submit-provider-incomplete" not in report["safe_for_fresh_run_buckets"]
 
 
+def test_visible_generation_error_has_its_own_terminal_provider_bucket(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    write_run(
+        state_root,
+        "g" * 8,
+        status="attention_required",
+        stdout=(
+            "ERROR: chatgpt-response-generation-failed: "
+            "something went wrong while generating the response\n"
+        ),
+        session_authority="terminal",
+    )
+
+    report = module.diagnose(state_root)
+    run = report["unresolved_runs"][0]
+
+    assert run["bucket"] == "post-submit-provider-generation-error"
+    assert run["signature"] == "chatgpt-visible-generation-error"
+    assert "post-submit-provider-generation-error" not in report["safe_for_fresh_run_buckets"]
+
+
 def test_host_watchdog_transition_is_post_submit_and_never_retry_safe() -> None:
     module = load()
     verdict = module.classify_run(

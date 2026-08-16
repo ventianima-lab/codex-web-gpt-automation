@@ -1,0 +1,69 @@
+diff --git a/dist/src/browser/actions/assistantResponse.js b/dist/src/browser/actions/assistantResponse.js
+--- a/dist/src/browser/actions/assistantResponse.js
++++ b/dist/src/browser/actions/assistantResponse.js
+@@ -6,6 +6,12 @@ import { logDomFailure, logConversationSnapshot, buildConversationDebugExpressio
+ import { buildClickDispatcher } from "./domEvents.js";
+ const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
+ const STOP_CONTROL_SELECTOR = STOP_BUTTON_SELECTORS.join(", ");
++const CHATGPT_GENERATION_ERROR_MARKER = "chatgpt-response-generation-failed";
++const CHATGPT_GENERATION_ERROR_MESSAGES = [
++    "something went wrong while generating the response",
++    "there was an error generating a response",
++];
++const CHATGPT_RETRY_LABELS = ["retry", "try again", "다시 시도"];
+ // Still used by the in-page settle heuristic's length buckets (see buildResponseObserverExpression).
+ const MIN_CONFIDENT_ANSWER_LENGTH = 16;
+ function readPositiveIntEnv(name, fallback) {
+@@ -297,6 +303,41 @@ export function buildMarkdownFallbackExtractorForTest(minTurnLiteral = "0") {
+ export function buildCopyExpressionForTest(meta = {}) {
+     return buildCopyExpression(meta);
+ }
++export function buildGenerationErrorExpressionForTest() {
++    const messages = JSON.stringify(CHATGPT_GENERATION_ERROR_MESSAGES);
++    const retryLabels = JSON.stringify(CHATGPT_RETRY_LABELS);
++    return `(() => {
++    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
++    const isVisible = (node) => {
++      if (!(node instanceof HTMLElement)) return false;
++      const style = getComputedStyle(node);
++      const rect = node.getBoundingClientRect();
++      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
++    };
++    const root = document.querySelector('main') || document.body;
++    const text = normalize(root?.innerText);
++    const message = ${messages}.find((candidate) => text.includes(candidate)) || null;
++    if (!message) return null;
++    const retryVisible = Array.from(root.querySelectorAll('button')).some((button) => {
++      if (!isVisible(button)) return false;
++      const label = normalize(button.innerText || button.getAttribute('aria-label'));
++      return ${retryLabels}.includes(label);
++    });
++    return retryVisible ? message : null;
++  })()`;
++}
++async function readChatGPTGenerationError(Runtime) {
++    try {
++        const { result } = await Runtime.evaluate({
++            expression: buildGenerationErrorExpressionForTest(),
++            returnByValue: true,
++        });
++        return typeof result?.value === "string" && result.value ? result.value : null;
++    }
++    catch {
++        return null;
++    }
++}
+ async function recoverAssistantResponse(Runtime, timeoutMs, logger, minTurnIndex, expectedConversationId) {
+     const recoveryTimeoutMs = Math.max(0, timeoutMs);
+     if (recoveryTimeoutMs === 0) {
+@@ -420,6 +461,10 @@ async function pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex, expecte
+         if (abortSignal?.aborted) {
+             return null;
+         }
++        const generationError = await readChatGPTGenerationError(Runtime);
++        if (generationError) {
++            throw new Error(`${CHATGPT_GENERATION_ERROR_MARKER}: ${generationError}`);
++        }
+         const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId);
+         const normalized = normalizeAssistantSnapshot(snapshot);
+         if (normalized) {

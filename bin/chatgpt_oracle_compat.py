@@ -75,6 +75,11 @@ PATCHES_0161 = {
 }
 
 PATCHES = {
+    "dist/src/browser/actions/assistantResponse.js": {
+        "patch": "assistantResponse.generation-error.patch",
+        "pristine": "0bbc106f79c6abf253690c83794a2dab1b432378f57e16542d15cfcd5365e16d",
+        "patched": "939f840d74843967c1ec2e914185423e76ec01d7c5caa742085d0fbac41d4aa6",
+    },
     "dist/src/browser/chromeLifecycle.js": {
         "patch": "chromeLifecycle.windows-hidden.patch",
         "pristine": "312b45c44d4cd69a3a057e7bd1584b58182b4b37bc88f6ce6c7d11e216267c81",

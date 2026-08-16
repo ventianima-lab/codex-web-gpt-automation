@@ -316,6 +316,37 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
         check=False,
     )
     assert lifecycle_syntax.returncode == 0, lifecycle_syntax.stderr
+    assistant_response = package / "dist/src/browser/actions/assistantResponse.js"
+    assistant_response_text = assistant_response.read_text(encoding="utf-8")
+    assert "chatgpt-response-generation-failed" in assistant_response_text
+    assert "buildGenerationErrorExpressionForTest" in assistant_response_text
+    assert compat.sha256_file(assistant_response) == compat.PATCHES["dist/src/browser/actions/assistantResponse.js"]["patched"]
+    assistant_syntax = subprocess.run(
+        [node, "--check", str(assistant_response)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert assistant_syntax.returncode == 0, assistant_syntax.stderr
+    generation_error_script = (
+        f"import {{ buildGenerationErrorExpressionForTest }} from {json.dumps(assistant_response.as_uri())};"
+        "globalThis.HTMLElement=class{};"
+        "globalThis.getComputedStyle=()=>({display:'block',visibility:'visible'});"
+        "const button=new HTMLElement();button.innerText='Retry';button.getAttribute=()=>null;"
+        "button.getBoundingClientRect=()=>({width:80,height:32});"
+        "const root={innerText:'Something went wrong while generating the response. If this issue persists, contact support.',"
+        "querySelectorAll:()=>[button]};"
+        "globalThis.document={querySelector:(selector)=>selector==='main'?root:null,body:root};"
+        "console.log(JSON.stringify(eval(buildGenerationErrorExpressionForTest())));"
+    )
+    generation_error = subprocess.run(
+        [node, "--input-type=module", "-e", generation_error_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert generation_error.returncode == 0, generation_error.stderr
+    assert json.loads(generation_error.stdout) == "something went wrong while generating the response"
     source_profile = tmp_path / "source-profile"
     (source_profile / "Default/Network").mkdir(parents=True)
     (source_profile / "Default/Cache").mkdir(parents=True)

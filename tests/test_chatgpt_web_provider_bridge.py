@@ -122,6 +122,42 @@ def test_run_oracle_returns_text_and_preserves_evidence(bridge, tmp_path: Path) 
     assert list(config.request_root.glob("*/mission.md"))
 
 
+def test_run_oracle_surfaces_generation_error_without_generic_recovery_message(bridge, tmp_path: Path) -> None:
+    path, _ = write_config(bridge, tmp_path)
+    config = bridge.load_config(path)
+
+    class FailedProcess:
+        def __init__(self, _command, **kwargs):
+            payload = {
+                "ok": False,
+                "run": {
+                    "status": "provider_generation_failed",
+                    "result": {
+                        "status": "attention_required",
+                        "transport_status": "post_submit_generation_failed",
+                    },
+                },
+            }
+            kwargs["stdout"].write(json.dumps(payload).encode("utf-8"))
+            kwargs["stdout"].flush()
+
+        def poll(self):
+            return 1
+
+        def wait(self):
+            return 1
+
+    with pytest.raises(bridge.BridgeError) as exc:
+        bridge.run_oracle(
+            config,
+            [{"role": "user", "content": "test"}],
+            popen_factory=FailedProcess,
+        )
+
+    assert exc.value.code == "WEB_CHATGPT_GENERATION_FAILED"
+    assert "stopped instead of waiting indefinitely" in str(exc.value)
+
+
 def test_completion_shape_is_openai_chat_compatible(bridge) -> None:
     value = bridge.completion_object("hello", bridge.MODEL_ID, "chatcmpl_test")
     assert value["choices"][0]["message"] == {"role": "assistant", "content": "hello"}

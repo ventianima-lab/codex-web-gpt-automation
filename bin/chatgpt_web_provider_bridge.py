@@ -243,9 +243,17 @@ def run_oracle(
         "request_id": request_id,
         "run_dir": run.get("run_dir") or state.get("run_dir"),
         "status": run.get("status") or state.get("status"),
+        "transport_status": state.get("transport_status"),
         "exit_code": exit_code,
     }
     if exit_code != 0 or not payload.get("ok"):
+        if state.get("transport_status") == "post_submit_generation_failed":
+            raise BridgeError(
+                "WEB_CHATGPT_GENERATION_FAILED",
+                "Web ChatGPT reported a response-generation error; the run stopped instead of waiting indefinitely",
+                status=502,
+                evidence=evidence,
+            )
         raise BridgeError(
             "ORACLE_DISPATCH_FAILED",
             "Web ChatGPT run did not complete; the persisted run was preserved for exact-session recovery",

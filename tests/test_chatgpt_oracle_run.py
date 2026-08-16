@@ -947,6 +947,35 @@ def test_post_submit_nonzero_requires_exact_recovery_and_never_restarts(tmp_path
         assert "--prompt" not in recovery["argv"]
 
 
+def test_explicit_chatgpt_generation_error_stops_without_waiting_or_auto_retry(tmp_path: Path) -> None:
+    runner = load_runner()
+
+    def generation_error_popen(command, **kwargs):
+        kwargs["stderr"].write(
+            b"ERROR: chatgpt-response-generation-failed: something went wrong while generating the response\n"
+        )
+        kwargs["stderr"].flush()
+        return Process(1, [])
+
+    result = execute_run(
+        runner,
+        manifest(tmp_path),
+        run_factory=version_runner,
+        popen_factory=generation_error_popen,
+    )
+
+    state = result["result"]
+    assert result["ok"] is False
+    assert result["status"] == "provider_generation_failed"
+    assert result["safe_for_fresh_run"] is False
+    assert state["status"] == "attention_required"
+    assert state["session_authority"] == "terminal"
+    assert state["transport_status"] == "post_submit_generation_failed"
+    assert state["task_outcome"] == "unknown"
+    assert state["browser_observer"]["timeout_is_terminal"] is True
+    assert not Path(state["artifacts"]["browser_temp"]).exists()
+
+
 def test_post_submit_response_timeout_starts_exact_session_live_recovery(tmp_path: Path) -> None:
     runner = load_runner()
     launches: list[list[str]] = []

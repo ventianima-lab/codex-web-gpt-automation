@@ -363,6 +363,7 @@ POST_SUBMIT_RESPONSE_TIMEOUT_MARKER = "assistant response timed out before compl
 # Oracle may still report ``State: completed`` and write the visible error as an
 # assistant artifact, but neither is evidence that the DevSpace task settled.
 PROVIDER_DELIVERY_TIMEOUT_MARKER = "message delivery timed out. please try again."
+PROVIDER_GENERATION_ERROR_MARKER = "chatgpt-response-generation-failed:"
 RECOVERY_BROWSER_PID_RE = re.compile(r"Launched Chrome \(pid (?P<pid>\d+)\)")
 TERMINAL_SESSION_STATES = {
     "complete", "completed", "done", "finished", "failed", "error", "cancelled", "canceled",
@@ -456,6 +457,19 @@ def provider_delivery_timed_out(*paths: Path) -> bool:
     for path in paths:
         try:
             if PROVIDER_DELIVERY_TIMEOUT_MARKER in path.read_text(
+                encoding="utf-8", errors="replace"
+            ).casefold():
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def provider_generation_failed(*paths: Path) -> bool:
+    """Return true only for the compatibility observer's explicit ChatGPT error."""
+    for path in paths:
+        try:
+            if PROVIDER_GENERATION_ERROR_MARKER in path.read_text(
                 encoding="utf-8", errors="replace"
             ).casefold():
                 return True
@@ -879,6 +893,7 @@ def execute_run(
     # still pending at the observer deadline. Preserve live authority and
     # wait passively; do not prompt a harvest/live relaunch while it works.
     delivery_timeout = provider_delivery_timed_out(layout.stdout_path, layout.stderr_path)
+    generation_failed = provider_generation_failed(layout.stdout_path, layout.stderr_path)
     transport_complete = (
         exit_code == 0
         and STATE.output_is_nonempty(layout.output_path)
@@ -899,6 +914,32 @@ def execute_run(
         "legacy_unclassified",
     }
     status = "complete" if transport_complete and semantic_complete else "attention_required"
+    if generation_failed:
+        state = STATE.update_state(
+            layout.state_path,
+            status="attention_required",
+            exit_code=exit_code,
+            session_authority="terminal",
+            terminal_harvested=False,
+            transport_status="post_submit_generation_failed",
+            task_outcome="unknown",
+            task_outcome_reason="chatgpt-response-generation-failed",
+            browser_observer={
+                "status": "provider-generation-failed",
+                "timeout_seconds": browser_timeout_seconds,
+                "oracle_process_pid": oracle_process_pid,
+                "timeout_is_terminal": True,
+            },
+        )
+        STATE.cleanup_owned_browser_temp(layout.browser_temp_path)
+        return {
+            "ok": False,
+            "status": "provider_generation_failed",
+            "safe_for_fresh_run": False,
+            "run_dir": str(layout.run_dir),
+            "next_action": "review the exact failed conversation before intentionally retrying",
+            "result": state,
+        }
     if transport_complete:
         state = STATE.update_state(
             layout.state_path,
