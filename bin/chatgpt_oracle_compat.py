@@ -75,6 +75,11 @@ PATCHES_0161 = {
 }
 
 PATCHES = {
+    "dist/src/browser/chromeLifecycle.js": {
+        "patch": "chromeLifecycle.windows-hidden.patch",
+        "pristine": "312b45c44d4cd69a3a057e7bd1584b58182b4b37bc88f6ce6c7d11e216267c81",
+        "patched": "b5a1a04417d2703921274af78c112d6dad03d69f502c778771cea10e5061256b",
+    },
     "dist/src/browser/recoverConversation.js": {
         "patch": "recoverConversation.copy-profile.patch",
         "pristine": "d7e39d21acf07e6d227e761944519e11cd8d93930629cc87555d7de75a42d1ca",

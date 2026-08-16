@@ -304,6 +304,18 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     )
     assert profile_syntax.returncode == 0, profile_syntax.stderr
 
+    chrome_lifecycle = package / "dist/src/browser/chromeLifecycle.js"
+    chrome_lifecycle_text = chrome_lifecycle.read_text(encoding="utf-8")
+    assert 'process.platform !== "darwin" && process.platform !== "win32"' in chrome_lifecycle_text
+    assert 'process.platform === "darwin" || process.platform === "win32"' in chrome_lifecycle_text
+    assert compat.sha256_file(chrome_lifecycle) == compat.PATCHES["dist/src/browser/chromeLifecycle.js"]["patched"]
+    lifecycle_syntax = subprocess.run(
+        [node, "--check", str(chrome_lifecycle)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert lifecycle_syntax.returncode == 0, lifecycle_syntax.stderr
     source_profile = tmp_path / "source-profile"
     (source_profile / "Default/Network").mkdir(parents=True)
     (source_profile / "Default/Cache").mkdir(parents=True)
