@@ -486,6 +486,21 @@ def test_copy_profile_is_first_class_and_outside_project(
     assert result["argv"][result["argv"].index("--copy-profile") + 1] == str(profile.resolve())
 
 
+def test_browser_attach_reuses_chrome_without_profile_copy_or_window_launch_flags(tmp_path: Path) -> None:
+    runner = load_runner()
+
+    result = execute_run(
+        runner,
+        manifest(tmp_path, browser_attach_endpoint="127.0.0.1:9222"),
+        dry_run=True,
+    )
+
+    assert result["argv"][result["argv"].index("--remote-chrome") + 1] == "127.0.0.1:9222"
+    assert result["argv"].count("--browser-attach-running") == 1
+    assert "--copy-profile" not in result["argv"]
+    assert "--browser-hide-window" not in result["argv"]
+
+
 def test_default_signed_in_profile_is_copied_per_run_and_window_is_hidden(
     tmp_path: Path, monkeypatch
 ) -> None:

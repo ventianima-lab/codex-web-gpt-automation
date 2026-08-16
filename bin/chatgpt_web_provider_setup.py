@@ -32,6 +32,18 @@ class SetupError(RuntimeError):
     pass
 
 
+def default_chrome_executable() -> Path:
+    candidates = [
+        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise SetupError("CHROME_EXECUTABLE_MISSING")
+
+
 def _json_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -108,6 +120,8 @@ def configure(
     codex_home: Path | None = None,
     opencodex_home: Path | None = None,
     python_executable: Path | None = None,
+    browser_executable: Path | None = None,
+    browser_profile_dir: Path | None = None,
     live_apply: Callable[[dict[str, Any]], bool] = apply_live_provider,
 ) -> dict[str, Any]:
     root = project_root.expanduser().resolve(strict=True)
@@ -140,6 +154,10 @@ def configure(
         "request_root": str(root / ".codex-tmp" / "web-chatgpt-provider"),
         "log_root": str(codex_root / "logs" / "web-chatgpt-provider"),
         "keepalive_seconds": 15,
+        "reuse_browser": True,
+        "browser_profile_dir": str((browser_profile_dir or Path.home() / ".oracle" / "browser-profile").expanduser().resolve()),
+        "browser_executable": str((browser_executable or default_chrome_executable()).expanduser().resolve(strict=True)),
+        "browser_start_timeout_seconds": 20,
     }
     ocx_config = _json_object(ocx_config_path)
     backup_root = ocx_config_path.parent / "backups"

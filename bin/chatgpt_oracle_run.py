@@ -89,7 +89,12 @@ class OracleRunError(RuntimeError):
 
 
 def build_oracle_argv(config, layout, prompt: str) -> list[str]:
-    lifecycle_args = [] if "--browser-hide-window" in config.oracle_args else ["--browser-hide-window"]
+    browser_attach_endpoint = getattr(config, "browser_attach_endpoint", None)
+    lifecycle_args = (
+        ["--browser-attach-running", "--remote-chrome", browser_attach_endpoint]
+        if browser_attach_endpoint
+        else ([] if "--browser-hide-window" in config.oracle_args else ["--browser-hide-window"])
+    )
     # This is the browser observer's window, not a run termination deadline.
     # If it expires, the exact slug retains ownership and the harness continues
     # live recovery.  The default is aligned with the observed provider limit;
@@ -130,7 +135,7 @@ def build_oracle_argv(config, layout, prompt: str) -> list[str]:
         command[command.index("--slug"):command.index("--slug")] = [
             "--browser-attachments", "always", *attachment_args,
         ]
-    if config.copy_profile is not None:
+    if config.copy_profile is not None and not browser_attach_endpoint:
         command[command.index("--slug"):command.index("--slug")] = ["--copy-profile", str(config.copy_profile)]
     if not STATE.is_pro_transport(config.transport) and any(
         item == "--file" or item.startswith("--file=") or item == "-f" for item in command

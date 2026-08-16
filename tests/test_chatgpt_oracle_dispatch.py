@@ -83,6 +83,23 @@ def test_configured_app_name_is_forwarded_to_manifest_and_composer(tmp_path: Pat
     assert result["contract"]["composer_prompt"].startswith("@codex ")
 
 
+def test_regular_browser_attach_endpoint_is_forwarded(tmp_path: Path) -> None:
+    module = load()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    target = tmp_path / "attach.json"
+
+    module.compile_manifest(
+        mode="direct",
+        project_root=tmp_path,
+        mission_path=mission,
+        output_path=target,
+        browser_attach_endpoint="127.0.0.1:9222",
+    )
+
+    assert json.loads(target.read_text(encoding="utf-8"))["browser_attach_endpoint"] == "127.0.0.1:9222"
+
+
 def test_regular_medium_is_forwarded_as_the_visible_medium_tier(tmp_path: Path) -> None:
     module = load()
     mission = tmp_path / "mission.md"
