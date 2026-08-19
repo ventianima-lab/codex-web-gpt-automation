@@ -16,8 +16,8 @@ attachment transport for its explicit evidence boundary.
 `manual-no-launch` profile, not a new submission route. `answer` in
 `chatgpt-question-designer` is the prompt-design alias for dispatcher mode
 `direct`, not a separate dispatcher key. Regular routes
-select `gpt-5.6` and send only `@DevSpace` plus the absolute project mission
-path and a compact exact-workspace guard. The web GPT must use only the exact
+select `gpt-5.6` and send only the configured app mention (default `@codex`)
+plus the absolute project mission path and a compact exact-workspace guard. The web GPT must use only the exact
 project root recorded in that mission, read the mission and applicable
 `AGENTS.md` completely first, and may retry that same root once after a timeout.
 It must not substitute a parent, child, active workspace, or shell boundary
@@ -42,8 +42,9 @@ Require schema `codex.chatgpt.oracle-run/v1` with:
 - `project_root`: absolute existing directory.
 - `mission_path`: absolute UTF-8 regular file inside the project.
 - `app_name`: one-line app name, without a leading `@`, for regular routes.
-- `task_kind: pro`; qualified Pro uses `app_name: DevSpace`, while explicit
-  `pro-attachment` includes one or more exact `attachments`.
+- `task_kind: pro`; qualified Pro uses the same configured app name (default
+  `codex`), while explicit `pro-attachment` includes one or more exact
+  `attachments`.
 - `mode`: `browser`.
 - Optional `run_root`, `oracle_command`, `oracle_args`, `thinking_time`,
   hash-validated `copy_profile`, and mutex timeout.

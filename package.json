@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-automation",
-  "version": "1.14.7",
+  "version": "1.15.0",
   "private": false,
   "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
   "license": "MIT",
@@ -105,6 +105,8 @@
     "skills/chatgpt-pro-plan-handoff/schemas/",
     "skills/ultra-economy-mode/SKILL.md",
     "skills/ultra-economy-mode/agents/openai.yaml",
+    "skills/ultra-gpt-mode/SKILL.md",
+    "skills/ultra-gpt-mode/agents/openai.yaml",
     "scripts/run_goal_contract_tests.py",
     "scripts/run_v3_contract_tests.py",
     "scripts/run_v4_contract_tests.py",

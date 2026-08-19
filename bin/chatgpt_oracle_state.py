@@ -1155,10 +1155,24 @@ def _web_multi_child_provenance(
             parent = json.loads(parent_manifest.read_text(encoding="utf-8", errors="strict"))
             lanes = parent.get("solvers") if isinstance(parent.get("solvers"), list) else []
             lane = next((item for item in lanes if isinstance(item, dict) and str(item.get("id") or "") == str(value.get("lane_id") or "")), None)
-            if not isinstance(lane, dict) or parent.get("schema") != "codex.chatgpt.oracle-multi/v1":
+            parent_schema = parent.get("schema")
+            if not isinstance(lane, dict) or parent_schema not in {
+                "codex.chatgpt.oracle-multi/v1", "codex.chatgpt.oracle-multi/v2"
+            }:
                 return None
-            if Path(str(parent.get("project_root") or "")).resolve() != project_root or Path(str(lane.get("mission_path") or "")).resolve() != source_path:
-                return None
+            if parent_schema == "codex.chatgpt.oracle-multi/v1":
+                if Path(str(parent.get("project_root") or "")).resolve() != project_root or Path(str(lane.get("mission_path") or "")).resolve() != source_path:
+                    return None
+            else:
+                if (
+                    Path(str(lane.get("project_root") or "")).resolve() != project_root
+                    or Path(str(value.get("canonical_project_root") or "")).resolve()
+                    != Path(str(parent.get("project_root") or "")).resolve()
+                    or Path(str(value.get("source_mission_path") or "")).resolve()
+                    != Path(str(lane.get("mission_path") or "")).resolve()
+                    or Path(str(value.get("mission_path") or "")).resolve() != source_path
+                ):
+                    return None
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
     else:

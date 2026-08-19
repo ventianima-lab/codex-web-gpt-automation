@@ -21,7 +21,7 @@ def text(path: Path) -> str:
 def test_new_regular_modes_route_only_to_oracle_devspace() -> None:
     value = text(THINKING)
     assert "chatgpt_oracle_dispatch.py" in value
-    assert "@DevSpace" in value
+    assert "default `@codex`" in value
     assert "never attaches files" in value
     assert "create a new agbrowse run" in value
     assert "app picker" not in value.casefold()
@@ -91,6 +91,9 @@ def test_web_multi_is_genuine_sessions_with_wave_cap_and_worktrees() -> None:
     assert "waves of at most five" in value
     assert "worktree-write" in value
     assert "distinct pre-created worktree" in value
+    assert "worktree-write" in value
+    assert "all-lanes" in value
+    assert "ancestor/descendant overlap" in value
     assert "single-GPT role simulation" in value
 
 

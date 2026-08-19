@@ -669,6 +669,41 @@ def promote_terminal_harvest_candidate(
             "candidate_path": str(candidate), "artifact_sha256": actual_sha256, "result": updated}
 
 
+def web_multi_devspace_qualification_target(config: STATE.OracleConfig) -> Path:
+    """Return the canonical qualified root for a strict derived worktree child."""
+    if config.web_multi_child_provenance_path is None:
+        return config.project_root
+    try:
+        provenance = json.loads(config.web_multi_child_provenance_path.read_text(encoding="utf-8"))
+        parent_path = Path(str(provenance.get("parent_manifest_path") or "")).resolve(strict=True)
+        if STATE.sha256_file(parent_path) != str(provenance.get("parent_manifest_sha256") or ""):
+            raise ValueError("parent manifest hash mismatch")
+        parent = json.loads(parent_path.read_text(encoding="utf-8"))
+        lane_id = str(provenance.get("lane_id") or "")
+        lanes = parent.get("solvers") if isinstance(parent.get("solvers"), list) else []
+        lane = next((item for item in lanes if isinstance(item, dict) and str(item.get("id") or "") == lane_id), None)
+        canonical = Path(str(parent.get("project_root") or "")).resolve(strict=True)
+        output_dir = Path(str(parent.get("output_dir") or "")).resolve()
+        worktree_parent = (output_dir / "worktrees").resolve()
+        if (
+            parent.get("schema") != "codex.chatgpt.oracle-multi/v2"
+            or not isinstance(lane, dict)
+            or str(lane.get("access") or "") != "worktree-write"
+            or Path(str(lane.get("project_root") or "")).resolve(strict=True) != config.project_root
+            or Path(str(provenance.get("canonical_project_root") or "")).resolve(strict=True) != canonical
+        ):
+            raise ValueError("strict child binding mismatch")
+        config.project_root.relative_to(worktree_parent)
+        output_dir.relative_to(canonical)
+        return canonical
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise OracleRunError(
+            "WEB_MULTI_DERIVED_ROOT_INVALID",
+            "strict Web Multi worktree is not safely bound to its canonical qualified root",
+            {"project_root": str(config.project_root), "provenance_path": str(config.web_multi_child_provenance_path)},
+        ) from exc
+
+
 def execute_run(
     manifest_path: Path,
     *,
@@ -696,9 +731,11 @@ def execute_run(
     if dry_run:
         return dry_run_payload(config, layout, argv, prompt)
 
+    qualification_target = web_multi_devspace_qualification_target(config)
+
     if STATE.is_devspace_transport(config.transport):
         try:
-            devspace_qualification_factory(config.project_root)
+            devspace_qualification_factory(qualification_target)
         except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
             raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
 

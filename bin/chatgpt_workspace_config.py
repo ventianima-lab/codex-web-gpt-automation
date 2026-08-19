@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-DEFAULT_APP_NAME = "DevSpace"
+DEFAULT_APP_NAME = "codex"
 CONFIG_FILE = "chatgpt-workspace.json"
 
 

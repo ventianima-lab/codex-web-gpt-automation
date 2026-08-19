@@ -116,13 +116,15 @@ new exact folder. Do not inspect or automate ChatGPT app settings per task.
 | PC-local advice and counterexamples | Local Multi-GPT | Optional, Luna Max, read-only |
 | Plan through final gate | comprehensive mode | Staged web workflow |
 | Minimize local model cost | `ultra-economy` | Luna Max command + separate web stages |
+| Codex Ultra-style web delegation | `ultra-gpt` | Web plan/review + parallel isolated-worktree writers + merge/verification |
 | Explicitly requested Pro work | `pro` | GPT-5.6 Sol Pro + read/write DevSpace |
 
 Natural-language aliases use the same routes: `orchestrator` / orchestrator and
 `deep-research` / deep research. Regular web work defaults to the highest supported non-Pro reasoning tier. Pro is quota-limited, never auto-selected, and runs only after an explicit request. Qualified Pro uses Oracle + read/write DevSpace; explicit `pro-attachment` is reserved for immutable evidence that the approved workspace cannot read.
 
-See [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) for selection rules and
-[Ultra Economy Mode](docs/ULTRA_ECONOMY_MODE.md) for its strict contract.
+See [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) for selection rules,
+[Ultra Economy Mode](docs/ULTRA_ECONOMY_MODE.md), and
+[Ultra GPT Mode](docs/ULTRA_GPT_MODE.md) for their strict contracts.
 
 ## Run example
 
@@ -159,7 +161,7 @@ not a public issue.
 
 | Start | Operate | Advanced modes | Project |
 |---|---|---|---|
-| [First Install](docs/FIRST_INSTALL.md) | [DevSpace + Tailscale](docs/DEVSPACE_TAILSCALE_SETUP.md) | [Ultra Economy Mode](docs/ULTRA_ECONOMY_MODE.md) | [Architecture overview](docs/ARCHITECTURE.md) |
+| [First Install](docs/FIRST_INSTALL.md) | [DevSpace + Tailscale](docs/DEVSPACE_TAILSCALE_SETUP.md) | [Ultra Economy](docs/ULTRA_ECONOMY_MODE.md) · [Ultra GPT](docs/ULTRA_GPT_MODE.md) | [Architecture overview](docs/ARCHITECTURE.md) |
 | [Documentation index](docs/README.md) | [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) | [Local Multi-GPT](docs/LOCAL_MULTI_GPT.md) | [Changelog](docs/CHANGELOG.md) |
 | [Contributing](CONTRIBUTING.md) | [macOS Ultrawork](docs/MACOS_ULTRAWORK.md) | [Frozen legacy boundary](docs/FROZEN_LEGACY.md) | [Versioning](docs/VERSIONING.md) |
 

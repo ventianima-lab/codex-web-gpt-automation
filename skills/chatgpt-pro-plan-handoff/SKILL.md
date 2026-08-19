@@ -33,6 +33,15 @@ repeat that question later in the same task. Follow
 `skills/ultra-economy-mode/SKILL.md` for the local commander and Luna Max
 subagent contract.
 
+The optional `ultra-gpt` profile replaces every semantic native Codex
+subagent role with a separate regular web GPT session. Local Codex remains a
+deterministic controller only. The enforced path is plan, independent web
+review and partitioning, bounded parallel isolated-worktree Web Multi lanes plus
+merger, final web verification, and the local deterministic gate. Pro is not a
+stage inside this profile. When the user separately requests design advice,
+run at most one explicit Pro advisory before starting a fresh `ultra-gpt`
+workflow. Follow `skills/ultra-gpt-mode/SKILL.md` for the full contract.
+
 Comprehensive mode is a staged workflow, not a prompt variant. Its
 implementation stage carries the same orchestrator ownership contract used by
 the single-submission `orchestrator` mode in `chatgpt-thinking-browser`, so

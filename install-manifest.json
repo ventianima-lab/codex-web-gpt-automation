@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.14.7",
+  "version": "1.15.0",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -97,6 +97,8 @@
     "skills/chatgpt-pro-plan-handoff/schemas/*.json",
     "skills/ultra-economy-mode/SKILL.md",
     "skills/ultra-economy-mode/agents/openai.yaml",
+    "skills/ultra-gpt-mode/SKILL.md",
+    "skills/ultra-gpt-mode/agents/openai.yaml",
     "scripts/run_goal_contract_tests.py",
     "scripts/run_v3_contract_tests.py",
     "scripts/run_v4_contract_tests.py",
@@ -106,6 +108,7 @@
     "scripts/run_harness_canary.py",
     "docs/FIRST_INSTALL.md",
     "docs/ULTRA_ECONOMY_MODE.md",
+    "docs/ULTRA_GPT_MODE.md",
     "docs/templates/codex-agents/scout.toml",
     "docs/templates/codex-agents/implementer.toml",
     "docs/templates/codex-agents/verifier.toml",

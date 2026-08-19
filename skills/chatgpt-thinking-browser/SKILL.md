@@ -15,7 +15,7 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode <direct|p
 ```
 
 Remove `--dry-run` only for an explicitly authorized live web run. The runtime
-sends plain `@DevSpace` plus the absolute mission path. It never attaches files,
+sends the configured app mention (default `@codex`) plus the absolute mission path. It never attaches files,
 opens ChatGPT settings, inspects/selects/deletes an app, or falls back to
 agbrowse, Playwright, in-app Browser, or Chrome.
 

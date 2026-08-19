@@ -118,10 +118,12 @@ ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등�
 | PC 로컬 자문·반례 탐색 | Local Multi-GPT | 선택 설치, Luna Max, 읽기 전용 |
 | 계획부터 최종 gate까지 | comprehensive mode | 단계별 웹 워크플로 |
 | 로컬 비용 최소화 | `ultra-economy` | Luna Max 지휘 + 분리 웹 단계 |
+| Codex Ultra식 웹 분업 | `ultra-gpt` | 웹 planner/reviewer + 병렬 격리 worktree 구현 + merger/검증 |
 | 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 읽기·쓰기 DevSpace |
 
-자세한 선택 기준은 [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md), 초절약모드는
-[초절약모드 가이드](docs/ULTRA_ECONOMY_MODE.md)를 참고하세요.
+자세한 선택 기준은 [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md),
+[초절약모드](docs/ULTRA_ECONOMY_MODE.md),
+[울트라 GPT 모드](docs/ULTRA_GPT_MODE.md)를 참고하세요.
 
 ## 실행 예시
 
@@ -158,7 +160,7 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 
 | 시작 | 운영 | 고급 모드 | 프로젝트 |
 |---|---|---|---|
-| [최초 설치](docs/FIRST_INSTALL.md) | [DevSpace + Tailscale](docs/DEVSPACE_TAILSCALE_SETUP.md) | [초절약모드](docs/ULTRA_ECONOMY_MODE.md) | [아키텍처 개요](docs/ARCHITECTURE.md) |
+| [최초 설치](docs/FIRST_INSTALL.md) | [DevSpace + Tailscale](docs/DEVSPACE_TAILSCALE_SETUP.md) | [초절약모드](docs/ULTRA_ECONOMY_MODE.md) · [울트라 GPT](docs/ULTRA_GPT_MODE.md) | [아키텍처 개요](docs/ARCHITECTURE.md) |
 | [문서 인덱스](docs/README.md) | [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md) | [Local Multi-GPT](docs/LOCAL_MULTI_GPT.md) | [변경 기록](docs/CHANGELOG.md) |
 | [기여 가이드](CONTRIBUTING.md) | [macOS Ultrawork](docs/MACOS_ULTRAWORK.md) | [레거시 경계](docs/FROZEN_LEGACY.md) | [버전 정책](docs/VERSIONING.md) |
 

@@ -1,5 +1,25 @@
 # 기술 변경 기록
 
+## 1.15.0 - 울트라 GPT 모드
+
+- setup 문서와 실제 기본 runner app name의 불일치를 제거해 기본값을 수동
+  등록 권장 이름인 `codex`로 통일했습니다. 명시적 host override와 기존 custom
+  app name은 계속 지원합니다.
+- Codex Ultra/Multi-agent의 bounded role 분해를 독립 Oracle 웹 GPT 세션으로
+  치환하는 선택형 `ultra-gpt` comprehensive 프로필을 추가했습니다. 로컬
+  Codex는 native semantic subagent를 만들지 않고 exact root, mission/receipt
+  해시, session lifecycle, 결정론적 gate, Git/CI/Release만 관리합니다.
+- regular web planner와 별도 reviewer가 계획을 확정하고, reviewer가 2~5개의
+  병렬 `worktree-write` Web Multi 구현 lane으로 분할합니다. 동시 실행은 최대
+  3개이며 각 lane은 같은 Git HEAD의 별도 사전 생성 worktree에서 실행됩니다.
+  host는 project-relative `owned_paths`의 동일·상위·하위 겹침과 실제 범위 밖
+  변경, Git metadata 변경을 거부합니다. 모든 lane이 통과한 뒤에만 canonical
+  결과에 적용하고 merger와 별도 final verifier가 순차 검증합니다.
+- Pro는 프로필 내부에서 선택할 수 없습니다. 사용자가 별도로 명시 승인하고
+  설계 불확실성이 실제로 있을 때만 workflow 전 사전 자문 1회를 허용합니다.
+  initial stage, stage budget, Web Multi 전환, lane access와 concurrency를 모두
+  제출 전 실패 폐쇄합니다.
+
 ## 1.14.7 - Oracle stale observer exact recovery
 
 - CDP가 끊긴 원래 Oracle observer가 프로젝트 submission mutex를 계속 보유해도

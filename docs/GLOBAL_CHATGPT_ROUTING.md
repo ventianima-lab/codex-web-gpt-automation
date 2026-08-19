@@ -3,7 +3,7 @@
 The supported English names are `GPT`/`direct`, `plan`, `review`, `edit`,
 `orchestrator`, `deep research`/`deep-research`, `Web Multi-GPT`,
 `Local Multi-GPT`, `comprehensive mode`, `Ultra Economy Mode`/`ultra-economy`,
-and `Pro`. Korean names documented in the main README map to the same runners;
+`Ultra GPT Mode`/`ultra-gpt`, and `Pro`. Korean names documented in the main README map to the same runners;
 language never selects a different backend.
 
 Use this routing in the Codex global `AGENTS.md` after installing the package.
@@ -14,7 +14,7 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
 - Regular web work selects `gpt-5.6` with Oracle `extra-high`, the highest
   supported non-Pro reasoning tier. It does not silently fall back to a lower
   tier or upgrade to Pro.
-- The regular composer contains only `@DevSpace`, the exact UTF-8 project root,
+- The regular composer contains only the configured app mention (default `@codex`), the exact UTF-8 project root,
   and the absolute UTF-8 mission path. It tells DevSpace to open the exact root
   before reading the mission, never the mission directory, a parent, a child,
   or the active workspace as a substitute. It does not attach the task body and
@@ -60,6 +60,13 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   implementation, and web verification. Its first request in each Codex task
   always produces one Luna/Max selection instruction; after user confirmation,
   that task never re-inspects the runtime or asks again.
+- Ultra GPT Mode forbids cognitive native subagents. A deterministic local
+  controller runs the `ultra-gpt` comprehensive profile: regular web plan and
+  review, two to five parallel isolated-worktree Web Multi implementers with
+  host-validated disjoint project-relative ownership and concurrency at most
+  three, an all-lanes audit barrier, merger/integration, and a final web gate.
+  The profile cannot select Pro internally. One pre-workflow Pro design advisory
+  is allowed only after a separate explicit user authorization.
 
 ## Standalone Pro versus comprehensive
 

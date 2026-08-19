@@ -79,7 +79,7 @@ Append an adversarial module only for explicit review/counterexample roles: requ
 
 Context selection must match the question type.
 
-- New non-Pro direct, plan, review, edit, orchestrator, Deep Research, comprehensive, and Web Multi work uses Oracle plus the manually registered `DevSpace` workspace. The composer receives only `@DevSpace` and the absolute UTF-8 mission path. The mission tells GPT which project files, logs, tests, constraints, and artifacts to inspect through DevSpace.
+- New non-Pro direct, plan, review, edit, orchestrator, Deep Research, comprehensive, and Web Multi work uses Oracle plus the manually registered workspace app. The composer receives only the configured app mention (default `@codex`) and the absolute UTF-8 mission path. The mission tells GPT which project files, logs, tests, constraints, and artifacts to inspect through DevSpace.
 - Regular web work defaults to `gpt-5.6` at the highest supported non-Pro reasoning tier. Pro is quota-limited and may be designed only after an explicit user request; never infer or auto-upgrade to it. Qualified Pro uses Oracle, `GPT-5.6 Sol` at the Pro effort, and read/write DevSpace at the exact project root. Its action authority is mission-scoped and must name allowed files, commands, and external-state boundaries. `pro-attachment` uses exact snapshot attachments only for immutable/external or DevSpace-unreadable evidence; it is never an automatic fallback.
 - CodexPro is frozen for new work. It may appear only while recovering an already persisted legacy agbrowse run; never design a new prompt around CodexPro `tree/search/read`, app registration, app repair, or a CodexPro fallback.
 - Code/design/debug/refactor: give the regular web GPT a narrow project-contained mission and let it inspect the live workspace through DevSpace. Do not duplicate the workspace into attachments or a ZIP.
@@ -97,6 +97,7 @@ This skill designs the prompt packet; it must not erase local project question t
 - Preserve semantic continuity in project-contained mission and handoff files. In comprehensive mode, the completing web stage writes the next stage's exact mission and receipt; local Codex validates bytes, paths, hashes, identity, and transition without rewriting its meaning.
 - Recovery uses only the stored exact Oracle slug with `harvest` or `live`. It never restarts, resubmits, or changes the model/reasoning level.
 - Genuine Web Multi uses distinct Oracle sessions and copied profiles for independent lanes. Use it only when simultaneous independent solvers materially help; never simulate multiple roles inside one session and never replace it with local Codex exploration.
+- An explicit `울트라 GPT 모드` or `Ultra GPT Mode` request selects the `ultra-gpt` comprehensive profile. It uses web GPT sessions for planning, independent lanes, merging, review, implementation, and verification while local Codex performs only deterministic orchestration and the final local gate. Do not spawn native Codex subagents for semantic work in this profile.
 - Local `AGENTS.md`, local skills, and task-specific question templates outrank the shared integrity contract. Preserve their answer shape and apply only compatible evidence and session metadata.
 - Independent approval, plan review, verifier, and release gates use fresh stages with explicitly scoped evidence.
 

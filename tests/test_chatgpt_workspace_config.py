@@ -21,7 +21,7 @@ def test_workspace_app_name_defaults_and_supports_host_config(tmp_path: Path, mo
     module = load()
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     monkeypatch.delenv("CODEX_CHATGPT_APP_NAME", raising=False)
-    assert module.configured_app_name() == "DevSpace"
+    assert module.configured_app_name() == "codex"
 
     (tmp_path / "chatgpt-workspace.json").write_text(
         json.dumps({"app_name": "codex"}), encoding="utf-8"

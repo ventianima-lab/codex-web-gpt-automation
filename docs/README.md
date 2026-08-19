@@ -26,6 +26,7 @@ route, then open a specialized guide only when that mode applies.
 | [macOS Ultrawork](MACOS_ULTRAWORK.md) | 한국어 | macOS lifecycle, launchd, long-run handoff |
 | [Local Multi-GPT](LOCAL_MULTI_GPT.md) | English | Optional local parallel-advisory component |
 | [Ultra Economy Mode](ULTRA_ECONOMY_MODE.md) | 한국어 | Luna Max local command with separate web stages |
+| [Ultra GPT Mode](ULTRA_GPT_MODE.md) | 한국어 | Codex Ultra-style web GPT delegation with deterministic local control |
 
 ## Understand the project
 

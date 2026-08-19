@@ -70,6 +70,13 @@ terminate a run, release its lock, mark it failed, or authorize a replacement.
 - Local Multi-GPT is an optional read-only PC-local advisory tool.
 - Ultra Economy Mode constrains local command to Luna Max and separates Pro
   design, web implementation, and web verification.
+- Ultra GPT Mode replaces cognitive native subagents with bounded Oracle web
+  sessions: a regular planner, reviewer/partitioner, parallel worktree-write
+  Web Multi implementers, an all-lanes audit barrier, merger, and independent
+  final verifier. Each writer receives a distinct pre-created Git worktree;
+  host-validated disjoint project-relative ownership and actual-delta auditing
+  prevent concurrent overlap before the combined result reaches canonical.
+  Local Codex retains deterministic control and release duties.
 
 ## Installation lifecycle
 

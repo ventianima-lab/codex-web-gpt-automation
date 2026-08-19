@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ultra GPT Mode"
+  short_description: "Codex Ultra-style delegation with web GPT workers"
+  default_prompt: "Use $ultra-gpt-mode to complete this task with separate web GPT agents and deterministic local control."

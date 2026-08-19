@@ -30,6 +30,7 @@ STATE_SCHEMA = "codex.chatgpt.oracle-comprehensive-state/v1"
 SCOPE_SCHEMA = "codex.chatgpt.oracle-comprehensive-scope/v1"
 STANDARD_PROFILE = "standard"
 ULTRA_ECONOMY_PROFILE = "ultra-economy"
+ULTRA_GPT_PROFILE = "ultra-gpt"
 MAX_PLAN_REVISIONS = 2
 REVIEW_STATUSES = {"PASS", "PASS_WITH_NOTES", "REVISE", "FAIL"}
 UNAMBIGUOUS_PRE_SUBMIT_MARKERS = (
@@ -126,8 +127,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not 1 <= maximum <= 12:
         raise WorkflowError("max_stages must be within 1..12")
     workflow_profile = str(value.get("workflow_profile") or STANDARD_PROFILE).strip().casefold()
-    if workflow_profile not in {STANDARD_PROFILE, ULTRA_ECONOMY_PROFILE}:
-        raise WorkflowError("workflow_profile must be standard or ultra-economy")
+    if workflow_profile not in {STANDARD_PROFILE, ULTRA_ECONOMY_PROFILE, ULTRA_GPT_PROFILE}:
+        raise WorkflowError("workflow_profile must be standard, ultra-economy, or ultra-gpt")
     allow_pro_raw = value.get("allow_pro", False)
     if not isinstance(allow_pro_raw, bool):
         raise WorkflowError("allow_pro must be a boolean explicit opt-in")
@@ -145,6 +146,18 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise WorkflowError("ULTRA_ECONOMY_INITIAL_STAGE_REQUIRED: initial_stage must be pro")
         if maximum < 4:
             raise WorkflowError("ULTRA_ECONOMY_STAGE_BUDGET_TOO_SMALL: max_stages must be at least 4")
+    elif workflow_profile == ULTRA_GPT_PROFILE:
+        if allow_pro:
+            raise WorkflowError(
+                "ULTRA_GPT_PRO_IS_SEPARATE: use at most one explicitly authorized Pro design advisory before "
+                "the ultra-gpt workflow; the workflow itself remains regular non-Pro"
+            )
+        if initial_stage != "plan":
+            raise WorkflowError("ULTRA_GPT_INITIAL_STAGE_REQUIRED: initial_stage must be plan")
+        if maximum < 5:
+            raise WorkflowError("ULTRA_GPT_STAGE_BUDGET_TOO_SMALL: max_stages must be at least 5")
+        if str(value.get("model") or "gpt-5.6").strip() != "gpt-5.6":
+            raise WorkflowError("ULTRA_GPT_REGULAR_MODEL_REQUIRED: model must be gpt-5.6")
     else:
         if initial_stage != "plan":
             raise WorkflowError("standard workflow initial_stage must be plan")
@@ -174,6 +187,9 @@ def load_manifest(path: Path) -> dict[str, Any]:
         "initial_stage": initial_stage,
         "app_name": app_name,
         "model": str(value.get("model") or "gpt-5.6"),
+        "copy_profile": Path(
+            str(value.get("copy_profile") or (Path.home() / ".oracle" / "browser-profile"))
+        ).expanduser().resolve(),
         "local_gate_command": list(local_gate),
         "manifest_sha256": sha(path.resolve(strict=True)),
         "workflow_id": workflow_id,
@@ -261,6 +277,40 @@ def _review_policy_from_history(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_ultra_gpt_multi(config: dict[str, Any], multi_config: dict[str, Any]) -> None:
+    if config.get("workflow_profile") != ULTRA_GPT_PROFILE:
+        return
+    if not 2 <= len(multi_config["solvers"]) <= 5:
+        raise WorkflowError("ULTRA_GPT_SOLVER_COUNT_INVALID: web-multi requires 2..5 lanes")
+    if multi_config["max_concurrency"] > 3:
+        raise WorkflowError("ULTRA_GPT_CONCURRENCY_EXCEEDED: max_concurrency must be at most 3")
+    if not multi_config.get("strict"):
+        raise WorkflowError("ULTRA_GPT_STRICT_MULTI_V2_REQUIRED")
+    if multi_config["project_root"] != config["project_root"]:
+        raise WorkflowError("ULTRA_GPT_CANONICAL_ROOT_MISMATCH")
+    if multi_config["app_name"] != config["app_name"] or multi_config["model"] != config["model"]:
+        raise WorkflowError("ULTRA_GPT_PROVIDER_BINDING_MISMATCH")
+    if multi_config["copy_profile"] != config["copy_profile"]:
+        raise WorkflowError("ULTRA_GPT_PROFILE_BINDING_MISMATCH")
+    if multi_config.get("next_stage_result_path") is None:
+        raise WorkflowError("ULTRA_GPT_RESULT_RECEIPT_REQUIRED")
+    if any(lane["access"] != "worktree-write" or not lane.get("owned_paths") for lane in multi_config["solvers"]):
+        raise WorkflowError(
+            "ULTRA_GPT_PARALLEL_WRITERS_REQUIRED: every solver must use an isolated worktree with owned_paths"
+        )
+
+
+def _allowed_transitions(config: dict[str, Any], stage: str) -> set[str]:
+    if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+        return {
+            "plan": {"review"},
+            "review": {"web-multi"},
+            "web-multi": {"final-web-gate"},
+            "final-web-gate": {"complete"},
+        }.get(stage, set())
+    return TRANSITIONS[stage]
+
+
 def _scope_path(config: dict[str, Any]) -> Path:
     project_key = hashlib.sha256(str(config["project_root"]).casefold().encode("utf-8")).hexdigest()[:24]
     scope_material = f"{config['project_root']}|{config['workflow_dir'].parent}".casefold()
@@ -346,7 +396,11 @@ def _stage_mission(
         pro_selection_instruction = (
             "A next_stage=pro transition is permitted when it is genuinely useful.\n"
             if config["allow_pro"]
-            else "Do not emit next_stage=pro; continue with review or an authorized web-multi stage.\n"
+            else (
+                "Do not emit next_stage=pro; continue with review.\n"
+                if config.get("workflow_profile") == ULTRA_GPT_PROFILE
+                else "Do not emit next_stage=pro; continue with review or an authorized web-multi stage.\n"
+            )
         )
         protocol += (
             "\n[PRO_SELECTION_POLICY]\n"
@@ -368,17 +422,33 @@ def _stage_mission(
             "Canonical plan receipt status is PLAN_READY. The legacy status completed is accepted only when the "
             "receipt is otherwise a complete, hash-valid, blocker-free ready transition to review, web-multi, or pro.\n"
         )
+        if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+            protocol += (
+                "\n[ULTRA_GPT_WEB_AGENT_CONTRACT]\n"
+                "This workflow replaces every cognitive native Codex subagent with a separate web GPT session. "
+                "The local commander is a deterministic controller only and must not receive semantic residual work. "
+                "Author the separate adversarial review mission and return next_stage=review. The reviewer will repair "
+                "the plan and partition implementation into disjoint path ownership for parallel web writers. Do not "
+                "select Pro inside this workflow.\n"
+            )
     if stage == "review":
         config.setdefault("_review_policy", _review_policy_from_history(config))
         policy = config["_review_policy"]
+        review_handoff = (
+            "Then author the complete bound Oracle Multi implementation manifest and return PASS or "
+            "PASS_WITH_NOTES with next_stage=web-multi. Notes must travel inside the lane and merger missions. "
+            if config.get("workflow_profile") == ULTRA_GPT_PROFILE
+            else "Then write a complete implementation mission and return PASS or PASS_WITH_NOTES with "
+            "next_stage=implementation. Notes are non-blocking and must travel inside that implementation mission. "
+        )
         protocol += (
             "\n[REVIEW_ADJUDICATION_CONTRACT]\n"
             "For new work, use PASS, PASS_WITH_NOTES, or FAIL. REVISE is legacy compatibility only and must not be "
             "emitted. You are the plan repair and finalization owner, not only a critic. Inspect the proposed plan, "
             "directly repair every defect that can be resolved from the mission, DevSpace workspace, project rules, "
-            "or available evidence, and write the corrected final plan as your output. Then write a complete "
-            "implementation mission and return PASS or PASS_WITH_NOTES with next_stage=implementation. Notes are "
-            "non-blocking and must travel inside that implementation mission. Do not request a new planning stage "
+            "or available evidence, and write the corrected final plan as your output. "
+            f"{review_handoff}"
+            "Do not request a new planning stage "
             "for wording, structure, omitted checks, weak sequencing, locally discoverable facts, or any other defect "
             "you can repair yourself. FAIL is allowed only when unavailable external input or authority, an unresolved "
             "safety boundary, or genuine execution impossibility prevents a safe corrected plan; include the concrete "
@@ -395,6 +465,24 @@ def _stage_mission(
             f"baseline_critical_finding_ids={json.dumps(policy['baseline_critical_finding_ids'], ensure_ascii=False, separators=(',', ':'))}\n"
             f"baseline_critical_findings_sha256={policy['baseline_critical_findings_sha256'] or ''}\n"
         )
+        if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+            protocol += (
+                "\n[ULTRA_GPT_PARALLEL_IMPLEMENTATION_CONTRACT]\n"
+                "After repairing and finalizing the plan, author a bound Oracle Multi manifest and return "
+                "next_stage=web-multi. Define two to five parallel implementation lanes with max_concurrency no "
+                "greater than three. Use schema codex.chatgpt.oracle-multi/v2. Every lane must use "
+                "access=worktree-write at a distinct pre-created, exact-root-qualified Git worktree and list "
+                "nonempty project-relative owned_paths. Ownership must be pairwise disjoint, including "
+                "ancestor/descendant overlap. Set all_lanes_required=true and partial_merge_allowed=false. "
+                "Place every worktree below <output_dir>/worktrees and create it detached at the canonical current "
+                "HEAD before writing the manifest. The runner qualifies the canonical project root and accepts only "
+                "this hash-bound derived-worktree relation; it does not register dynamic roots or change DevSpace. "
+                "Lanes may write only their owned paths and must not mutate Git state. The host audits and applies every "
+                "successful lane only after an all-lanes barrier. The merger inspects the combined result, resolves "
+                "only integration defects within "
+                "its mission authority, writes the bound final verification mission, and returns next_stage="
+                "final-web-gate.\n"
+            )
     target.write_text(body.rstrip() + protocol, encoding="utf-8")
     return target, receipt, input_sha
 
@@ -806,6 +894,15 @@ def _validate_receipt(
         raise WorkflowError("stage receipt identity mismatch")
     raw_status = str(value.get("status") or "")
     next_stage = str(value.get("next_stage") or "")
+    if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+        required_next = {
+            "plan": "review", "review": "web-multi", "web-multi": "final-web-gate",
+            "final-web-gate": "complete",
+        }.get(stage)
+        if required_next and next_stage != required_next:
+            raise WorkflowError(
+                f"ULTRA_GPT_STAGE_ORDER_REQUIRED: {stage} must proceed to {required_next}"
+            )
     if stage == "plan" and next_stage == "pro" and not config["allow_pro"]:
         raise WorkflowError("PRO_EXPLICIT_OPT_IN_REQUIRED: set allow_pro=true only after an explicit Pro request")
     completed_plan_compat = (
@@ -819,8 +916,11 @@ def _validate_receipt(
     if stage == "review":
         if status not in REVIEW_STATUSES:
             raise WorkflowError("review status must be PASS, PASS_WITH_NOTES, REVISE, or FAIL")
-        if status in {"PASS", "PASS_WITH_NOTES"} and next_stage != "implementation":
-            raise WorkflowError("passing review must proceed to implementation")
+        required_review_next = (
+            "web-multi" if config.get("workflow_profile") == ULTRA_GPT_PROFILE else "implementation"
+        )
+        if status in {"PASS", "PASS_WITH_NOTES"} and next_stage != required_review_next:
+            raise WorkflowError(f"passing review must proceed to {required_review_next}")
         if status == "REVISE" and next_stage != "plan":
             raise WorkflowError("REVISE review must return to plan")
         if status == "FAIL":
@@ -899,7 +999,7 @@ def _validate_receipt(
                     "defects and must return PASS_WITH_NOTES, while a concrete external blocker must return FAIL"
                 ),
             }
-    if next_stage not in TRANSITIONS[stage]:
+    if next_stage not in _allowed_transitions(config, stage):
         raise WorkflowError(f"invalid transition {stage}->{next_stage}")
     if next_stage == "complete":
         return {
@@ -1180,10 +1280,13 @@ def _recover_exact_multi_stage(stored: dict[str, Any]) -> dict[str, Any]:
         result = _json(result_path.resolve(strict=True))
     except Exception as exc:
         return {"ok": False, "error": "MULTI_RESULT_UNAVAILABLE", "detail": str(exc)}
-    if result.get("schema") != MULTI.RESULT_SCHEMA or not str(result.get("parent_id") or ""):
+    schema = result.get("schema")
+    if schema not in {MULTI.RESULT_SCHEMA, MULTI.STRICT_RESULT_SCHEMA} or not str(result.get("parent_id") or ""):
         return {"ok": False, "error": "MULTI_RESULT_IDENTITY_INVALID"}
+    if schema == MULTI.STRICT_RESULT_SCHEMA and result.get("manifest_sha256") != expected_manifest_sha:
+        return {"ok": False, "error": "MULTI_RESULT_MANIFEST_MISMATCH"}
     return {
-        "ok": result.get("status") in {"complete", "partial"},
+        "ok": result.get("status") == "complete" if schema == MULTI.STRICT_RESULT_SCHEMA else result.get("status") in {"complete", "partial"},
         "parent_id": str(result["parent_id"]),
         "next_stage_result_path": result.get("next_stage_result_path"),
         "status": result.get("status"),
@@ -1467,6 +1570,7 @@ def _run_workflow_locked(
             # state write.  An invalid Multi manifest is a retryable pre-submit
             # error, not an active/uncertain provider workflow.
             multi_config = MULTI.load_manifest(source)
+            _validate_ultra_gpt_multi(config, multi_config)
             multi_source = _json(source)
             binding = multi_source.get("next_stage_binding") if isinstance(multi_source.get("next_stage_binding"), dict) else {}
             if binding.get("workflow_id") != workflow_id or binding.get("stage") != "web-multi":
