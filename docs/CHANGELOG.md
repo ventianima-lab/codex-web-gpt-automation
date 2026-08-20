@@ -1,5 +1,17 @@
 # 기술 변경 기록
 
+## 1.15.1 - 모델 선택 전 미제출 정산 결속
+
+- Oracle 0.17.1이 ChatGPT 홈에서 모델 선택 버튼을 찾지 못해 prompt 전송 전에
+  종료된 qualified Pro run을 사용자 확인 정산 후보로 추가했습니다. 정확한
+  selector 오류만으로는 해제하지 않으며 exact slug, 버전, copied profile,
+  `execute-browser` stage, `promptSubmitted=false`, 홈 URL, output·대화 URL 부재,
+  recovery-binding 불가 증거와 모든 관련 SHA-256이 함께 일치해야 합니다.
+- prompt 제출, 대화 URL, output, 다른 오류·stage, 누락되거나 변경된 Oracle
+  session ledger 중 하나라도 있으면 기존 잠금이 유지됩니다. 정산 receipt가
+  만들어진 뒤 meta가 바뀌어도 재검증이 실패해 해당 run이 다시 unresolved로
+  취급됩니다.
+
 ## 1.15.0 - 울트라 GPT 모드
 
 - setup 문서와 실제 기본 runner app name의 불일치를 제거해 기본값을 수동

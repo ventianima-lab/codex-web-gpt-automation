@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-automation",
-  "version": "1.15.0",
+  "version": "1.15.1",
   "private": false,
   "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
   "license": "MIT",

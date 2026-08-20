@@ -109,6 +109,11 @@ ORACLE_CDP_DISCONNECT_PRE_SUBMIT_ERROR = (
     "Chrome DevTools client disconnected before oracle finished; "
     "the browser target appears still alive."
 )
+ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR = (
+    "Unable to locate the ChatGPT model selector button. If the desired model is already "
+    "selected in the browser, retry with --browser-model-strategy current; otherwise retry "
+    "with --browser-model-strategy ignore to skip model selection."
+)
 ORACLE_STANDALONE_PRO_NO_SUBMISSION_VERSIONS = {"0.17.1"}
 USER_CONFIRMED_NO_SUBMISSION = "user-confirmed-no-submission"
 USER_CONFIRMED_EXECUTION_ENDED = "user-confirmed-task-ended"
@@ -1568,7 +1573,13 @@ def _standalone_pro_attachment_no_submission_evidence(
 
 
 def _standalone_pro_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
-    """Return bounded evidence for user adjudication of one qualified Pro run."""
+    """Return bounded evidence for user adjudication of one qualified Pro run.
+
+    Prompt-observation timeouts remain eligible through their exact transcript.
+    A model-selector-button failure additionally requires Oracle 0.17.1's exact
+    session ledger to prove the browser never left the ChatGPT home composer and
+    ``promptSubmitted`` stayed false.
+    """
     state = load_state(state_path)
     run_dir = state_path.parent
     run_id = str(state.get("run_id") or "")
@@ -1622,23 +1633,144 @@ def _standalone_pro_no_submission_evidence(state_path: Path) -> dict[str, Any] |
         stdout_text = stdout_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         return None
-    marker_lines = {
+    prompt_marker_lines = {
         line.strip()
         for line in stdout_text.splitlines()
         if ORACLE_PROMPT_NOT_OBSERVED_MARKER in line
     }
-    allowed_marker_lines = {
+    allowed_prompt_marker_lines = {
         f"ERROR: {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
         f"User error (browser-automation): {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
     }
+    selector_marker_lines = {
+        line.strip()
+        for line in stdout_text.splitlines()
+        if ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR in line
+    }
+    allowed_selector_marker_lines = {
+        f"ERROR: {ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR}",
+        f"User error (browser-automation): {ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR}",
+    }
+    prompt_marker_valid = (
+        bool(prompt_marker_lines)
+        and prompt_marker_lines.issubset(allowed_prompt_marker_lines)
+        and stdout_text.count(ORACLE_PROMPT_NOT_OBSERVED_MARKER) == len(prompt_marker_lines)
+    )
+    selector_marker_valid = (
+        selector_marker_lines == allowed_selector_marker_lines
+        and stdout_text.count(ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR) == 2
+    )
     if (
-        not marker_lines
-        or not marker_lines.issubset(allowed_marker_lines)
-        or stdout_text.count(ORACLE_PROMPT_NOT_OBSERVED_MARKER) != len(marker_lines)
+        prompt_marker_valid == selector_marker_valid
         or f"Session: {locator}" not in stdout_text
         or CHATGPT_CONVERSATION_URL_RE.search(stdout_text)
     ):
         return None
+    selector_meta_evidence: dict[str, Any] = {}
+    if selector_marker_valid:
+        lines = stdout_text.splitlines()
+        expected_tail = [
+            f"ERROR: {ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR}",
+            f"User error (browser-automation): {ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR}",
+        ]
+        if (
+            len(lines) != 13
+            or re.fullmatch(r".{1,4} oracle 0\.17\.1 .{2,120}", lines[0]) is None
+            or lines[1] != f"Session: {locator}"
+            or lines[2:6] != [
+                "Mode: browser foreground",
+                "Models: 1",
+                "Detach: no",
+                f"Reattach: oracle session {locator}",
+            ]
+            or not re.fullmatch(
+                r"Launching browser mode \(target=GPT-5\.6 Sol; requested=gpt-5\.6-sol\) "
+                r"with ~[1-9][0-9]* tokens\.",
+                lines[6],
+            )
+            or lines[7:11] != [
+                "This run can take up to an hour (usually ~10 minutes).",
+                "[browser] Browser control: launch Chrome in hidden-window mode; may focus/control the browser UI.",
+                "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen while keeping the page rendered.",
+                "[browser] Browser guidance: For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
+            ]
+            or lines[-2:] != expected_tail
+        ):
+            return None
+        session_root = Path(
+            os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+        ).resolve()
+        meta_path = session_root / locator / "meta.json"
+        if meta_path.is_symlink():
+            return None
+        try:
+            meta_bytes = meta_path.read_bytes()
+            meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+        config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+        runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+        error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+        details = error.get("details") if isinstance(error.get("details"), dict) else {}
+        details_runtime = (
+            details.get("runtime") if isinstance(details.get("runtime"), dict) else {}
+        )
+        options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+        option_browser = (
+            options.get("browserConfig")
+            if isinstance(options.get("browserConfig"), dict)
+            else {}
+        )
+        try:
+            meta_cwd = Path(str(meta.get("cwd") or "")).resolve()
+            meta_output = Path(str(options.get("writeOutputPath") or "")).resolve()
+            state_profile = Path(str(profile.get("copy_profile") or "")).resolve()
+            config_profile = Path(str(config.get("copyProfileSource") or "")).resolve()
+            option_profile = Path(str(option_browser.get("copyProfileSource") or "")).resolve()
+        except OSError:
+            return None
+        if not str(profile.get("copy_profile") or "").strip() or not state_profile.is_absolute():
+            return None
+        if (
+            meta.get("id") != locator
+            or meta.get("status") != "error"
+            or meta.get("model") != "gpt-5.6-sol"
+            or meta.get("mode") != "browser"
+            or not str(meta.get("completedAt") or "").strip()
+            or meta_cwd != Path(str(state.get("project_root") or "")).resolve()
+            or meta_output != output.resolve()
+            or config_profile != state_profile
+            or option_profile != state_profile
+            or config.get("desiredModel") != "GPT-5.6 Sol"
+            or config.get("modelStrategy") != "select"
+            or config.get("thinkingTime") != "heavy"
+            or options.get("model") != "gpt-5.6-sol"
+            or options.get("slug") != locator
+            or option_browser.get("modelStrategy") != "select"
+            or option_browser.get("desiredModel") != "GPT-5.6 Sol"
+            or option_browser.get("thinkingTime") != "heavy"
+            or runtime.get("promptSubmitted") is not False
+            or runtime.get("tabUrl") != "https://chatgpt.com/"
+            or details_runtime.get("promptSubmitted") not in {None, False}
+            or error.get("category") != "browser-automation"
+            or error.get("message") != ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR
+            or details.get("stage") != "execute-browser"
+            or str(meta.get("errorMessage") or "")
+            != ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR
+            or CHATGPT_CONVERSATION_URL_RE.search(
+                meta_bytes.decode("utf-8", errors="strict")
+            )
+        ):
+            return None
+        selector_meta_evidence = {
+            "pre_submit_marker": "oracle-model-selector-button-missing/v1",
+            "oracle_meta_path": str(meta_path),
+            "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+            "oracle_meta_stage": "execute-browser",
+            "prompt_submitted": False,
+            "tab_url": "https://chatgpt.com/",
+        }
     mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
     source_path = Path(str(mission.get("path") or ""))
     transport_path = Path(str(mission.get("transport_path") or ""))
@@ -1713,6 +1845,7 @@ def _standalone_pro_no_submission_evidence(state_path: Path) -> dict[str, Any] |
         "recovery_evidence": recovery_records,
         "output_absent": True,
         "conversation_url_absent": True,
+        **selector_meta_evidence,
         "_source_mission_path": str(source_path),
         "_transport_mission_path": str(transport_path),
     }
@@ -2029,6 +2162,11 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             "source_mission_sha256", "transport_mission_path", "transport_mission_sha256",
             "oracle_version",
         )
+        if current.get("pre_submit_marker") == "oracle-model-selector-button-missing/v1":
+            required += (
+                "pre_submit_marker", "oracle_meta_path", "oracle_meta_sha256",
+                "oracle_meta_stage", "prompt_submitted", "tab_url",
+            )
     elif current.get("settlement_eligibility") == "oracle-direct-devspace/v1":
         required = (
             "settlement_eligibility", "transport", "profile", "source_mission_path",
@@ -2093,7 +2231,7 @@ def settle_user_confirmed_no_submission(
     if evidence is None:
         raise OracleStateError(
             "NO_SUBMISSION_EVIDENCE_INCOMPLETE",
-            "run lacks the exact prompt-timeout and recovery-binding evidence required for user adjudication",
+            "run lacks the exact pre-submit UI and recovery-binding evidence required for user adjudication",
         )
     recorded = {
         "schema": "codex.chatgpt.oracle-user-confirmed-no-submission/v1",
@@ -2113,7 +2251,12 @@ def settle_user_confirmed_no_submission(
         "artifact_sha256": None,
         "transport_status": "not_submitted_user_confirmed",
         "task_outcome": "pending",
-        "task_outcome_reason": "user-confirmed-no-submission-after-prompt-timeout",
+        "task_outcome_reason": (
+            "user-confirmed-no-submission-after-model-selector-failure"
+            if evidence.get("pre_submit_marker")
+            == "oracle-model-selector-button-missing/v1"
+            else "user-confirmed-no-submission-after-prompt-timeout"
+        ),
         "user_confirmed_no_submission": {
             "schema": "codex.chatgpt.oracle-settlement-reference/v1",
             "path": str(settlement_path),

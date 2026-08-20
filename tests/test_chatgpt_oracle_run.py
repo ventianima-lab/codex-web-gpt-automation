@@ -306,6 +306,104 @@ def cdp_disconnect_pre_submit_popen(session_root: Path, *, variation: str | None
     return popen
 
 
+def model_selector_button_pre_submit_popen(
+    session_root: Path,
+    *,
+    variation: str | None = None,
+):
+    def popen(command, **kwargs):
+        slug = command[command.index("--slug") + 1]
+        output_path = Path(command[command.index("--write-output") + 1]).resolve()
+        expected_profile = (Path.home() / ".oracle" / "browser-profile").resolve()
+        error_message = (
+            "Unable to locate the ChatGPT model selector button. If the desired model is "
+            "already selected in the browser, retry with --browser-model-strategy current; "
+            "otherwise retry with --browser-model-strategy ignore to skip model selection."
+        )
+        emitted_error = (
+            "Unable to locate a different browser control."
+            if variation == "different-error"
+            else error_message
+        )
+        lines = [
+            "? oracle 0.17.1 deterministic fixture",
+            f"Session: {slug}",
+            "Mode: browser foreground",
+            "Models: 1",
+            "Detach: no",
+            f"Reattach: oracle session {slug}",
+            "Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6-sol) with ~200 tokens.",
+            "This run can take up to an hour (usually ~10 minutes).",
+            "[browser] Browser control: launch Chrome in hidden-window mode; may focus/control the browser UI.",
+            "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen while keeping the page rendered.",
+            "[browser] Browser guidance: For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
+            f"ERROR: {emitted_error}",
+            f"User error (browser-automation): {emitted_error}",
+        ]
+        kwargs["stdout"].write(("\n".join(lines) + "\n").encode("utf-8"))
+        kwargs["stdout"].flush()
+        tab_url = (
+            "https://chatgpt.com/c/existing-conversation"
+            if variation == "conversation-url"
+            else "https://chatgpt.com/"
+        )
+        prompt_submitted = variation == "prompt-submitted"
+        meta = {
+            "id": slug,
+            "createdAt": "2026-08-20T00:09:39.348Z",
+            "startedAt": "2026-08-20T00:09:39.393Z",
+            "completedAt": "2026-08-20T00:10:07.368Z",
+            "status": "error",
+            "model": "gpt-5.6-sol",
+            "cwd": str(Path(kwargs["cwd"]).resolve()),
+            "mode": "browser",
+            "browser": {
+                "config": {
+                    "copyProfileSource": str(expected_profile),
+                    "desiredModel": "GPT-5.6 Sol",
+                    "modelStrategy": "select",
+                    "thinkingTime": "heavy",
+                },
+                "runtime": {
+                    "chromePid": 16424,
+                    "chromePort": 9222,
+                    "chromeHost": "127.0.0.1",
+                    "tabUrl": tab_url,
+                    "promptSubmitted": prompt_submitted,
+                    "controllerPid": 27784,
+                },
+            },
+            "options": {
+                "model": "gpt-5.6-sol",
+                "slug": slug,
+                "writeOutputPath": str(output_path),
+                "browserConfig": {
+                    "copyProfileSource": str(expected_profile),
+                    "desiredModel": "GPT-5.6 Sol",
+                    "modelStrategy": "select",
+                    "thinkingTime": "heavy",
+                },
+            },
+            "errorMessage": error_message,
+            "error": {
+                "category": "browser-automation",
+                "message": error_message,
+                "details": {
+                    "stage": "different-stage" if variation == "different-stage" else "execute-browser",
+                },
+            },
+        }
+        if variation != "missing-meta":
+            meta_path = session_root / slug / "meta.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        if variation == "output-present":
+            output_path.write_text("contradictory output", encoding="utf-8")
+        return Process(1, [])
+
+    return popen
+
+
 def isolated_default_oracle_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1541,6 +1639,124 @@ def test_model_switcher_failure_with_a_conversation_url_does_not_release_lock(tm
     legacy.pop("pre_submit_failure", None)
     runner.STATE.write_json_atomic(state_path, legacy)
     assert runner.STATE.settle_proven_pre_submit_failure(state_path) is None
+    assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
+
+
+def test_user_confirmed_model_selector_button_failure_is_hash_bound_and_releases_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    isolated_default_oracle_profile(tmp_path, monkeypatch)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="7" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=model_selector_button_pre_submit_popen(session_root),
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    state = runner.STATE.load_state(state_path)
+    slug = state["oracle"]["slug"]
+    (run_dir / "recovery-live-stdout.log").write_text(
+        f'No live ChatGPT tab matched session "{slug}". Attempting recovery by reopening the saved conversation URL.\n',
+        encoding="utf-8",
+    )
+    (run_dir / "recovery-live-stderr.log").write_text(
+        "Cannot recover conversation: session metadata has no recoverable ChatGPT conversation URL.\n",
+        encoding="utf-8",
+    )
+
+    assert initial["result"]["status"] == "attention_required"
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user confirmed the exact selector failure created no prompt or conversation",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+    receipt = json.loads(
+        (run_dir / "user-confirmed-no-submission.json").read_text(encoding="utf-8")
+    )
+
+    assert settled["ok"] is True
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["result"]["session_authority"] == "pre_submit"
+    assert settled["result"]["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-model-selector-failure"
+    )
+    assert proof is not None
+    assert proof["pre_submit_marker"] == "oracle-model-selector-button-missing/v1"
+    assert proof["prompt_submitted"] is False
+    assert proof["tab_url"] == "https://chatgpt.com/"
+    assert receipt["oracle_meta_sha256"] == hashlib.sha256(
+        (session_root / slug / "meta.json").read_bytes()
+    ).hexdigest()
+    assert runner.STATE.unresolved_project_sessions(run_dir.parent, tmp_path) == []
+
+    meta_path = session_root / slug / "meta.json"
+    tampered = json.loads(meta_path.read_text(encoding="utf-8"))
+    tampered["browser"]["runtime"]["promptSubmitted"] = True
+    meta_path.write_text(json.dumps(tampered), encoding="utf-8")
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+    assert [
+        owner["run_id"]
+        for owner in runner.STATE.unresolved_project_sessions(run_dir.parent, tmp_path)
+    ] == ["7" * 32]
+
+
+@pytest.mark.parametrize(
+    "variation",
+    (
+        "prompt-submitted",
+        "conversation-url",
+        "different-stage",
+        "different-error",
+        "output-present",
+        "missing-meta",
+    ),
+)
+def test_model_selector_button_user_settlement_keeps_lock_on_incomplete_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    variation: str,
+) -> None:
+    runner = load_runner()
+    isolated_default_oracle_profile(tmp_path, monkeypatch)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="8" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=model_selector_button_pre_submit_popen(
+            session_root,
+            variation=variation,
+        ),
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    state = runner.STATE.load_state(state_path)
+    slug = state["oracle"]["slug"]
+    (run_dir / "recovery-live-stdout.log").write_text(
+        f'No live ChatGPT tab matched session "{slug}". Attempting recovery by reopening the saved conversation URL.\n',
+        encoding="utf-8",
+    )
+    (run_dir / "recovery-live-stderr.log").write_text(
+        "Cannot recover conversation: session metadata has no recoverable ChatGPT conversation URL.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        runner.STATE.OracleStateError,
+        match="run lacks the exact pre-submit UI",
+    ):
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="insufficient exact evidence must remain fail closed",
+        )
     assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
 
 
