@@ -22,9 +22,12 @@ PATCHES = {
     "dist/server.js": {
         "patch": "directory-read.patch",
         "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "75c68feb2ba9073bae277a25f663cd4ab369736ce62f2b4140197123df27a85e",
+        "patched": "4ccb51f68e688c0ed1bbd971a15e33d2c1b6bb7eeb555285e1ab9ea75b01f741",
         "upgrades": {
-            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0": "directory-read-to-chunk.patch",
+            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0": "delete-file.patch",
+            "6528326240308f096c64db9a9cf45040cb6670957b38df772fc0e62af7193b2c": "trash-file.patch",
+            "bc7293f3585cbbd0c5be8ef090d79654c2c79e1d79c698856e9d94613c99f746": "file-safety-to-read-chunk.patch",
+            "75c68feb2ba9073bae277a25f663cd4ab369736ce62f2b4140197123df27a85e": "directory-read-to-file-safety.patch",
         },
     },
     "dist/workspaces.js": {
@@ -626,8 +629,7 @@ def ensure_devspace_compatibility(
                 already.append(item)
                 continue
             upgrades = contract.get("upgrades") if isinstance(contract.get("upgrades"), dict) else {}
-            upgrade_patch = upgrades.get(current)
-            if current != contract["pristine"] and not upgrade_patch:
+            if current != contract["pristine"] and current not in upgrades:
                 raise DevSpaceCompatError(
                     "DEVSPACE_FILE_HASH_MISMATCH",
                     "DevSpace compatibility refuses an unknown third-party file",
@@ -641,14 +643,28 @@ def ensure_devspace_compatibility(
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             if not backup_path.exists():
                 shutil.copy2(target, backup_path)
-            _apply_patch(root, patch_root() / str(upgrade_patch or contract["patch"]))
-            actual = sha256_file(target)
-            if actual != contract["patched"]:
-                raise DevSpaceCompatError(
-                    "DEVSPACE_PATCH_HASH_MISMATCH",
-                    "DevSpace compatibility patch output hash is unexpected",
-                    {"path": str(target), "actual": actual, "expected": contract["patched"]},
-                )
+            observed: set[str] = set()
+            while current != contract["patched"]:
+                if current in observed:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_PATCH_CYCLE",
+                        "DevSpace compatibility patch chain did not converge",
+                        {"path": str(target), "actual": current},
+                    )
+                observed.add(current)
+                patch_name = contract["patch"] if current == contract["pristine"] else upgrades.get(current)
+                if not patch_name:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_PATCH_HASH_MISMATCH",
+                        "DevSpace compatibility patch output hash is unexpected",
+                        {
+                            "path": str(target),
+                            "actual": current,
+                            "expected": contract["patched"],
+                        },
+                    )
+                _apply_patch(root, patch_root() / str(patch_name))
+                current = sha256_file(target)
             changed.append(item)
         if "dist/oauth-provider.js" in PATCHES:
             oauth_checks.append(check_oauth_refresh_replay(package_root=root))

@@ -140,6 +140,10 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
         "bin/chatgpt_oracle_multi.py",
         "bin/chatgpt_oracle_comprehensive.py",
         "bin/devspace-compat/1.0.4/directory-read.patch",
+        "bin/devspace-compat/1.0.4/delete-file.patch",
+        "bin/devspace-compat/1.0.4/trash-file.patch",
+        "bin/devspace-compat/1.0.4/directory-read-to-file-safety.patch",
+        "bin/devspace-compat/1.0.4/file-safety-to-read-chunk.patch",
         "skills/chatgpt-workspace-setup/SKILL.md",
     ):
         assert path in include

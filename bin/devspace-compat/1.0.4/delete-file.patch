@@ -1,0 +1,198 @@
+diff --git a/dist/server.js b/dist/server.js
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -1,6 +1,7 @@
+ import { randomUUID } from "node:crypto";
+ import { readFileSync } from "node:fs";
+-import { access, realpath, stat } from "node:fs/promises";
++import { access, lstat, realpath, stat, unlink } from "node:fs/promises";
++import { isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+@@ -38,6 +39,12 @@ const EDIT_TOOL_ANNOTATIONS = {
+     idempotentHint: false,
+     openWorldHint: false,
+ };
++const DELETE_TOOL_ANNOTATIONS = {
++    readOnlyHint: false,
++    destructiveHint: true,
++    idempotentHint: false,
++    openWorldHint: false,
++};
+ const SHELL_TOOL_ANNOTATIONS = {
+     readOnlyHint: false,
+     destructiveHint: true,
+@@ -71,6 +78,7 @@ const toolNames = {
+     read: "read",
+     write: "write",
+     edit: "edit",
++    delete: "delete_file",
+     grep: "grep",
+     glob: "glob",
+     ls: "ls",
+@@ -111,6 +119,100 @@ function resultOutputSchema(extra = {}) {
+         ...extra,
+     };
+ }
++function deleteFailure(code, message) {
++    const error = new Error(`${code}: ${message}`);
++    error.code = code;
++    return error;
++}
++function isStrictChildPath(root, candidate) {
++    const relationship = relative(root, candidate);
++    return (relationship !== "" &&
++        !isAbsolute(relationship) &&
++        !relationship.startsWith("..") &&
++        relationship !== ".." &&
++        !relationship.includes(`..${sep}`));
++}
++export async function deleteWorkspaceFile(workspace, inputPath) {
++    if (typeof inputPath !== "string" || inputPath.trim() === "") {
++        throw deleteFailure("DELETE_INVALID_PATH", "path must be a non-empty relative file path");
++    }
++    if (isAbsolute(inputPath) || /^[A-Za-z]:/.test(inputPath) || inputPath.startsWith("\\\\")) {
++        throw deleteFailure("DELETE_ABSOLUTE_PATH_FORBIDDEN", "path must be relative to the open workspace");
++    }
++    const segments = inputPath.split(/[\\/]+/).filter(Boolean);
++    if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) {
++        throw deleteFailure("DELETE_TRAVERSAL_FORBIDDEN", "path traversal and redundant dot segments are not allowed");
++    }
++    if (segments.some((segment) => segment.toLocaleLowerCase() === ".git")) {
++        throw deleteFailure("DELETE_PROTECTED_TARGET", ".git internals cannot be deleted");
++    }
++    const logicalRoot = resolve(workspace.root);
++    const logicalTarget = resolve(logicalRoot, ...segments);
++    if (!isStrictChildPath(logicalRoot, logicalTarget)) {
++        throw deleteFailure("DELETE_OUTSIDE_WORKSPACE", "path is outside the open workspace");
++    }
++    const canonicalRoot = await realpath(logicalRoot);
++    const target = resolve(canonicalRoot, ...segments);
++    if (!isStrictChildPath(canonicalRoot, target)) {
++        throw deleteFailure("DELETE_OUTSIDE_WORKSPACE", "canonical path is outside the open workspace");
++    }
++    let cursor = canonicalRoot;
++    let targetStats;
++    for (let index = 0; index < segments.length; index += 1) {
++        cursor = join(cursor, segments[index]);
++        let entry;
++        try {
++            entry = await lstat(cursor);
++        }
++        catch (error) {
++            if (error && typeof error === "object" && error.code === "ENOENT") {
++                throw deleteFailure("DELETE_TARGET_NOT_FOUND", "target file does not exist");
++            }
++            throw deleteFailure("DELETE_TARGET_INSPECTION_FAILED", "target could not be inspected safely");
++        }
++        if (entry.isSymbolicLink()) {
++            throw deleteFailure("DELETE_REPARSE_FORBIDDEN", "symlink or reparse path is not deletable");
++        }
++        if (index < segments.length - 1 && !entry.isDirectory()) {
++            throw deleteFailure("DELETE_INVALID_PATH", "a parent path component is not a directory");
++        }
++        targetStats = entry;
++    }
++    if (!targetStats?.isFile()) {
++        throw deleteFailure("DELETE_TARGET_NOT_REGULAR_FILE", "only regular files can be deleted");
++    }
++    const canonicalTarget = await realpath(target);
++    if (!isStrictChildPath(canonicalRoot, canonicalTarget)) {
++        throw deleteFailure("DELETE_REPARSE_ESCAPE", "target resolves outside the open workspace");
++    }
++    try {
++        await unlink(target);
++    }
++    catch {
++        throw deleteFailure("DELETE_FILESYSTEM_FAILED", "filesystem deletion failed");
++    }
++    let existsAfter = true;
++    try {
++        await lstat(target);
++    }
++    catch (error) {
++        if (error && typeof error === "object" && error.code === "ENOENT") {
++            existsAfter = false;
++        }
++        else {
++            throw deleteFailure("DELETE_POSTCHECK_FAILED", "target absence could not be verified");
++        }
++    }
++    if (existsAfter) {
++        throw deleteFailure("DELETE_POSTCHECK_FAILED", "target still exists after deletion");
++    }
++    return {
++        requestedPath: segments.join("/"),
++        existedBefore: true,
++        deleted: true,
++        existsAfter: false,
++    };
++}
+ const workspaceSkillOutputSchema = z.object({
+     name: z.string(),
+     description: z.string(),
+@@ -1251,5 +1353,63 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
+                 },
+             };
+         });
++        registerAppTool(server, toolNames.delete, {
++            title: "Delete file",
++            description: "Delete exactly one existing regular file inside an open workspace. Rejects directories, .git internals, links, absolute paths, and workspace escapes. Call open_workspace first and pass workspaceId.",
++            inputSchema: {
++                workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
++                path: z.string().describe("Existing regular file path relative to the workspace root."),
++            },
++            outputSchema: resultOutputSchema({
++                requestedPath: z.string(),
++                existedBefore: z.literal(true),
++                deleted: z.literal(true),
++                existsAfter: z.literal(false),
++            }),
++            ...toolWidgetDescriptorMeta(config, "edit"),
++            annotations: DELETE_TOOL_ANNOTATIONS,
++        }, async ({ workspaceId, path }) => {
++            const startedAt = performance.now();
++            const workspace = workspaces.getWorkspace(workspaceId);
++            let deletion;
++            try {
++                deletion = await deleteWorkspaceFile(workspace, path);
++            }
++            catch (error) {
++                const message = error instanceof Error ? error.message : String(error);
++                const response = { content: [textBlock(message)], isError: true };
++                logFailedToolResponse(config, {
++                    tool: toolNames.delete,
++                    workspaceId,
++                    path,
++                }, response.content, startedAt);
++                return response;
++            }
++            const result = `Deleted ${deletion.requestedPath}.`;
++            const content = [textBlock(result)];
++            logToolCall(config, {
++                tool: toolNames.delete,
++                workspaceId,
++                path: deletion.requestedPath,
++                success: true,
++                durationMs: Math.round(performance.now() - startedAt),
++            });
++            return {
++                content,
++                _meta: {
++                    tool: toolNames.delete,
++                    card: {
++                        workspaceId,
++                        path: deletion.requestedPath,
++                        summary: { deleted: true },
++                        payload: { deletion },
++                    },
++                },
++                structuredContent: {
++                    result,
++                    ...deletion,
++                },
++            };
++        });
+     }
+     if (config.toolMode === "codex") {

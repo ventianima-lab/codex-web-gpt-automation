@@ -1,0 +1,151 @@
+diff --git a/dist/server.js b/dist/server.js
+index bacbd7e..829a4ce 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -1,6 +1,6 @@
+ import { createHash, randomUUID } from "node:crypto";
+ import { createReadStream, readFileSync } from "node:fs";
+-import { access, lstat, mkdir, realpath, rename, stat, unlink } from "node:fs/promises";
++import { access, lstat, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
+ import { isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+@@ -82,6 +82,7 @@ function toolWidgetDescriptorMeta(config, kind) {
+ const toolNames = {
+     openWorkspace: "open_workspace",
+     read: "read",
++    readChunk: "read_chunk",
+     write: "write",
+     edit: "edit",
+     delete: "delete_file",
+@@ -91,6 +92,60 @@ const toolNames = {
+     ls: "ls",
+     shell: "bash",
+ };
++const MAX_READ_CHUNK_BYTES = 24 * 1024;
++export async function readUtf8Chunk(path, offsetBytes, limitBytes) {
++    const handle = await open(path, "r");
++    try {
++        const before = await handle.stat();
++        if (!before.isFile())
++            throw new Error("read_chunk requires a regular file");
++        if (offsetBytes > before.size)
++            throw new Error("offsetBytes exceeds file size");
++        const hash = createHash("sha256");
++        const hashBuffer = Buffer.allocUnsafe(64 * 1024);
++        let hashOffset = 0;
++        while (hashOffset < before.size) {
++            const { bytesRead } = await handle.read(hashBuffer, 0, Math.min(hashBuffer.length, before.size - hashOffset), hashOffset);
++            if (bytesRead <= 0)
++                throw new Error("file changed while hashing");
++            hash.update(hashBuffer.subarray(0, bytesRead));
++            hashOffset += bytesRead;
++        }
++        const requested = Math.min(limitBytes, before.size - offsetBytes);
++        const chunk = Buffer.alloc(requested);
++        const { bytesRead } = requested > 0
++            ? await handle.read(chunk, 0, requested, offsetBytes)
++            : { bytesRead: 0 };
++        let accepted = bytesRead;
++        let content;
++        while (accepted >= 0) {
++            try {
++                content = new TextDecoder("utf-8", { fatal: true }).decode(chunk.subarray(0, accepted));
++                break;
++            }
++            catch {
++                accepted -= 1;
++                if (bytesRead - accepted > 3)
++                    throw new Error("file is not valid UTF-8 or offsetBytes is not a UTF-8 boundary");
++            }
++        }
++        const after = await handle.stat();
++        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs)
++            throw new Error("file changed while reading");
++        return {
++            content,
++            offsetBytes,
++            nextOffsetBytes: offsetBytes + accepted,
++            bytesReturned: accepted,
++            totalBytes: before.size,
++            eof: offsetBytes + accepted === before.size,
++            sha256: hash.digest("hex"),
++        };
++    }
++    finally {
++        await handle.close();
++    }
++}
+ function serverInstructions(config) {
+     const showChangesInstruction = config.widgets === "changes"
+         ? " If the turn successfully modifies files by creating, editing, overwriting, deleting, moving, or applying patches, call show_changes exactly once for that workspace after the final related file change and before your final response so the user can inspect the aggregate diff for that turn. Do not call it after every individual file change; do not skip it because individual file-change tools already returned diffs."
+@@ -1061,6 +1116,69 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
+             },
+         };
+     });
++    registerAppTool(server, toolNames.readChunk, {
++        title: "Read UTF-8 file chunk",
++        description: "Read one byte-bounded UTF-8 chunk from a regular file inside an open workspace. Use this when read reports that one line exceeds its 50KB limit. Start with offsetBytes=0, then pass the exact returned nextOffsetBytes until eof=true. Each response binds the complete file SHA-256 and fails if the file changes during the call.",
++        inputSchema: {
++            workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
++            path: z.string().describe("Regular UTF-8 file path, relative to the workspace root."),
++            offsetBytes: z.number().int().nonnegative().default(0).describe("Zero-based UTF-8 byte boundary. Reuse nextOffsetBytes from the previous response."),
++            limitBytes: z.number().int().positive().max(MAX_READ_CHUNK_BYTES).default(MAX_READ_CHUNK_BYTES).describe(`Maximum bytes to return, capped at ${MAX_READ_CHUNK_BYTES}.`),
++        },
++        outputSchema: {
++            content: z.string(),
++            offsetBytes: z.number().int().nonnegative(),
++            nextOffsetBytes: z.number().int().nonnegative(),
++            bytesReturned: z.number().int().nonnegative(),
++            totalBytes: z.number().int().nonnegative(),
++            eof: z.boolean(),
++            sha256: z.string().regex(/^[0-9a-f]{64}$/),
++        },
++        ...toolWidgetDescriptorMeta(config, "read"),
++        annotations: { readOnlyHint: true },
++    }, async ({ workspaceId, path, offsetBytes, limitBytes }) => {
++        const startedAt = performance.now();
++        const workspace = workspaces.getWorkspace(workspaceId);
++        const readPath = workspaces.resolveReadPath(workspace, path);
++        try {
++            const result = await readUtf8Chunk(readPath.absolutePath, offsetBytes, limitBytes);
++            workspaces.markReadPathLoaded(workspace, readPath);
++            logToolCall(config, {
++                tool: toolNames.readChunk,
++                workspaceId,
++                path,
++                success: true,
++                durationMs: Math.round(performance.now() - startedAt),
++            });
++            return {
++                content: [textBlock(result.content)],
++                structuredContent: result,
++                _meta: {
++                    tool: toolNames.readChunk,
++                    card: {
++                        workspaceId,
++                        path,
++                        summary: {
++                            offsetBytes: result.offsetBytes,
++                            bytesReturned: result.bytesReturned,
++                            totalBytes: result.totalBytes,
++                            eof: result.eof,
++                            sha256: result.sha256,
++                        },
++                    },
++                },
++            };
++        }
++        catch (error) {
++            const message = error instanceof Error ? error.message : String(error);
++            logFailedToolResponse(config, {
++                tool: toolNames.readChunk,
++                workspaceId,
++                path,
++            }, [textBlock(message)], startedAt);
++            return { content: [textBlock(message)], isError: true };
++        }
++    });
+     if (config.toolMode !== "codex") {
+         registerAppTool(server, toolNames.write, {
+             title: "Write file",

@@ -1,0 +1,476 @@
+diff --git a/dist/server.js b/dist/server.js
+index b57e897..829a4ce 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -1,6 +1,7 @@
+ import { createHash, randomUUID } from "node:crypto";
+-import { readFileSync } from "node:fs";
+-import { access, open, realpath, stat } from "node:fs/promises";
++import { createReadStream, readFileSync } from "node:fs";
++import { access, lstat, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
++import { isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+@@ -38,6 +39,18 @@ const EDIT_TOOL_ANNOTATIONS = {
+     idempotentHint: false,
+     openWorldHint: false,
+ };
++const DELETE_TOOL_ANNOTATIONS = {
++    readOnlyHint: false,
++    destructiveHint: true,
++    idempotentHint: false,
++    openWorldHint: false,
++};
++const TRASH_TOOL_ANNOTATIONS = {
++    readOnlyHint: false,
++    destructiveHint: true,
++    idempotentHint: false,
++    openWorldHint: false,
++};
+ const SHELL_TOOL_ANNOTATIONS = {
+     readOnlyHint: false,
+     destructiveHint: true,
+@@ -72,6 +85,8 @@ const toolNames = {
+     readChunk: "read_chunk",
+     write: "write",
+     edit: "edit",
++    delete: "delete_file",
++    trash: "trash_file",
+     grep: "grep",
+     glob: "glob",
+     ls: "ls",
+@@ -166,6 +181,305 @@ function resultOutputSchema(extra = {}) {
+         ...extra,
+     };
+ }
++function deleteFailure(code, message) {
++    const error = new Error(`${code}: ${message}`);
++    error.code = code;
++    return error;
++}
++function isStrictChildPath(root, candidate) {
++    const relationship = relative(root, candidate);
++    return (relationship !== "" &&
++        !isAbsolute(relationship) &&
++        !relationship.startsWith("..") &&
++        relationship !== ".." &&
++        !relationship.includes(`..${sep}`));
++}
++export async function deleteWorkspaceFile(workspace, inputPath) {
++    if (typeof inputPath !== "string" || inputPath.trim() === "") {
++        throw deleteFailure("DELETE_INVALID_PATH", "path must be a non-empty relative file path");
++    }
++    if (isAbsolute(inputPath) || /^[A-Za-z]:/.test(inputPath) || inputPath.startsWith("\\\\")) {
++        throw deleteFailure("DELETE_ABSOLUTE_PATH_FORBIDDEN", "path must be relative to the open workspace");
++    }
++    const segments = inputPath.split(/[\\/]+/).filter(Boolean);
++    if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) {
++        throw deleteFailure("DELETE_TRAVERSAL_FORBIDDEN", "path traversal and redundant dot segments are not allowed");
++    }
++    if (segments.some((segment) => segment.toLocaleLowerCase() === ".git")) {
++        throw deleteFailure("DELETE_PROTECTED_TARGET", ".git internals cannot be deleted");
++    }
++    const logicalRoot = resolve(workspace.root);
++    const logicalTarget = resolve(logicalRoot, ...segments);
++    if (!isStrictChildPath(logicalRoot, logicalTarget)) {
++        throw deleteFailure("DELETE_OUTSIDE_WORKSPACE", "path is outside the open workspace");
++    }
++    const canonicalRoot = await realpath(logicalRoot);
++    const target = resolve(canonicalRoot, ...segments);
++    if (!isStrictChildPath(canonicalRoot, target)) {
++        throw deleteFailure("DELETE_OUTSIDE_WORKSPACE", "canonical path is outside the open workspace");
++    }
++    let cursor = canonicalRoot;
++    let targetStats;
++    for (let index = 0; index < segments.length; index += 1) {
++        cursor = join(cursor, segments[index]);
++        let entry;
++        try {
++            entry = await lstat(cursor);
++        }
++        catch (error) {
++            if (error && typeof error === "object" && error.code === "ENOENT") {
++                throw deleteFailure("DELETE_TARGET_NOT_FOUND", "target file does not exist");
++            }
++            throw deleteFailure("DELETE_TARGET_INSPECTION_FAILED", "target could not be inspected safely");
++        }
++        if (entry.isSymbolicLink()) {
++            throw deleteFailure("DELETE_REPARSE_FORBIDDEN", "symlink or reparse path is not deletable");
++        }
++        if (index < segments.length - 1 && !entry.isDirectory()) {
++            throw deleteFailure("DELETE_INVALID_PATH", "a parent path component is not a directory");
++        }
++        targetStats = entry;
++    }
++    if (!targetStats?.isFile()) {
++        throw deleteFailure("DELETE_TARGET_NOT_REGULAR_FILE", "only regular files can be deleted");
++    }
++    const canonicalTarget = await realpath(target);
++    if (!isStrictChildPath(canonicalRoot, canonicalTarget)) {
++        throw deleteFailure("DELETE_REPARSE_ESCAPE", "target resolves outside the open workspace");
++    }
++    try {
++        await unlink(target);
++    }
++    catch {
++        throw deleteFailure("DELETE_FILESYSTEM_FAILED", "filesystem deletion failed");
++    }
++    let existsAfter = true;
++    try {
++        await lstat(target);
++    }
++    catch (error) {
++        if (error && typeof error === "object" && error.code === "ENOENT") {
++            existsAfter = false;
++        }
++        else {
++            throw deleteFailure("DELETE_POSTCHECK_FAILED", "target absence could not be verified");
++        }
++    }
++    if (existsAfter) {
++        throw deleteFailure("DELETE_POSTCHECK_FAILED", "target still exists after deletion");
++    }
++    return {
++        requestedPath: segments.join("/"),
++        existedBefore: true,
++        deleted: true,
++        existsAfter: false,
++    };
++}
++function trashFailure(code, message) {
++    const error = new Error(`${code}: ${message}`);
++    error.code = code;
++    return error;
++}
++async function trashLstat(path) {
++    try {
++        return await lstat(path);
++    }
++    catch (error) {
++        if (error && typeof error === "object" && error.code === "ENOENT")
++            return undefined;
++        throw trashFailure("TRASH_TARGET_INSPECTION_FAILED", "filesystem path could not be inspected safely");
++    }
++}
++async function trashFileDigest(path) {
++    const hash = createHash("sha256");
++    let bytes = 0;
++    try {
++        for await (const chunk of createReadStream(path)) {
++            bytes += chunk.length;
++            hash.update(chunk);
++        }
++    }
++    catch {
++        throw trashFailure("TRASH_HASH_FAILED", "file bytes could not be hashed safely");
++    }
++    return { bytes, sha256: hash.digest("hex") };
++}
++async function assertTrashPathNotReparse(path, code) {
++    const entry = await trashLstat(path);
++    if (!entry)
++        return undefined;
++    if (entry.isSymbolicLink())
++        throw trashFailure(code, "symlink, junction, or reparse paths are not allowed");
++    let canonical;
++    try {
++        canonical = await realpath(path);
++    }
++    catch {
++        throw trashFailure("TRASH_TARGET_INSPECTION_FAILED", "filesystem path could not be resolved safely");
++    }
++    if (relative(resolve(path), resolve(canonical)) !== "")
++        throw trashFailure(code, "symlink, junction, or reparse paths are not allowed");
++    return entry;
++}
++export async function trashWorkspaceFile(workspace, inputPath, options = {}) {
++    if (typeof inputPath !== "string" || inputPath.trim() === "") {
++        throw trashFailure("TRASH_INVALID_PATH", "path must be a non-empty relative file path");
++    }
++    if (isAbsolute(inputPath) || /^[A-Za-z]:/.test(inputPath) || inputPath.startsWith("\\\\")) {
++        throw trashFailure("TRASH_ABSOLUTE_PATH_FORBIDDEN", "path must be relative to the open workspace");
++    }
++    const segments = inputPath.split(/[\\/]+/).filter(Boolean);
++    if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) {
++        throw trashFailure("TRASH_TRAVERSAL_FORBIDDEN", "path traversal and redundant dot segments are not allowed");
++    }
++    if (segments.some((segment) => segment.toLocaleLowerCase() === ".git")) {
++        throw trashFailure("TRASH_PROTECTED_TARGET", ".git internals cannot be moved");
++    }
++    if (segments[0].toLocaleLowerCase() === ".webjjongku-trash") {
++        throw trashFailure("TRASH_PROTECTED_TARGET", "the workspace trash area cannot be moved into itself");
++    }
++    const trashId = options.uniqueId ?? randomUUID();
++    if (typeof trashId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(trashId)) {
++        throw trashFailure("TRASH_INVALID_ID", "trash destination identifier is invalid");
++    }
++    const logicalRoot = resolve(workspace.root);
++    const logicalTarget = resolve(logicalRoot, ...segments);
++    if (!isStrictChildPath(logicalRoot, logicalTarget)) {
++        throw trashFailure("TRASH_OUTSIDE_WORKSPACE", "path is outside the open workspace");
++    }
++    const canonicalRoot = await realpath(logicalRoot);
++    const target = resolve(canonicalRoot, ...segments);
++    if (!isStrictChildPath(canonicalRoot, target)) {
++        throw trashFailure("TRASH_OUTSIDE_WORKSPACE", "canonical path is outside the open workspace");
++    }
++    let cursor = canonicalRoot;
++    let targetStats;
++    for (let index = 0; index < segments.length; index += 1) {
++        cursor = join(cursor, segments[index]);
++        const entry = await assertTrashPathNotReparse(cursor, "TRASH_REPARSE_FORBIDDEN");
++        if (!entry)
++            throw trashFailure("TRASH_TARGET_NOT_FOUND", "target file does not exist");
++        if (index < segments.length - 1 && !entry.isDirectory())
++            throw trashFailure("TRASH_INVALID_PATH", "a parent path component is not a directory");
++        targetStats = entry;
++    }
++    if (!targetStats?.isFile()) {
++        throw trashFailure("TRASH_TARGET_NOT_REGULAR_FILE", "only regular files can be moved to workspace trash");
++    }
++    const canonicalTarget = await realpath(target);
++    if (!isStrictChildPath(canonicalRoot, canonicalTarget)) {
++        throw trashFailure("TRASH_REPARSE_ESCAPE", "target resolves outside the open workspace");
++    }
++    const trashRoot = resolve(canonicalRoot, ".webjjongku-trash");
++    if (!isStrictChildPath(canonicalRoot, trashRoot)) {
++        throw trashFailure("TRASH_OUTSIDE_WORKSPACE", "trash destination is outside the open workspace");
++    }
++    let trashRootStats = await assertTrashPathNotReparse(trashRoot, "TRASH_REPARSE_FORBIDDEN");
++    if (!trashRootStats) {
++        try {
++            await mkdir(trashRoot, { recursive: false });
++        }
++        catch {
++            throw trashFailure("TRASH_DESTINATION_CREATE_FAILED", "workspace trash directory could not be created");
++        }
++        trashRootStats = await assertTrashPathNotReparse(trashRoot, "TRASH_REPARSE_FORBIDDEN");
++    }
++    if (!trashRootStats?.isDirectory()) {
++        throw trashFailure("TRASH_DESTINATION_INVALID", "workspace trash path is not a directory");
++    }
++    const uniqueRoot = resolve(trashRoot, trashId);
++    if (!isStrictChildPath(trashRoot, uniqueRoot)) {
++        throw trashFailure("TRASH_OUTSIDE_WORKSPACE", "trash destination is outside the workspace trash area");
++    }
++    if (await trashLstat(uniqueRoot)) {
++        throw trashFailure("TRASH_DESTINATION_COLLISION", "unique trash destination already exists");
++    }
++    try {
++        await mkdir(uniqueRoot, { recursive: false });
++    }
++    catch (error) {
++        if (error && typeof error === "object" && error.code === "EEXIST")
++            throw trashFailure("TRASH_DESTINATION_COLLISION", "unique trash destination already exists");
++        throw trashFailure("TRASH_DESTINATION_CREATE_FAILED", "unique trash destination could not be created");
++    }
++    const uniqueRootStats = await assertTrashPathNotReparse(uniqueRoot, "TRASH_REPARSE_FORBIDDEN");
++    if (!uniqueRootStats?.isDirectory()) {
++        throw trashFailure("TRASH_DESTINATION_INVALID", "unique trash destination is not a directory");
++    }
++    const destination = resolve(uniqueRoot, ...segments);
++    if (!isStrictChildPath(uniqueRoot, destination)) {
++        throw trashFailure("TRASH_OUTSIDE_WORKSPACE", "trash destination is outside the unique trash area");
++    }
++    cursor = uniqueRoot;
++    for (const segment of segments.slice(0, -1)) {
++        cursor = join(cursor, segment);
++        let entry = await assertTrashPathNotReparse(cursor, "TRASH_REPARSE_FORBIDDEN");
++        if (!entry) {
++            try {
++                await mkdir(cursor, { recursive: false });
++            }
++            catch (error) {
++                if (error && typeof error === "object" && error.code === "EEXIST")
++                    throw trashFailure("TRASH_DESTINATION_COLLISION", "trash destination parent already exists");
++                throw trashFailure("TRASH_DESTINATION_CREATE_FAILED", "trash destination parent could not be created");
++            }
++            entry = await assertTrashPathNotReparse(cursor, "TRASH_REPARSE_FORBIDDEN");
++        }
++        if (!entry?.isDirectory())
++            throw trashFailure("TRASH_DESTINATION_INVALID", "trash destination parent is not a directory");
++    }
++    if (await trashLstat(destination)) {
++        throw trashFailure("TRASH_DESTINATION_COLLISION", "trash destination already exists");
++    }
++    const before = await trashFileDigest(target);
++    const sourceBeforeMove = await assertTrashPathNotReparse(target, "TRASH_REPARSE_FORBIDDEN");
++    if (!sourceBeforeMove?.isFile() || sourceBeforeMove.size !== before.bytes) {
++        throw trashFailure("TRASH_SOURCE_CHANGED", "source changed while it was being verified");
++    }
++    cursor = uniqueRoot;
++    for (const segment of segments.slice(0, -1)) {
++        cursor = join(cursor, segment);
++        const entry = await assertTrashPathNotReparse(cursor, "TRASH_REPARSE_FORBIDDEN");
++        if (!entry?.isDirectory())
++            throw trashFailure("TRASH_DESTINATION_INVALID", "trash destination parent changed before move");
++    }
++    if (await trashLstat(destination)) {
++        throw trashFailure("TRASH_DESTINATION_COLLISION", "trash destination already exists");
++    }
++    try {
++        await rename(target, destination);
++    }
++    catch (error) {
++        if (error && typeof error === "object" && (error.code === "EEXIST" || error.code === "ENOTEMPTY"))
++            throw trashFailure("TRASH_DESTINATION_COLLISION", "trash destination already exists");
++        throw trashFailure("TRASH_MOVE_FAILED", "filesystem move failed");
++    }
++    if (await trashLstat(target)) {
++        throw trashFailure("TRASH_POSTCHECK_FAILED", "original path still exists after move");
++    }
++    const trashedStats = await assertTrashPathNotReparse(destination, "TRASH_REPARSE_FORBIDDEN");
++    if (!trashedStats?.isFile()) {
++        throw trashFailure("TRASH_POSTCHECK_FAILED", "trashed copy is not a regular file");
++    }
++    const canonicalDestination = await realpath(destination);
++    if (!isStrictChildPath(uniqueRoot, canonicalDestination)) {
++        throw trashFailure("TRASH_REPARSE_ESCAPE", "trashed copy resolves outside the unique trash area");
++    }
++    const after = await trashFileDigest(destination);
++    if (before.bytes !== after.bytes || before.sha256 !== after.sha256) {
++        throw trashFailure("TRASH_CONTENT_MISMATCH", "trashed copy does not match the original file bytes");
++    }
++    return {
++        originalRelativePath: segments.join("/"),
++        trashRelativePath: [".webjjongku-trash", trashId, ...segments].join("/"),
++        trashId,
++        moved: true,
++        originalExistsAfter: false,
++        trashExistsAfter: true,
++        bytes: after.bytes,
++        sha256: after.sha256,
++    };
++}
+ const workspaceSkillOutputSchema = z.object({
+     name: z.string(),
+     description: z.string(),
+@@ -1369,6 +1683,127 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
+                 },
+             };
+         });
++        registerAppTool(server, toolNames.delete, {
++            title: "Delete file",
++            description: "Delete exactly one existing regular file inside an open workspace. Rejects directories, .git internals, links, absolute paths, and workspace escapes. Call open_workspace first and pass workspaceId.",
++            inputSchema: {
++                workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
++                path: z.string().describe("Existing regular file path relative to the workspace root."),
++            },
++            outputSchema: resultOutputSchema({
++                requestedPath: z.string(),
++                existedBefore: z.literal(true),
++                deleted: z.literal(true),
++                existsAfter: z.literal(false),
++            }),
++            ...toolWidgetDescriptorMeta(config, "edit"),
++            annotations: DELETE_TOOL_ANNOTATIONS,
++        }, async ({ workspaceId, path }) => {
++            const startedAt = performance.now();
++            const workspace = workspaces.getWorkspace(workspaceId);
++            let deletion;
++            try {
++                deletion = await deleteWorkspaceFile(workspace, path);
++            }
++            catch (error) {
++                const message = error instanceof Error ? error.message : String(error);
++                const response = { content: [textBlock(message)], isError: true };
++                logFailedToolResponse(config, {
++                    tool: toolNames.delete,
++                    workspaceId,
++                    path,
++                }, response.content, startedAt);
++                return response;
++            }
++            const result = `Deleted ${deletion.requestedPath}.`;
++            const content = [textBlock(result)];
++            logToolCall(config, {
++                tool: toolNames.delete,
++                workspaceId,
++                path: deletion.requestedPath,
++                success: true,
++                durationMs: Math.round(performance.now() - startedAt),
++            });
++            return {
++                content,
++                _meta: {
++                    tool: toolNames.delete,
++                    card: {
++                        workspaceId,
++                        path: deletion.requestedPath,
++                        summary: { deleted: true },
++                        payload: { deletion },
++                    },
++                },
++                structuredContent: {
++                    result,
++                    ...deletion,
++                },
++            };
++        });
++        registerAppTool(server, toolNames.trash, {
++            title: "Trash file",
++            description: "Reversibly move exactly one existing regular file inside an open workspace into a unique workspace-local .webjjongku-trash path. Rejects directories, .git internals, links, absolute paths, workspace escapes, and destination collisions. Call open_workspace first and pass workspaceId.",
++            inputSchema: {
++                workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
++                path: z.string().describe("Existing regular file path relative to the workspace root."),
++            },
++            outputSchema: resultOutputSchema({
++                originalRelativePath: z.string(),
++                trashRelativePath: z.string(),
++                trashId: z.string(),
++                moved: z.literal(true),
++                originalExistsAfter: z.literal(false),
++                trashExistsAfter: z.literal(true),
++                bytes: z.number().int().nonnegative(),
++                sha256: z.string(),
++            }),
++            ...toolWidgetDescriptorMeta(config, "edit"),
++            annotations: TRASH_TOOL_ANNOTATIONS,
++        }, async ({ workspaceId, path }) => {
++            const startedAt = performance.now();
++            const workspace = workspaces.getWorkspace(workspaceId);
++            let trash;
++            try {
++                trash = await trashWorkspaceFile(workspace, path);
++            }
++            catch (error) {
++                const message = error instanceof Error ? error.message : String(error);
++                const response = { content: [textBlock(message)], isError: true };
++                logFailedToolResponse(config, {
++                    tool: toolNames.trash,
++                    workspaceId,
++                    path,
++                }, response.content, startedAt);
++                return response;
++            }
++            const result = `Moved ${trash.originalRelativePath} to ${trash.trashRelativePath}.`;
++            const content = [textBlock(result)];
++            logToolCall(config, {
++                tool: toolNames.trash,
++                workspaceId,
++                path: trash.originalRelativePath,
++                trashPath: trash.trashRelativePath,
++                success: true,
++                durationMs: Math.round(performance.now() - startedAt),
++            });
++            return {
++                content,
++                _meta: {
++                    tool: toolNames.trash,
++                    card: {
++                        workspaceId,
++                        path: trash.originalRelativePath,
++                        summary: { movedToTrash: true },
++                        payload: { trash },
++                    },
++                },
++                structuredContent: {
++                    result,
++                    ...trash,
++                },
++            };
++        });
+     }
+     if (config.toolMode === "codex") {
+         registerCodexProcessTools(server, config, workspaces, processSessions);
