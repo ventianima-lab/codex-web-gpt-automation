@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
+import io
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_compat.py"
+CI_PREP_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare_oracle_018_ci.py"
 
 
 def load_compat():
@@ -24,8 +29,31 @@ def load_compat():
     return module
 
 
+def load_ci_prepare():
+    name = "prepare_oracle_018_ci_test"
+    spec = importlib.util.spec_from_file_location(name, CI_PREP_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def make_package_archive(path: Path, files: dict[str, bytes]) -> tuple[Path, str]:
+    archive = path / "oracle.tgz"
+    with tarfile.open(archive, mode="w:gz") as package:
+        for relative, content in sorted(files.items()):
+            member = tarfile.TarInfo(f"package/{relative}")
+            member.size = len(content)
+            member.mode = 0o644
+            member.mtime = 0
+            package.addfile(member, io.BytesIO(content))
+    integrity = "sha512-" + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode("ascii")
+    return archive, integrity
 
 
 def test_exact_version_patch_is_hash_gated_idempotent_and_backed_up(tmp_path: Path) -> None:
@@ -100,6 +128,10 @@ def test_unknown_oracle_version_or_file_hash_fails_closed(tmp_path: Path) -> Non
     with pytest.raises(compat.OracleCompatError) as version:
         compat.ensure_oracle_compatibility("oracle 0.17.0", package_root=tmp_path)
     assert version.value.code == "ORACLE_VERSION_UNVALIDATED"
+    with pytest.raises(compat.OracleCompatError) as scoped_version_without_profile:
+        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=tmp_path)
+    assert scoped_version_without_profile.value.code == "ORACLE_VERSION_UNVALIDATED"
+    assert scoped_version_without_profile.value.evidence["supported"] == compat.SUPPORTED_VERSION
 
     package = tmp_path / "package"
     package.mkdir()
@@ -109,6 +141,192 @@ def test_unknown_oracle_version_or_file_hash_fails_closed(tmp_path: Path) -> Non
     with pytest.raises(compat.OracleCompatError) as mismatch:
         compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package)
     assert mismatch.value.code == "ORACLE_FILE_HASH_MISMATCH"
+
+
+def test_scoped_oracle_version_requires_its_profile_and_uses_its_own_contract(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    package_json = json.dumps({"version": "0.18.0"}).encode("utf-8")
+    (package / "package.json").write_bytes(package_json)
+    target = package / "sample.txt"
+    target.write_bytes(b"before\n")
+    other = package / "other.js"
+    other.write_bytes(b"export const trusted = true;\n")
+    dependency = package / "node_modules" / "dependency" / "index.js"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"export const externalDependency = true;\n")
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    (patches / "sample.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-before\n+after\n",
+        encoding="utf-8",
+    )
+    compat.SCOPED_PATCHES = {
+        "webjjonku-linux": {
+            "0.18.0": {
+                "sample.txt": {
+                    "patch": "sample.patch",
+                    "pristine": digest(b"before\n"),
+                    "patched": digest(b"after\n"),
+                }
+            }
+        }
+    }
+    archive, integrity = make_package_archive(tmp_path, {
+        "package.json": package_json,
+        "sample.txt": b"before\n",
+        "other.js": b"export const trusted = true;\n",
+    })
+    compat.SCOPED_PACKAGE_INTEGRITIES = {"webjjonku-linux": {"0.18.0": integrity}}
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
+
+    with pytest.raises(compat.OracleCompatError) as default_path:
+        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package)
+    assert default_path.value.code == "ORACLE_VERSION_UNVALIDATED"
+
+    with pytest.raises(compat.OracleCompatError) as unknown_profile:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="other-linux",
+            package_root=package,
+            package_archive=archive,
+        )
+    assert unknown_profile.value.code == "ORACLE_COMPAT_PROFILE_UNVALIDATED"
+
+    with pytest.raises(compat.OracleCompatError) as missing_root:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="webjjonku-linux",
+            package_archive=archive,
+        )
+    assert missing_root.value.code == "ORACLE_PACKAGE_ROOT_REQUIRED"
+
+    result = compat.ensure_scoped_oracle_compatibility(
+        "oracle 0.18.0",
+        profile="webjjonku-linux",
+        package_root=package,
+        package_archive=archive,
+        backup_root=tmp_path / "backup",
+    )
+
+    assert result["version"] == "0.18.0"
+    assert result["profile"] == "webjjonku-linux"
+    assert result["changed"] == ["sample.txt"]
+    assert result["package_integrity"] == integrity
+    assert target.read_bytes() == b"after\n"
+    assert dependency.is_file()
+    other.write_bytes(b"export const trusted = false;\n")
+    with pytest.raises(compat.OracleCompatError) as tree_mismatch:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="webjjonku-linux",
+            package_root=package,
+            package_archive=archive,
+            backup_root=tmp_path / "backup",
+        )
+    assert tree_mismatch.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    other.write_bytes(b"export const trusted = true;\n")
+    (package / "injected.js").write_bytes(b"export const injected = true;\n")
+    with pytest.raises(compat.OracleCompatError) as extra_file:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="webjjonku-linux",
+            package_root=package,
+            package_archive=archive,
+            backup_root=tmp_path / "backup",
+        )
+    assert extra_file.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    assert extra_file.value.evidence["path"] == "injected.js"
+
+
+def test_scoped_package_tree_rejects_directory_links_and_junctions(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    link = package / "dist"
+    if os.name == "nt":
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(external)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert created.returncode == 0, created.stderr
+    else:
+        link.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(compat.OracleCompatError) as unsafe_tree:
+        compat._scan_installed_package_tree(package.resolve(strict=True))
+    assert unsafe_tree.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    assert unsafe_tree.value.evidence["path"] == "dist"
+
+
+def test_ci_extractor_rejects_windows_escape_and_reserved_paths_before_writing(tmp_path: Path) -> None:
+    prepare = load_ci_prepare()
+    for index, unsafe_name in enumerate((r"package/a\..\..\..\escaped.txt", "package/CON.txt")):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:gz") as package:
+            content = b"unsafe\n"
+            member = tarfile.TarInfo(unsafe_name)
+            member.size = len(content)
+            package.addfile(member, io.BytesIO(content))
+        destination = tmp_path / f"extract-{index}"
+        with pytest.raises(RuntimeError, match="unsafe path"):
+            prepare.extract_verified(stream.getvalue(), destination)
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_scoped_cli_requires_explicit_version(capsys: pytest.CaptureFixture[str]) -> None:
+    compat = load_compat()
+    assert compat.main(["--profile", "webjjonku-linux"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "ORACLE_VERSION_REQUIRED"
+
+
+def test_scoped_profile_rejects_missing_node_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    compat = load_compat()
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: None)
+    with pytest.raises(compat.OracleCompatError) as unsupported:
+        compat._verify_scoped_node_runtime("webjjonku-linux")
+    assert unsupported.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
+    assert unsupported.value.evidence["required"] == ">=24 <27"
+
+
+def test_published_0180_followup_timeout_patch_preserves_parent_unless_cli_overrides(tmp_path: Path) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    configured_archive = os.environ.get("ORACLE_018_PACKAGE_ARCHIVE", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    archive = Path(configured_archive) if configured_archive else Path("__oracle_018_archive_unset__")
+    if not source.is_dir() or not archive.is_file():
+        pytest.skip("published Oracle 0.18.0 package root and archive are unavailable")
+    package = tmp_path / "oracle"
+    shutil.copytree(source, package)
+
+    result = compat.ensure_scoped_oracle_compatibility(
+        "oracle 0.18.0",
+        profile="webjjonku-linux",
+        package_root=package,
+        package_archive=archive,
+        backup_root=tmp_path / "backup",
+    )
+
+    relative = "dist/bin/oracle-cli.js"
+    assert relative in set(result["changed"]) | set(result["already_patched"])
+    target = package / relative
+    source_text = target.read_text(encoding="utf-8")
+    assert 'getSource("browserTimeout") !== "cli"' in source_text
+    assert "...browserFollowup.browserConfig" in source_text
+    assert "timeoutMs: cliConfig.timeoutMs" in source_text
+    assert compat.sha256_file(target) == compat.SCOPED_PATCHES["webjjonku-linux"]["0.18.0"][relative]["patched"]
+    node = shutil.which("node")
+    assert node is not None
+    syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
 
 
 def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_path: Path) -> None:

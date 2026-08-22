@@ -180,6 +180,24 @@ same version. Read the [changelog](docs/CHANGELOG.md) before upgrading.
 The current tested baseline is Oracle `0.17.1`, DevSpace `1.0.4`, Node.js
 `>=22.19 <27`, Windows 11, and macOS 12 or newer.
 
+Oracle `0.18.0` is a scoped compatibility version for the WebJjonku Linux
+host running Node.js `>=24 <27`. It keeps the upstream response-observer improvements and patches only
+the browser follow-up timeout inheritance defect. The caller must provide the
+published npm archive with `--package-archive` and explicitly select
+`chatgpt_oracle_compat.py --profile webjjonku-linux`; the tool verifies the
+archive integrity and the complete published Oracle package payload before
+patching. Any separately installed `node_modules` dependency tree remains the
+invoking runtime lock's responsibility.
+The default Windows/macOS comprehensive path continues to reject every Oracle
+version other than `0.17.1`.
+
+```sh
+python bin/chatgpt_oracle_compat.py --profile webjjonku-linux --resolved-version "oracle 0.18.0" --package-root /exact/node_modules/@steipete/oracle --package-archive /exact/steipete-oracle-0.18.0.tgz
+```
+
+The scoped profile requires all three explicit version, installed-root, and
+archive arguments; it never relies on platform-specific package discovery.
+
 ## License
 
 [MIT License](LICENSE). Third-party copyrights and licenses for Oracle,

@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -39,6 +39,7 @@
     "bin/oracle-compat/0.17.1/thinkingTime.strict.pre-advanced-view-sibling.patch",
     "bin/oracle-compat/0.17.1/thinkingTime.strict.pre-stable-pro-proof.patch",
     "bin/oracle-compat/0.17.1/thinkingTime.strict.pre-menu-scoped-proof.patch",
+    "bin/oracle-compat/0.18.0/oracle-cli.followup-timeout.patch",
     "bin/chatgpt_oracle_state.py",
     "bin/chatgpt_oracle_profiles.py",
     "bin/chatgpt_oracle_dispatch.py",
@@ -171,7 +172,14 @@
       "tested_version": "0.17.1",
       "license": "MIT",
       "integrity": "sha512-bq4SqMvRtT5Im+R57UPSXTV5p/BFTU24OXgGXqx2ckABWFX9uLDuKeJLoOdfBm7RzllrzjrlSSGgiMsrrvh+9Q==",
-      "installation": "resolved by the invoking agent through explicit npx @steipete/oracle@0.17.1; unknown versions and hash mismatches fail closed"
+      "scoped_tested_versions": {
+        "webjjonku-linux": {
+          "version": "0.18.0",
+          "integrity": "sha512-o8KFd66zNt36jw5zdtQAV74bgrOlJibbyvnLsVikIWDamesYtez/dIUhQ4zqtD9jkx+7A6vcP9+JgcJt0H5pOw==",
+          "node": ">=24 <27"
+        }
+      },
+      "installation": "default comprehensive runs resolve explicit npx @steipete/oracle@0.17.1; Oracle 0.18.0 requires its exact npm archive plus the explicit webjjonku-linux compatibility profile, which verifies archive integrity and the complete published package payload before patching, while the invoking runtime lock owns the separately installed dependency tree; unknown versions, profiles, and hash mismatches fail closed"
     },
     "devspace": {
       "package": "@waishnav/devspace",

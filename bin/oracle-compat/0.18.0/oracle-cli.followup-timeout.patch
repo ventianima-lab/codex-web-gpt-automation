@@ -1,0 +1,29 @@
+diff --git a/dist/bin/oracle-cli.js b/dist/bin/oracle-cli.js
+--- a/dist/bin/oracle-cli.js
++++ b/dist/bin/oracle-cli.js
+@@ -1330,10 +1330,23 @@ async function runRootCommand(options) {
+     const browserConfig = await (async () => {
+         if (sessionMode !== "browser")
+             return undefined;
++        const { buildBrowserConfig, resolveBrowserModelLabel } = await import("../src/cli/browserConfig.js");
+         if (browserFollowup) {
+-            return browserFollowup.browserConfig;
++            if (getSource("browserTimeout") !== "cli") {
++                return browserFollowup.browserConfig;
++            }
++            const cliConfig = await buildBrowserConfig({
++                ...options,
++                remoteHost: remoteHost ?? undefined,
++                model: activeModel,
++                browserRequestedModel: cliModelArg,
++                browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
++            });
++            return {
++                ...browserFollowup.browserConfig,
++                timeoutMs: cliConfig.timeoutMs,
++            };
+         }
+-        const { buildBrowserConfig, resolveBrowserModelLabel } = await import("../src/cli/browserConfig.js");
+         const config = await buildBrowserConfig({
+             ...options,
+             remoteHost: remoteHost ?? undefined,

@@ -178,8 +178,16 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 GitHub Release가 같은 버전을 가리켜야 합니다. 업그레이드 전에는
 [변경 기록](docs/CHANGELOG.md)을 확인하세요.
 
-현재 검증 기준은 Oracle `0.17.1`, DevSpace `1.0.4`, Node.js `>=22.19 <27`,
+현재 기본 검증 기준은 Oracle `0.17.1`, DevSpace `1.0.4`, Node.js `>=22.19 <27`,
 Windows 11 및 macOS 12 이상입니다.
+
+Oracle `0.18.0`은 Node.js `>=24 <27`인 WebJjonku Linux 호스트용 범위 제한 검증 버전입니다. Upstream 응답 관찰 개선은 그대로 사용하고, browser follow-up에서 명시한 `--browser-timeout`이 부모 세션 timeout에 묻히는 결함만 해시 검증형 호환 패치로 보정합니다. 이 버전은 npm archive를 `--package-archive`로 함께 제공하고 `chatgpt_oracle_compat.py --profile webjjonku-linux`를 명시한 경우에만 허용됩니다. 도구는 archive integrity와 설치된 Oracle의 published package payload 전체를 대조한 뒤 패치합니다. 설치 시 별도로 생기는 `node_modules` dependency tree는 호출 측 lock의 검증 대상이며, 기본 Windows/macOS comprehensive 경로는 계속 `0.17.1` 이외의 버전을 거부합니다.
+
+```sh
+python bin/chatgpt_oracle_compat.py --profile webjjonku-linux --resolved-version "oracle 0.18.0" --package-root /exact/node_modules/@steipete/oracle --package-archive /exact/steipete-oracle-0.18.0.tgz
+```
+
+범위 제한 프로필은 버전·설치 루트·archive 세 인수를 모두 명시해야 하며 자동 탐색하지 않습니다.
 
 ## 라이선스
 

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import os
 import shutil
+import stat
 import subprocess
+import tarfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
 SUPPORTED_VERSION = "0.17.1"
@@ -147,6 +151,32 @@ PATCHES = {
     },
 }
 
+# Keep 0.17.1 as the only version accepted by the default Windows/macOS
+# comprehensive workflow. WebJjonku's Linux Oracle host uses upstream 0.18.0
+# for its response-observer fixes and must opt into this narrower contract by
+# name; it does not inherit the broader 0.17.1 local compatibility patches.
+SCOPED_PATCHES = {
+    "webjjonku-linux": {
+        "0.18.0": {
+            "dist/bin/oracle-cli.js": {
+                "patch": "oracle-cli.followup-timeout.patch",
+                "pristine": "6909a8fd25ff7e5459123637e90a79d72dc5733cc2af0c14220018cb663b1825",
+                "patched": "6635dab468730e1a1031edd07480517edc79ce55bcef29f165347f7d2680e11a",
+            },
+        },
+    },
+}
+
+SCOPED_PACKAGE_INTEGRITIES = {
+    "webjjonku-linux": {
+        "0.18.0": "sha512-o8KFd66zNt36jw5zdtQAV74bgrOlJibbyvnLsVikIWDamesYtez/dIUhQ4zqtD9jkx+7A6vcP9+JgcJt0H5pOw==",
+    },
+}
+SCOPED_NODE_MAJOR_RANGES = {"webjjonku-linux": (24, 27)}
+SCOPED_ARCHIVE_MAX_FILES = 10_000
+SCOPED_ARCHIVE_MAX_BYTES = 100 * 1024 * 1024
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
 
 class OracleCompatError(RuntimeError):
     def __init__(self, code: str, message: str, evidence: dict[str, Any] | None = None):
@@ -157,6 +187,221 @@ class OracleCompatError(RuntimeError):
 
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def sha512_integrity(path: Path) -> str:
+    digest = hashlib.sha512()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha512-" + base64.b64encode(digest.digest()).decode("ascii")
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(info, "st_file_attributes", 0)
+    return stat.S_ISLNK(info.st_mode) or bool(reparse_flag and attributes & reparse_flag)
+
+
+def _safe_archive_relative(name: str) -> str | None:
+    if not name or "\\" in name or "\x00" in name or any(ord(character) < 32 for character in name):
+        raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive contains an unsafe path")
+    raw_parts = name.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive contains an unsafe path")
+    path = PurePosixPath(name)
+    if path.is_absolute() or not path.parts or path.parts[0] != "package":
+        raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive contains an unsafe path")
+    if len(path.parts) == 1:
+        return None
+    for part in path.parts[1:]:
+        if ":" in part or part.endswith((" ", ".")):
+            raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive contains an unsafe path")
+        device_name = part.rstrip(" .").split(".", 1)[0].upper()
+        if device_name in WINDOWS_RESERVED_NAMES:
+            raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive contains an unsafe path")
+    return PurePosixPath(*path.parts[1:]).as_posix()
+
+
+def _verify_scoped_node_runtime(profile: str) -> None:
+    minimum, maximum = SCOPED_NODE_MAJOR_RANGES[profile]
+    node = shutil.which("node")
+    if not node:
+        raise OracleCompatError(
+            "ORACLE_NODE_VERSION_UNSUPPORTED",
+            "Scoped Oracle compatibility requires its validated Node.js runtime",
+            {"profile": profile, "required": f">={minimum} <{maximum}"},
+        )
+    resolved = subprocess.run([node, "--version"], capture_output=True, text=True, check=False)
+    value = resolved.stdout.strip().removeprefix("v")
+    try:
+        major = int(value.split(".", 1)[0])
+    except (TypeError, ValueError):
+        major = -1
+    if resolved.returncode != 0 or not minimum <= major < maximum:
+        raise OracleCompatError(
+            "ORACLE_NODE_VERSION_UNSUPPORTED",
+            "Scoped Oracle compatibility requires its validated Node.js runtime",
+            {"profile": profile, "resolved": value or None, "required": f">={minimum} <{maximum}"},
+        )
+
+
+def _scan_installed_package_tree(root: Path) -> dict[str, Path]:
+    files: dict[str, Path] = {}
+    pending: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
+    total_bytes = 0
+    while pending:
+        directory, relative_parts = pending.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise OracleCompatError(
+                "ORACLE_PACKAGE_TREE_MISMATCH",
+                "Installed Oracle package tree could not be inspected",
+            ) from exc
+        for entry in entries:
+            item_parts = (*relative_parts, entry.name)
+            relative = PurePosixPath(*item_parts).as_posix()
+            try:
+                item_info = entry.stat(follow_symlinks=False)
+                item_path = Path(entry.path)
+                canonical_item = item_path.resolve(strict=True)
+            except OSError as exc:
+                raise OracleCompatError(
+                    "ORACLE_PACKAGE_TREE_MISMATCH",
+                    "Installed Oracle package entry could not be inspected",
+                    {"path": relative},
+                ) from exc
+            if _is_link_or_reparse(item_info) or not canonical_item.is_relative_to(root):
+                raise OracleCompatError(
+                    "ORACLE_PACKAGE_TREE_MISMATCH",
+                    "Installed Oracle package contains a link, junction, or escaping path",
+                    {"path": relative},
+                )
+            if stat.S_ISDIR(item_info.st_mode):
+                # npm may place dependency packages below the Oracle package
+                # root. Their integrity belongs to the invoking runtime lock,
+                # not to the published Oracle tarball payload verified here.
+                if item_parts == ("node_modules",):
+                    continue
+                pending.append((item_path, item_parts))
+                continue
+            if not stat.S_ISREG(item_info.st_mode):
+                raise OracleCompatError(
+                    "ORACLE_PACKAGE_TREE_MISMATCH",
+                    "Installed Oracle package contains a non-file entry",
+                    {"path": relative},
+                )
+            files[relative] = item_path
+            total_bytes += int(item_info.st_size)
+            if len(files) > SCOPED_ARCHIVE_MAX_FILES or total_bytes > SCOPED_ARCHIVE_MAX_BYTES:
+                raise OracleCompatError(
+                    "ORACLE_PACKAGE_TREE_MISMATCH",
+                    "Installed Oracle package exceeds safety limits",
+                )
+    return files
+
+
+def _verify_scoped_package_archive(
+    package_root: Path,
+    package_archive: Path,
+    *,
+    expected_integrity: str,
+    contracts: dict[str, dict[str, Any]],
+) -> Path:
+    archive_input = package_archive.expanduser()
+    try:
+        archive_info = os.lstat(archive_input)
+    except OSError as exc:
+        raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive must be a regular file") from exc
+    if _is_link_or_reparse(archive_info) or not stat.S_ISREG(archive_info.st_mode):
+        raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive must be a regular file")
+    if archive_info.st_size > SCOPED_ARCHIVE_MAX_BYTES:
+        raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive exceeds safety limits")
+    try:
+        archive_bytes = archive_input.read_bytes()
+    except OSError as exc:
+        raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive could not be read") from exc
+    actual_integrity = "sha512-" + base64.b64encode(hashlib.sha512(archive_bytes).digest()).decode("ascii")
+    if actual_integrity != expected_integrity:
+        raise OracleCompatError(
+            "ORACLE_PACKAGE_INTEGRITY_MISMATCH",
+            "Oracle package archive integrity does not match the scoped contract",
+            {"actual": actual_integrity, "expected": expected_integrity},
+        )
+    root_input = package_root.expanduser()
+    try:
+        root_info = os.lstat(root_input)
+    except OSError as exc:
+        raise OracleCompatError("ORACLE_PACKAGE_TREE_MISMATCH", "Installed Oracle package must be a regular directory") from exc
+    if _is_link_or_reparse(root_info) or not stat.S_ISDIR(root_info.st_mode):
+        raise OracleCompatError("ORACLE_PACKAGE_TREE_MISMATCH", "Installed Oracle package must be a regular directory")
+    root = root_input.resolve(strict=True)
+    installed_files = _scan_installed_package_tree(root)
+    file_count = 0
+    total_bytes = 0
+    seen: set[str] = set()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as package:
+            for member in package:
+                relative = _safe_archive_relative(member.name)
+                if member.isdir():
+                    continue
+                if not member.isfile() or relative is None:
+                    raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive contains a non-file entry")
+                if relative in seen:
+                    raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive contains duplicate files")
+                seen.add(relative)
+                file_count += 1
+                total_bytes += int(member.size)
+                if file_count > SCOPED_ARCHIVE_MAX_FILES or total_bytes > SCOPED_ARCHIVE_MAX_BYTES:
+                    raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive exceeds safety limits")
+                source = package.extractfile(member)
+                if source is None:
+                    raise OracleCompatError("ORACLE_PACKAGE_ARCHIVE_INVALID", "Oracle package archive file is unreadable")
+                archive_bytes = source.read()
+                target = installed_files.get(relative)
+                if target is None:
+                    raise OracleCompatError(
+                        "ORACLE_PACKAGE_TREE_MISMATCH",
+                        "Installed Oracle package is missing a regular published file",
+                        {"path": relative},
+                    )
+                if relative in contracts:
+                    archive_hash = hashlib.sha256(archive_bytes).hexdigest()
+                    contract = contracts[relative]
+                    if archive_hash != contract["pristine"]:
+                        raise OracleCompatError(
+                            "ORACLE_PACKAGE_CONTRACT_MISMATCH",
+                            "Published Oracle archive does not match the scoped patch contract",
+                            {"path": relative, "actual": archive_hash, "expected": contract["pristine"]},
+                        )
+                    current_hash = sha256_file(target)
+                    if current_hash not in {contract["pristine"], contract["patched"]}:
+                        raise OracleCompatError(
+                            "ORACLE_PACKAGE_TREE_MISMATCH",
+                            "Installed Oracle patch target differs from the verified archive",
+                            {"path": relative, "actual": current_hash},
+                        )
+                elif target.read_bytes() != archive_bytes:
+                    raise OracleCompatError(
+                        "ORACLE_PACKAGE_TREE_MISMATCH",
+                        "Installed Oracle package differs from the verified published archive",
+                        {"path": relative},
+                    )
+        extra_files = sorted(set(installed_files) - seen)
+        if extra_files:
+            raise OracleCompatError(
+                "ORACLE_PACKAGE_TREE_MISMATCH",
+                "Installed Oracle package contains files absent from the verified archive",
+                {"path": extra_files[0], "extra_count": len(extra_files)},
+            )
+        return root
+    except (OSError, tarfile.TarError) as exc:
+        raise OracleCompatError(
+            "ORACLE_PACKAGE_ARCHIVE_INVALID",
+            "Oracle package archive could not be verified",
+        ) from exc
 
 
 def package_version(package_root: Path) -> str:
@@ -200,8 +445,8 @@ def resolve_package_roots(version: str = SUPPORTED_VERSION) -> list[Path]:
     return matching
 
 
-def patch_root() -> Path:
-    return Path(__file__).resolve().parent / "oracle-compat" / SUPPORTED_VERSION
+def patch_root(version: str = SUPPORTED_VERSION) -> Path:
+    return Path(__file__).resolve().parent / "oracle-compat" / version
 
 
 def _git_kwargs() -> dict[str, Any]:
@@ -274,29 +519,64 @@ def _migrate_known_legacy_patch(
         shutil.copy2(staged_target, target)
 
 
-def ensure_oracle_compatibility(
-    resolved_version: str,
+def _validated_patch_target(root: Path, relative: str) -> Path:
+    canonical_root = root.resolve(strict=True)
+    target = canonical_root
+    parts = Path(relative).parts
+    for index, part in enumerate(parts):
+        target = target / part
+        try:
+            info = os.lstat(target)
+            canonical_target = target.resolve(strict=True)
+        except OSError as exc:
+            raise OracleCompatError(
+                "ORACLE_PACKAGE_TREE_MISMATCH",
+                "Oracle patch target could not be inspected",
+                {"path": relative},
+            ) from exc
+        if _is_link_or_reparse(info) or not canonical_target.is_relative_to(canonical_root):
+            raise OracleCompatError(
+                "ORACLE_PACKAGE_TREE_MISMATCH",
+                "Oracle patch target crosses a link, junction, or package boundary",
+                {"path": relative},
+            )
+        expected_kind = stat.S_ISREG if index == len(parts) - 1 else stat.S_ISDIR
+        if not expected_kind(info.st_mode):
+            raise OracleCompatError(
+                "ORACLE_PACKAGE_TREE_MISMATCH",
+                "Oracle patch target has an unexpected file type",
+                {"path": relative},
+            )
+        if index == len(parts) - 1 and info.st_nlink != 1:
+            raise OracleCompatError(
+                "ORACLE_PACKAGE_TREE_MISMATCH",
+                "Oracle patch target must not be hard-linked",
+                {"path": relative},
+            )
+    return target
+
+
+def _apply_oracle_compatibility(
+    version: str,
     *,
-    package_root: Path | None = None,
-    backup_root: Path | None = None,
+    package_root: Path | None,
+    backup_root: Path | None,
+    contracts: dict[str, dict[str, Any]],
+    patches: Path,
+    package_roots: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
-    version = resolved_version.strip().removeprefix("oracle ").strip()
-    if version != SUPPORTED_VERSION:
-        raise OracleCompatError(
-            "ORACLE_VERSION_UNVALIDATED",
-            "Oracle compatibility is validated only for the tested version",
-            {"resolved": resolved_version, "supported": SUPPORTED_VERSION},
-        )
-    roots = resolve_package_roots(version) if package_root is None else [package_root.expanduser().resolve(strict=True)]
-    patches = patch_root()
+    if package_roots is not None:
+        roots = [root.expanduser().resolve(strict=True) for root in package_roots]
+    else:
+        roots = resolve_package_roots(version) if package_root is None else [package_root.expanduser().resolve(strict=True)]
     backup = backup_root or (Path.home() / ".codex" / "state" / "oracle-compat-backups" / version)
     changed: list[str] = []
     already: list[str] = []
     for root in roots:
         if package_version(root) != version:
             raise OracleCompatError("ORACLE_VERSION_MISMATCH", "Oracle package version does not match the resolved CLI version")
-        for relative, contract in PATCHES.items():
-            target = root / Path(relative)
+        for relative, contract in contracts.items():
+            target = _validated_patch_target(root, relative)
             current = sha256_file(target)
             item = relative if len(roots) == 1 else f"{root}:{relative}"
             if current == contract["patched"]:
@@ -353,15 +633,125 @@ def ensure_oracle_compatibility(
     }
 
 
+def ensure_oracle_compatibility(
+    resolved_version: str,
+    *,
+    package_root: Path | None = None,
+    backup_root: Path | None = None,
+) -> dict[str, Any]:
+    """Apply only the default comprehensive-workflow Oracle contract."""
+    version = resolved_version.strip().removeprefix("oracle ").strip()
+    if version != SUPPORTED_VERSION:
+        raise OracleCompatError(
+            "ORACLE_VERSION_UNVALIDATED",
+            "Oracle compatibility is validated only for the default tested version",
+            {"resolved": resolved_version, "supported": SUPPORTED_VERSION},
+        )
+    return _apply_oracle_compatibility(
+        version,
+        package_root=package_root,
+        backup_root=backup_root,
+        contracts=PATCHES,
+        patches=patch_root(),
+    )
+
+
+def ensure_scoped_oracle_compatibility(
+    resolved_version: str,
+    *,
+    profile: str,
+    package_root: Path | None = None,
+    package_archive: Path | None = None,
+    backup_root: Path | None = None,
+) -> dict[str, Any]:
+    """Apply an explicitly named, deployment-scoped Oracle contract."""
+    normalized_profile = profile.strip()
+    profile_versions = SCOPED_PATCHES.get(normalized_profile)
+    if profile_versions is None:
+        raise OracleCompatError(
+            "ORACLE_COMPAT_PROFILE_UNVALIDATED",
+            "Oracle compatibility profile is not validated",
+            {"profile": profile, "supported_profiles": sorted(SCOPED_PATCHES)},
+        )
+    version = resolved_version.strip().removeprefix("oracle ").strip()
+    contracts = profile_versions.get(version)
+    if contracts is None:
+        raise OracleCompatError(
+            "ORACLE_VERSION_UNVALIDATED",
+            "Oracle compatibility is not validated for this scoped profile",
+            {"resolved": resolved_version, "profile": normalized_profile, "supported": sorted(profile_versions)},
+        )
+    expected_integrity = SCOPED_PACKAGE_INTEGRITIES.get(normalized_profile, {}).get(version)
+    if not expected_integrity or package_archive is None:
+        raise OracleCompatError(
+            "ORACLE_PACKAGE_ARCHIVE_REQUIRED",
+            "Scoped Oracle compatibility requires the exact published package archive",
+            {"profile": normalized_profile, "version": version},
+        )
+    if package_root is None:
+        raise OracleCompatError(
+            "ORACLE_PACKAGE_ROOT_REQUIRED",
+            "Scoped Oracle compatibility requires the exact installed package root",
+            {"profile": normalized_profile, "version": version},
+        )
+    _verify_scoped_node_runtime(normalized_profile)
+    roots = [package_root.expanduser()]
+    verified_roots: list[Path] = []
+    for root in roots:
+        verified_roots.append(
+            _verify_scoped_package_archive(
+                root,
+                package_archive,
+                expected_integrity=expected_integrity,
+                contracts=contracts,
+            )
+        )
+    result = _apply_oracle_compatibility(
+        version,
+        package_root=None,
+        backup_root=backup_root,
+        contracts=contracts,
+        patches=patch_root(version),
+        package_roots=verified_roots,
+    )
+    for root in verified_roots:
+        _verify_scoped_package_archive(
+            root,
+            package_archive,
+            expected_integrity=expected_integrity,
+            contracts=contracts,
+        )
+    return {**result, "profile": normalized_profile, "package_integrity": expected_integrity}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Apply the exact Oracle 0.17.1 ChatGPT compatibility patch.")
-    parser.add_argument("--resolved-version", default=f"oracle {SUPPORTED_VERSION}")
+    parser = argparse.ArgumentParser(description="Apply an exact, hash-gated Oracle ChatGPT compatibility patch.")
+    parser.add_argument("--resolved-version")
     parser.add_argument("--package-root", type=Path)
+    parser.add_argument("--package-archive", type=Path)
+    parser.add_argument("--profile", choices=sorted(SCOPED_PATCHES))
     args = parser.parse_args(argv)
     try:
-        result = ensure_oracle_compatibility(args.resolved_version, package_root=args.package_root)
+        if args.profile:
+            if not args.resolved_version:
+                raise OracleCompatError(
+                    "ORACLE_VERSION_REQUIRED",
+                    "Scoped Oracle compatibility requires an explicit resolved version",
+                    {"profile": args.profile},
+                )
+            result = ensure_scoped_oracle_compatibility(
+                args.resolved_version,
+                profile=args.profile,
+                package_root=args.package_root,
+                package_archive=args.package_archive,
+            )
+        else:
+            result = ensure_oracle_compatibility(
+                args.resolved_version or f"oracle {SUPPORTED_VERSION}",
+                package_root=args.package_root,
+            )
     except OracleCompatError as exc:
         result = {"ok": False, "error": {"code": exc.code, "message": str(exc), "evidence": exc.evidence}}
     print(json.dumps(result, ensure_ascii=False, indent=2))

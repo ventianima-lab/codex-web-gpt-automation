@@ -1,5 +1,17 @@
 # 기술 변경 기록
 
+## 1.17.1 - WebJjonku Oracle 0.18 후속 실행 timeout 호환성
+
+- 일반 comprehensive 자동화는 계속 검증된 Oracle 0.17.1만 허용하고,
+  WebJjonku Linux 배포가 명시적으로 `webjjonku-linux` profile을 선택한 경우에만
+  Oracle 0.18.0의 후속 실행 timeout 전달 패치를 적용합니다.
+- 0.18.0 패치는 pristine·patched SHA-256과 npm integrity를 모두 확인하고,
+  명시한 `--browser-timeout`만 child follow-up에 전달합니다. profile 누락,
+  알 수 없는 버전, 해시 불일치는 브라우저 실행 전에 실패 폐쇄됩니다.
+- 범위 제한 프로필은 버전·설치 루트·archive를 모두 명시해야 하며,
+  Windows junction/reparse point와 archive 경로 탈출을 거부합니다. 공개
+  portability CI는 Windows·macOS·Ubuntu에서 실제 0.18.0 archive를 검증합니다.
+
 ## 1.17.0 - 재개 가능한 최초 설치 마법사와 커넥터 신원 가드
 
 - `onboard.py`에 `start`, `next`, `resume`, `confirm`, `record-final-gate`를
