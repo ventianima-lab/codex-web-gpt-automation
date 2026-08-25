@@ -13,16 +13,19 @@ on:
 
 permissions:
   contents: write
+  actions: read
+  pull-requests: read
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
       - name: Validate release metadata and annotated tag
@@ -40,6 +43,60 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "refs/tags/${tag}")"
           python scripts/check_docs.py --root .
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - name: Require reviewed validation PR and exact-commit portability CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_commit="$(git rev-parse HEAD)"
+          deadline=$((SECONDS + 2700))
+
+          while :; do
+            runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-portability.yml/runs?head_sha=${release_commit}&event=push&per_page=100")"
+            if jq -e --arg sha "${release_commit}" '
+              any(.workflow_runs[];
+                .head_sha == $sha and
+                .head_branch == "main" and
+                .event == "push" and
+                .status == "completed" and
+                .conclusion == "success")
+            ' <<<"${runs}" >/dev/null; then
+              break
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "No successful release-portability push run exists for exact main commit ${release_commit}." >&2
+              exit 1
+            fi
+            sleep 20
+          done
+
+          pulls="$(gh api -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/commits/${release_commit}/pulls?per_page=100")"
+          reviewed=false
+          while IFS=$'\t' read -r number head_sha; do
+            [[ -n "${number}" && -n "${head_sha}" ]] || continue
+            reviews="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}/reviews?per_page=100")"
+            if jq -e --arg sha "${head_sha}" '
+              ([.[] | select(.commit_id == $sha and .state == "CHANGES_REQUESTED")] | length) == 0 and
+              any(.[];
+                .commit_id == $sha and
+                (.state == "APPROVED" or
+                 (.state == "COMMENTED" and
+                  ((.body // "") | test("(^|\\n)INDEPENDENT_REVIEW: PASS($|\\n)")) and
+                  ((.body // "") | gsub("^\\s+|\\s+$"; "") | length) >= 40)))
+            ' <<<"${reviews}" >/dev/null; then
+              reviewed=true
+              break
+            fi
+          done < <(jq -r --arg sha "${release_commit}" '.[] |
+            select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha) |
+            [.number, .head.sha] | @tsv' <<<"${pulls}")
+
+          if [[ "${reviewed}" != true ]]; then
+            echo "Exact release commit ${release_commit} is not bound to a merged, final-head-reviewed validation PR." >&2
+            exit 1
+          fi
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,4 +109,10 @@ jobs:
           else
             gh release create "${RELEASE_TAG}" --verify-tag --generate-notes --title "${RELEASE_TAG}"
           fi
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .tag_name)" = "${RELEASE_TAG}"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .draft)" = "false"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .prerelease)" = "false"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "${RELEASE_TAG}"
+          remote_tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.type)"
+          test "${remote_tag_type}" = "tag"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}")"

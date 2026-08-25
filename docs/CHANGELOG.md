@@ -1,5 +1,39 @@
 # 기술 변경 기록
 
+## 1.20.2 - Prove exact app reads and close onboarding gaps
+
+- New read-only Pro runs are blocked before browser creation unless a recent
+  regular non-Pro final gate proves `open_workspace`, `read`, and `read_chunk`
+  for the exact requested root through the configured app. A receipt for a
+  different allowed root cannot authorize the run.
+- Oracle state can now append the Pro app-read gate and provider-session
+  evidence without inventing a status transition. Only exact-bound upstream
+  `completed` metadata confirms provider terminal state; a local/browser
+  `error` with `completedAt` remains nonterminal evidence.
+- The Oracle `0.17.1` LKG and current `0.18.0` compatibility contracts now warn
+  when a previously detected thinking label disappears for five minutes, while
+  keeping the independent terminal watchdog active. Exact legacy-patch
+  migration and behavior tests cover both the original never-detected case and
+  the detected-then-missing case.
+- Onboarding now labels Oracle login and ChatGPT app registration as user
+  attestations until the functional final read gate succeeds. The Korean and
+  English quick paths list the same nine-stage order and explain that a pasted
+  repository URL is checked out by the coding agent before the local wizard
+  starts. Its initial status says setup is in progress instead of claiming the
+  program install is already complete before the install receipt exists.
+- Ultra Economy activation no longer implies Pro authority. Its mandatory
+  read-only Pro design stage requires a separate explicit user authorization
+  plus `allow_pro: true`; otherwise the profile fails closed before submission.
+- GitHub workflows pin checkout and Python setup actions to exact commits, and
+  the drift watcher refuses an unmanaged or duplicate exact-title issue instead
+  of creating a second `Upstream runtime drift` issue. Release publication now
+  also requires a final-head independent-review receipt on the merged validation
+  PR plus successful three-OS portability CI for the exact main commit.
+- Atomic Oracle state writes use a short same-directory temporary basename so
+  deep but valid Windows settlement paths do not cross `MAX_PATH` before the
+  final atomic replace. The current and legacy thinking-status patch files are
+  both included in lifecycle installs.
+
 ## 1.20.1 - Assign and gate upstream runtime promotion
 
 - The six-hour watcher remains strictly read-only, but its stable drift issue

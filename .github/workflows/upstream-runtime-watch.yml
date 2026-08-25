@@ -17,8 +17,8 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
       - name: Query official npm latest tags without mutating local state
@@ -44,19 +44,29 @@ jobs:
           import os
           pages = json.load(open("upstream-runtime-open-issues.json", encoding="utf-8"))
           issues = [item for page in pages for item in page if "pull_request" not in item]
+          exact_title = [item for item in issues if item.get("title") == os.environ["TITLE"]]
           managed = [
               item for item in issues
               if item.get("title") == os.environ["TITLE"]
               and os.environ["MARKER"] in str(item.get("body") or "")
               and os.environ["LABEL"] in {str(label.get("name") or "") for label in item.get("labels", [])}
           ]
+          if len(exact_title) > 1:
+              raise SystemExit("multiple exact upstream drift issues exist; refusing ambiguous mutation")
           exact = [str(item["number"]) for item in managed]
           if len(exact) > 1:
-              raise SystemExit("multiple exact upstream drift issues exist; refusing ambiguous mutation")
+              raise SystemExit("multiple managed upstream drift issues exist; refusing ambiguous mutation")
           open("upstream-runtime-issue-number.txt", "w", encoding="utf-8").write(exact[0] if exact else "")
+          open("upstream-runtime-issue-conflict.txt", "w", encoding="utf-8").write(
+              "unmanaged-exact-title" if exact_title and not managed else ""
+          )
           PY
           issue_number="$(cat upstream-runtime-issue-number.txt)"
           if [ "${drift_count}" -gt 0 ]; then
+            if [ -s upstream-runtime-issue-conflict.txt ]; then
+              echo "An unmanaged exact-title drift issue already exists; refusing to create or overwrite." >&2
+              exit 1
+            fi
             python - <<'PY'
           import json
           report = json.load(open("upstream-runtime-report.json", encoding="utf-8"))

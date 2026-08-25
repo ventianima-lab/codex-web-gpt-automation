@@ -22,8 +22,9 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
 - Pro is quota-limited and explicit-only. Ordinary modes, comprehensive plans,
   and recovery logic must never select or upgrade to Pro automatically. A
   standard comprehensive manifest must contain `allow_pro: true`, supplied
-  only after an explicit user request; selecting Ultra Economy Mode is itself
-  an explicit Pro-design request.
+  only after an explicit user request. Selecting Ultra Economy Mode authorizes
+  the Luna-Max local/web-first profile, not Pro; its one read-only Pro advisory
+  requires a separate explicit user authorization.
 - Every new qualified Pro run uses Oracle, `GPT-5.6 Sol` at the Pro effort, the
   `pro-devspace-readonly` transport, and the manually registered DevSpace app.
   It binds the exact project root but is
@@ -80,10 +81,11 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   fixed to `gpt-5.6-luna` with `max` reasoning and is not a web transport or a
   release authority.
 - Ultra Economy Mode keeps the local commander and native subagents on exact
-  Luna Max while separate Oracle sessions own Pro design, review,
+  Luna Max while separate Oracle sessions own regular review,
   implementation, and web verification. Its first request in each Codex task
   always produces one Luna/Max selection instruction; after user confirmation,
-  that task never re-inspects the runtime or asks again.
+  that task never re-inspects the runtime or asks again. A separate explicit
+  authorization is required before its optional read-only Pro design advisory.
 - Ultra GPT Mode forbids cognitive native subagents. A deterministic local
   controller runs the `ultra-gpt` comprehensive profile: regular web plan and
   review, two to five parallel isolated-worktree Web Multi implementers with

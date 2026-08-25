@@ -108,7 +108,11 @@ LKG_PATCHES = {
     "dist/src/browser/actions/thinkingStatus.js": {
         "patch": "thinkingStatus.undetected-warning.patch",
         "pristine": "0297df6855ce653ada2ec8509bba71651dd3ac9b78041ecb4343c765fd47e56c",
-        "patched": "707bc1b582ce36c5cb816c26490d8e204238b3948f794ec4715f69a27175b094",
+        "patched": "f4d3585b822df2b5ed2834189ba0012168a579d205c314ff2ace82f499b0ac67",
+        "legacy_patched": [
+            "707bc1b582ce36c5cb816c26490d8e204238b3948f794ec4715f69a27175b094",
+        ],
+        "legacy_patch": "thinkingStatus.undetected-warning.v1.19.2.patch",
     },
     "dist/src/browser/actions/navigation.js": {
         "patch": "navigation.resumed-hydration-recheck.patch",
@@ -239,7 +243,11 @@ PATCHES = {
     "dist/src/browser/actions/thinkingStatus.js": {
         "patch": "../0.17.1/thinkingStatus.undetected-warning.patch",
         "pristine": "0297df6855ce653ada2ec8509bba71651dd3ac9b78041ecb4343c765fd47e56c",
-        "patched": "707bc1b582ce36c5cb816c26490d8e204238b3948f794ec4715f69a27175b094",
+        "patched": "f4d3585b822df2b5ed2834189ba0012168a579d205c314ff2ace82f499b0ac67",
+        "legacy_patched": [
+            "707bc1b582ce36c5cb816c26490d8e204238b3948f794ec4715f69a27175b094",
+        ],
+        "legacy_patch": "../0.17.1/thinkingStatus.undetected-warning.v1.19.2.patch",
     },
     "dist/src/browser/actions/navigation.js": {
         "patch": "../0.17.1/navigation.resumed-hydration-recheck.patch",

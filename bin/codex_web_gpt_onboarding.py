@@ -87,15 +87,15 @@ FINAL_GATE_RECEIPT_ID_RE = re.compile(
 )
 COMPLETION_STATES_BY_LANGUAGE = {
     "ko": {
-        "installed": "프로그램 설치 완료",
+        "installed": "로컬 설치·연결 설정 진행 중",
         "awaiting_chatgpt": "ChatGPT 연결 대기",
-        "awaiting_verification": "앱 등록 완료·검증 대기",
+        "awaiting_verification": "앱 등록 사용자 확인·기능 검증 대기",
         "verified": "전체 설치 및 실제 프로젝트 연결 검증 완료",
     },
     "en": {
-        "installed": "Program install complete",
+        "installed": "Local install and connection setup in progress",
         "awaiting_chatgpt": "Awaiting ChatGPT connection",
-        "awaiting_verification": "App registered, awaiting verification",
+        "awaiting_verification": "App registration user-confirmed; awaiting functional verification",
         "verified": "Full install and real project-root read verified",
     },
 }
@@ -1079,6 +1079,13 @@ def evaluate_stages(
             "owner": owner,
             "verifier": STAGE_VERIFIERS[stage_id],
             "verified": satisfied,
+            "evidence_level": (
+                "functional-proof"
+                if stage_id == "08_final_gate" and satisfied
+                else "user-attestation"
+                if stage_id in {"06_oracle_login", "07_chatgpt_app"} and satisfied
+                else "machine-check"
+            ),
         }
     return {"checks": checks, "stages": stages, "readiness": status}
 

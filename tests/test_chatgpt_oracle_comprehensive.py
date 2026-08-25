@@ -46,6 +46,7 @@ def ultra_economy_manifest(tmp_path: Path) -> Path:
     payload.update({
         "workflow_profile": "ultra-economy",
         "initial_stage": "pro",
+        "allow_pro": True,
     })
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path

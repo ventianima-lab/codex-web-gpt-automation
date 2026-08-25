@@ -1,6 +1,6 @@
 ---
 name: ultra-economy-mode
-description: Run 초절약모드 for expensive or long Codex tasks by keeping the local commander and every native subagent on exact gpt-5.6-luna with max reasoning, assigning architecture to qualified ChatGPT Pro, and moving implementation and review into separate web sessions. Use when the user says 초절약모드, Ultra Economy Mode, or explicitly requests a Luna Max local commander with web-first execution.
+description: Run 초절약모드 for expensive or long Codex tasks by keeping the local commander and every native subagent on exact gpt-5.6-luna with max reasoning, using qualified ChatGPT Pro for architecture only after separate explicit authorization, and moving implementation and review into separate web sessions. Use when the user says 초절약모드, Ultra Economy Mode, or explicitly requests a Luna Max local commander with web-first execution.
 ---
 
 # Ultra Economy Mode
@@ -25,6 +25,10 @@ reasoning surface. Use the existing Oracle comprehensive engine with the
    follow-up requests in that task.
 4. Ask once again only for a new Codex task's first Ultra Economy Mode request.
    Never rewrite the user's global model defaults to activate this mode.
+5. The activation handshake does not authorize Pro. Require a separate explicit
+   user Pro authorization before the first read-only Pro design stage. If the
+   user does not authorize Pro, do not start this profile; offer the ordinary
+   non-Pro comprehensive profile instead.
 
 ## Local commander contract
 
@@ -62,7 +66,8 @@ Use `bin/chatgpt_oracle_comprehensive.py` with these manifest fields:
 {
   "schema": "codex.chatgpt.oracle-comprehensive/v1",
   "workflow_profile": "ultra-economy",
-  "initial_stage": "pro"
+  "initial_stage": "pro",
+  "allow_pro": true
 }
 ```
 
@@ -71,8 +76,9 @@ The local commander owns the one-time conversational activation handshake; the
 engine does not re-read or re-verify the task model at later stages. A manifest
 self-declaration is not a substitute for the handshake.
 
-The engine must fail closed before submission when the profile, Pro-first
-stage, exact root qualification, or minimum four-stage budget is missing. Do
+The engine must fail closed before submission when the separate explicit Pro
+authorization and `allow_pro: true`, profile, Pro-first stage, exact root
+qualification, or minimum four-stage budget is missing. Do
 not substitute an attachment for readable DevSpace, and do not use Pro as the
 first connector-health probe.
 

@@ -1,6 +1,8 @@
 # Codex Web GPT Automation 설치 계약
 
-사용자가 이 저장소 URL만 붙여 넣고 “설치해 줘”라고 하면 이 순서로 진행합니다.
+사용자가 이 저장소 URL만 붙여 넣고 “설치해 줘”라고 하면 에이전트가 checkout부터
+아래 순서로 계속 진행합니다. 온보딩 마법사 자체는 로컬 checkout과 lifecycle 설치가
+끝난 뒤 시작합니다. URL만으로 실행되는 원격 설치기라고 설명하지 않습니다.
 
 ## 처음에만 물을 것
 
@@ -99,8 +101,10 @@ conversation URL, output SHA와 최종 marker를 다시 검증합니다. 임의 
 Oracle 이외의 transport면 `FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE`로
 거부합니다. 온보딩 상태 파일이 손상되면 `ONBOARDING_STATE_CORRUPT`로 실패 폐쇄합니다.
 
-`08_final_gate` 전에는 “설치 완료”라고 보고하지 않습니다. 대신 정확히 다음 중 현재
-상태를 보고합니다: 프로그램 설치 완료 / ChatGPT 연결 대기 / 앱 등록 완료·검증
-대기. 마지막 상태인 전체 설치 및 실제 프로젝트 연결 검증 완료만 완료입니다.
+`06_oracle_login`과 `07_chatgpt_app`의 `confirm`은 사용자 진술을 기록할 뿐, 로그인이나
+앱 연결의 기능 증명이 아닙니다. `08_final_gate` 전에는 “설치 완료”라고 보고하지
+않습니다. 대신 정확히 다음 중 현재 상태를 보고합니다: 로컬 설치·연결 설정 진행 중 / ChatGPT
+연결 대기 / 앱 등록 사용자 확인·기능 검증 대기. 마지막 상태인 전체 설치 및 실제
+프로젝트 연결 검증 완료만 완료입니다.
 
 전체 절차와 수동 fallback은 [최초 설치 가이드](FIRST_INSTALL.md)를 따르며, Local Multi-GPT 선택 사항은 [Local Multi-GPT](LOCAL_MULTI_GPT.md)를 확인합니다.

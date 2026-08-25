@@ -208,7 +208,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     allow_pro_raw = value.get("allow_pro", False)
     if not isinstance(allow_pro_raw, bool):
         raise WorkflowError("allow_pro must be a boolean explicit opt-in")
-    allow_pro = allow_pro_raw or workflow_profile == ULTRA_ECONOMY_PROFILE
+    allow_pro = allow_pro_raw
     regular_model = str(value.get("model") or "gpt-5.6").strip()
     initial_stage = str(
         value.get("initial_stage")
@@ -219,6 +219,11 @@ def load_manifest(path: Path) -> dict[str, Any]:
             "local_runtime_contract is not accepted; ultra-economy activation is a one-time conversational handshake"
         )
     if workflow_profile == ULTRA_ECONOMY_PROFILE:
+        if not allow_pro:
+            raise WorkflowError(
+                "ULTRA_ECONOMY_PRO_AUTHORIZATION_REQUIRED: Ultra Economy activation does not authorize Pro; "
+                "require a separate explicit user authorization and allow_pro=true"
+            )
         if initial_stage != "pro":
             raise WorkflowError("ULTRA_ECONOMY_INITIAL_STAGE_REQUIRED: initial_stage must be pro")
         if maximum < 4:

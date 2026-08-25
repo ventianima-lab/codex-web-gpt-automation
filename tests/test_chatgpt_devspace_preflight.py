@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,139 @@ def load_module():
 
 def write_config(path: Path, roots: list[Path]) -> None:
     path.write_text(json.dumps({"allowedRoots": [str(root) for root in roots]}), encoding="utf-8")
+
+
+class FakeOnboarding:
+    def __init__(self, *, codex_home: Path, state: dict, gate: dict | None):
+        self.codex_home = codex_home
+        self.state = state
+        self.gate = gate
+
+    def load_state(self, *, codex_home=None):
+        assert codex_home in {None, self.codex_home}
+        return self.state
+
+    def _codex_home(self, codex_home=None):
+        return (codex_home or self.codex_home).resolve()
+
+    def _final_gate_receipt(self, codex_home, devspace_home, state):
+        assert codex_home == self.codex_home.resolve()
+        assert state is self.state
+        return self.gate
+
+
+def test_recent_registered_app_read_gate_is_read_only_and_root_scoped(tmp_path: Path) -> None:
+    module = load_module()
+    project = tmp_path / "Coin"
+    project.mkdir()
+    codex_home = tmp_path / ".codex"
+    now = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
+    recorded_at = now - timedelta(hours=2)
+    state = {"app_name": "codex", "allowed_roots": [str(project)]}
+    gate = {
+        "read_ok": True,
+        "root": str(project),
+        "recorded_at": recorded_at.isoformat(),
+        "run_id": "regular-canary-1",
+        "conversation_url": "https://chatgpt.com/c/canary",
+        "tool_read_receipts": [{}, {}, {}],
+    }
+    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=gate)
+
+    result = module.ensure_recent_registered_app_read_gate(
+        project,
+        "codex",
+        codex_home=codex_home,
+        devspace_home=tmp_path / ".devspace",
+        now=now,
+        onboarding_loader=lambda: fake,
+    )
+
+    assert result["schema"] == module.PRO_APP_READ_GATE_SCHEMA
+    assert result["qualified"] is True
+    assert result["age_seconds"] == 7200
+    assert result["receipt_count"] == 3
+    assert not (codex_home / "state").exists()
+
+
+@pytest.mark.parametrize(
+    ("app_name", "root_kind", "age_hours", "reason"),
+    [
+        ("other", "exact", 1, "registered-app-name-mismatch"),
+        ("codex", "other", 1, "exact-root-not-covered-by-verified-app"),
+        ("codex", "exact", 25, "final-gate-expired"),
+    ],
+)
+def test_pro_gate_fails_closed_for_wrong_app_root_or_stale_receipt(
+    tmp_path: Path,
+    app_name: str,
+    root_kind: str,
+    age_hours: int,
+    reason: str,
+) -> None:
+    module = load_module()
+    project = tmp_path / "Coin"
+    other = tmp_path / "Other"
+    project.mkdir()
+    other.mkdir()
+    codex_home = tmp_path / ".codex"
+    now = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
+    roots = [str(project if root_kind == "exact" else other)]
+    state = {"app_name": app_name, "allowed_roots": roots}
+    gate = {
+        "read_ok": True,
+        "root": roots[0],
+        "recorded_at": (now - timedelta(hours=age_hours)).isoformat(),
+        "run_id": "regular-canary-1",
+        "conversation_url": "https://chatgpt.com/c/canary",
+        "tool_read_receipts": [{}, {}, {}],
+    }
+    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=gate)
+
+    with pytest.raises(module.DevSpacePreflightError) as exc:
+        module.ensure_recent_registered_app_read_gate(
+            project,
+            "codex",
+            codex_home=codex_home,
+            now=now,
+            onboarding_loader=lambda: fake,
+        )
+
+    assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
+    assert exc.value.evidence["reason"] == reason
+    assert exc.value.evidence["required_tools"] == ["open_workspace", "read", "read_chunk"]
+
+
+def test_pro_gate_rejects_receipt_for_different_allowed_root(tmp_path: Path) -> None:
+    module = load_module()
+    project = tmp_path / "Coin"
+    other = tmp_path / "Other"
+    project.mkdir()
+    other.mkdir()
+    codex_home = tmp_path / ".codex"
+    now = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
+    state = {"app_name": "codex", "allowed_roots": [str(project), str(other)]}
+    gate = {
+        "read_ok": True,
+        "root": str(other),
+        "recorded_at": (now - timedelta(hours=1)).isoformat(),
+        "run_id": "regular-canary-other-root",
+        "conversation_url": "https://chatgpt.com/c/canary",
+        "tool_read_receipts": [{}, {}, {}],
+    }
+    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=gate)
+
+    with pytest.raises(module.DevSpacePreflightError) as exc:
+        module.ensure_recent_registered_app_read_gate(
+            project,
+            "codex",
+            codex_home=codex_home,
+            now=now,
+            onboarding_loader=lambda: fake,
+        )
+
+    assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
+    assert exc.value.evidence["reason"] == "final-gate-root-mismatch"
 
 
 def test_first_exact_root_qualification_is_cached_until_config_changes(tmp_path: Path) -> None:

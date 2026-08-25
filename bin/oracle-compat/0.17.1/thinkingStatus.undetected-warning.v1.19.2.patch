@@ -9,58 +9,43 @@ diff --git a/dist/src/browser/actions/thinkingStatus.js b/dist/src/browser/actio
  export function startThinkingStatusMonitor(Runtime, logger, options = {}) {
      const intervalMs = resolveThinkingStatusInterval(options.intervalMs);
      if (!intervalMs) {
-@@ -12,6 +13,9 @@ export function startThinkingStatusMonitor(Runtime, logger, options = {}) {
+@@ -12,6 +13,8 @@ export function startThinkingStatusMonitor(Runtime, logger, options = {}) {
      let lastFingerprint = null;
      let lastChangedAt = now();
      const startedAt = now();
 +    let thinkingStatusDetected = false;
-+    let thinkingStatusMissingSince = startedAt;
 +    let thinkingStatusWarningLogged = false;
      const interval = setInterval(async () => {
          // stop flag flips asynchronously
          if (stopped || pending) {
-@@ -25,6 +29,9 @@ export function startThinkingStatusMonitor(Runtime, logger, options = {}) {
+@@ -25,6 +28,7 @@ export function startThinkingStatusMonitor(Runtime, logger, options = {}) {
              }
              const tickAt = now();
              if (snapshot) {
 +                thinkingStatusDetected = true;
-+                thinkingStatusMissingSince = null;
-+                thinkingStatusWarningLogged = false;
                  const fingerprint = buildThinkingStatusFingerprint(snapshot);
                  if (fingerprint !== lastFingerprint) {
                      lastFingerprint = fingerprint;
-@@ -37,6 +44,13 @@ export function startThinkingStatusMonitor(Runtime, logger, options = {}) {
+@@ -37,6 +41,10 @@ export function startThinkingStatusMonitor(Runtime, logger, options = {}) {
              }
              else {
                  logger(formatThinkingWaitingLog(startedAt, tickAt));
-+                if (thinkingStatusMissingSince === null) {
-+                    thinkingStatusMissingSince = tickAt;
-+                }
-+                if (shouldWarnThinkingStatusMissing(thinkingStatusMissingSince, thinkingStatusWarningLogged, tickAt)) {
++                if (shouldWarnThinkingStatusUndetected(thinkingStatusDetected, thinkingStatusWarningLogged, tickAt - startedAt)) {
 +                    thinkingStatusWarningLogged = true;
-+                    logger(formatThinkingStatusMissingWarningLog(startedAt, tickAt, thinkingStatusDetected, thinkingStatusMissingSince));
++                    logger(formatThinkingUndetectedWarningLog(startedAt, tickAt));
 +                }
              }
          }
          catch {
-@@ -77,6 +91,21 @@ export function formatThinkingLog(startedAt, now, status, locatorSuffix, unchang
+@@ -77,6 +85,12 @@ export function formatThinkingLog(startedAt, now, status, locatorSuffix, unchang
  export function formatThinkingWaitingLog(startedAt, now) {
      return `[browser] Waiting for ChatGPT response - ${formatElapsed(now - startedAt)} elapsed; no thinking status detected yet.`;
  }
 +export function shouldWarnThinkingStatusUndetected(detected, alreadyWarned, elapsedMs) {
 +    return !detected && !alreadyWarned && elapsedMs >= THINKING_STATUS_UNDETECTED_WARNING_MS;
 +}
-+export function shouldWarnThinkingStatusMissing(missingSince, alreadyWarned, now) {
-+    return Number.isFinite(missingSince) && !alreadyWarned && now - missingSince >= THINKING_STATUS_UNDETECTED_WARNING_MS;
-+}
 +export function formatThinkingUndetectedWarningLog(startedAt, now) {
 +    return `[browser] Warning: no thinking status has been detected for ${formatElapsed(now - startedAt)}; the independent terminal watchdog remains active.`;
-+}
-+export function formatThinkingStatusMissingWarningLog(startedAt, now, detected, missingSince) {
-+    if (!detected) {
-+        return formatThinkingUndetectedWarningLog(startedAt, now);
-+    }
-+    return `[browser] Warning: a previously detected thinking status has been absent for ${formatElapsed(now - missingSince)}; the independent terminal watchdog remains active.`;
 +}
  function resolveThinkingStatusInterval(intervalMs) {
      if (intervalMs === 0) {

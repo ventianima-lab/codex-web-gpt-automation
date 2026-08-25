@@ -892,6 +892,13 @@ def state_payload(
             "receipt_path": None,
             "receipt_sha256": None,
         },
+        "provider_session": {
+            "schema": "codex.chatgpt.oracle-provider-session/v1",
+            "status": "unobserved",
+            "terminal_confirmed": False,
+            "binding": "none",
+            "reason": "oracle-runtime-not-yet-observed",
+        },
         "status": status,
         "exit_code": exit_code,
         "session_authority": "pre_submit",
@@ -1416,14 +1423,22 @@ def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     url = str(runtime.get("tabUrl") or "").strip()
     expected_cdp_port = identity.get("expected_cdp_port")
     if cdp_port != expected_cdp_port:
+        candidate_url = url if CHATGPT_CONVERSATION_URL_RE.fullmatch(url) is not None else None
         mismatch = {
             "schema": "codex.chatgpt.oracle-browser-port-mismatch/v1",
             "expected_cdp_port": expected_cdp_port,
             "observed_cdp_port": cdp_port,
             "oracle_meta_path": str(session_root / slug / "meta.json"),
+            "conversation_url_candidate": candidate_url,
+            "target_id_candidate": target_id or None,
         }
         if identity.get("port_mismatch") != mismatch:
             state["browser_identity"] = {**identity, "port_mismatch": mismatch}
+            if candidate_url:
+                state["oracle"] = {
+                    **oracle,
+                    "conversation_url_candidate": candidate_url,
+                }
             write_json_atomic(state_path, state)
         return None
     existing = proven_browser_identity_receipt(state_path)
@@ -1479,6 +1494,96 @@ def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     state["oracle"] = {**oracle, "conversation_url": url}
     write_json_atomic(state_path, state)
     return {"path": str(receipt_path), "sha256": digest, "payload": receipt}
+
+
+def provider_session_evidence(state_path: Path) -> dict[str, Any]:
+    """Describe provider terminal state without widening recovery authority.
+
+    Only an immutable browser identity receipt can turn Oracle metadata into
+    confirmed remote-session evidence.  A legacy or port-mismatched metadata
+    file may expose a forensic candidate URL, but remains explicitly
+    unconfirmed and cannot authorize attach, recovery, harvest, or stop.
+    """
+    state = load_state(state_path)
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    slug = str(oracle.get("slug") or "").strip()
+    session_root = Path(
+        os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+    ).resolve()
+    meta_path = session_root / slug / "meta.json"
+    base = {
+        "schema": "codex.chatgpt.oracle-provider-session/v1",
+        "status": "unobserved",
+        "terminal_confirmed": False,
+        "binding": "none",
+        "reason": "oracle-meta-unavailable",
+        "oracle_meta_path": str(meta_path),
+    }
+    try:
+        meta_bytes = meta_path.read_bytes()
+        meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return base
+    if not isinstance(meta, dict):
+        return {**base, "reason": "oracle-meta-invalid"}
+
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+    archive = browser.get("archive") if isinstance(browser.get("archive"), dict) else {}
+    runtime_url = str(runtime.get("tabUrl") or "").strip()
+    archive_url = str(archive.get("conversationUrl") or "").strip()
+    observed_url = next(
+        (
+            candidate
+            for candidate in (runtime_url, archive_url)
+            if CHATGPT_CONVERSATION_URL_RE.fullmatch(candidate) is not None
+        ),
+        "",
+    )
+    status = str(meta.get("status") or "unknown").strip().casefold()
+    completed_at = str(meta.get("completedAt") or "").strip() or None
+    receipt = proven_browser_identity_receipt(state_path)
+    if receipt is None:
+        return {
+            **base,
+            "status": status,
+            "binding": "unconfirmed",
+            "reason": "browser-identity-receipt-unavailable",
+            "observed_conversation_url": observed_url or None,
+            "completed_at": completed_at,
+            "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        }
+
+    payload = receipt["payload"]
+    bound_url = str(payload.get("conversation_url") or "").strip()
+    if not observed_url or observed_url != bound_url:
+        return {
+            **base,
+            "status": status,
+            "binding": "exact-browser-identity-receipt",
+            "reason": "conversation-url-mismatch",
+            "observed_conversation_url": observed_url or None,
+            "bound_conversation_url": bound_url or None,
+            "completed_at": completed_at,
+            "browser_identity_receipt_sha256": receipt["sha256"],
+            "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        }
+
+    # A local/browser error can carry ``completedAt`` even though it proves
+    # only that the observer stopped.  It is not provider-terminal evidence.
+    terminal = status == "completed" and completed_at is not None
+    return {
+        **base,
+        "status": status,
+        "terminal_confirmed": terminal,
+        "binding": "exact-browser-identity-receipt",
+        "reason": "oracle-meta-terminal" if terminal else "oracle-meta-nonterminal",
+        "observed_conversation_url": observed_url,
+        "bound_conversation_url": bound_url,
+        "completed_at": completed_at,
+        "browser_identity_receipt_sha256": receipt["sha256"],
+        "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+    }
 
 
 def host_uptime_ms(*, platform_name: str | None = None) -> int:
@@ -1568,8 +1673,22 @@ def cleanup_prior_boot_browser_temps(
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # Keep the same-directory temporary basename deliberately short. Reusing
+    # the full destination name plus PID/UUID pushed otherwise valid Windows
+    # settlement paths beyond MAX_PATH before the final atomic replace.
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".t-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
     try:
         for attempt in range(ATOMIC_REPLACE_MAX_ATTEMPTS):
             try:
@@ -1609,7 +1728,7 @@ def load_state(path: Path) -> dict[str, Any]:
 def update_state(
     state_path: Path,
     *,
-    status: str,
+    status: str | None = None,
     resolved_version: str | None = None,
     exit_code: int | None = None,
     session_authority: str | None = None,
@@ -1624,13 +1743,16 @@ def update_state(
     status_audit: dict[str, Any] | None = None,
     conversation_url: str | None = None,
     conversation_url_conflict: dict[str, str] | None = None,
+    pro_app_read_gate: dict[str, Any] | None = None,
+    provider_session: dict[str, Any] | None = None,
     exact_live_observation: bool = False,
 ) -> dict[str, Any]:
-    if status not in STATUSES:
+    if status is not None and status not in STATUSES:
         raise OracleStateError("STATUS_INVALID", "invalid Oracle run status")
     payload = load_state(state_path)
-    payload["status"] = status
-    payload["exit_code"] = exit_code
+    if status is not None:
+        payload["status"] = status
+        payload["exit_code"] = exit_code
     if resolved_version is not None:
         payload["oracle"]["resolved_version"] = resolved_version
     if session_authority is not None:
@@ -1688,6 +1810,10 @@ def update_state(
             payload["oracle"] = {**oracle, "conversation_url": conversation_url}
     if conversation_url_conflict is not None:
         payload["conversation_url_conflict"] = dict(conversation_url_conflict)
+    if pro_app_read_gate is not None:
+        payload["pro_app_read_gate"] = dict(pro_app_read_gate)
+    if provider_session is not None:
+        payload["provider_session"] = dict(provider_session)
     write_json_atomic(state_path, payload)
     return payload
 
