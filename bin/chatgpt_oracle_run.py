@@ -1573,12 +1573,59 @@ def execute_run(
     _cdp_port: int | None = None,
     _followup_parent_slug: str | None = None,
     _followup_binding: dict[str, Any] | None = None,
+    _expected_manifest_sha256: str | None = None,
+    _followup_parent_run_dir: Path | None = None,
+    _expected_followup_mission_sha256: str | None = None,
 ) -> dict[str, Any]:
+    manifest_bytes: bytes | None = None
+    if _expected_manifest_sha256 is not None:
+        if _followup_parent_run_dir is None:
+            raise OracleRunError(
+                "FOLLOWUP_PARENT_RUN_DIR_REQUIRED",
+                "verified follow-up manifests require the exact parent run directory",
+            )
+        manifest_directory = _assert_followup_artifact_directory(
+            _followup_parent_run_dir,
+            "followup-manifests",
+        )
+        if manifest_path.parent != manifest_directory:
+            raise OracleRunError(
+                "FOLLOWUP_MANIFEST_PATH_INVALID",
+                "the exact follow-up manifest escaped the parent artifact directory",
+                {"path": str(manifest_path), "expected_parent": str(manifest_directory)},
+            )
+        if manifest_path.is_symlink():
+            raise OracleRunError(
+                "FOLLOWUP_MANIFEST_SYMLINK_FORBIDDEN",
+                "the exact follow-up manifest must not be a symlink",
+                {"path": str(manifest_path)},
+            )
+        manifest_bytes = manifest_path.read_bytes()
+        actual_manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        if actual_manifest_sha256 != _expected_manifest_sha256:
+            raise OracleRunError(
+                "FOLLOWUP_MANIFEST_CHANGED_BEFORE_PREPARE",
+                "the exact follow-up manifest changed before child preparation",
+                {"expected": _expected_manifest_sha256, "actual": actual_manifest_sha256},
+            )
     config = STATE.load_manifest(
         manifest_path,
         platform_name=platform_name,
         bind_runtime_task=True,
+        raw_bytes=manifest_bytes,
     )
+    if (
+        _expected_followup_mission_sha256 is not None
+        and config.mission_sha256 != _expected_followup_mission_sha256
+    ):
+        raise OracleRunError(
+            "FOLLOWUP_MISSION_CHANGED_BEFORE_PREPARE",
+            "the exact follow-up mission changed after round reservation",
+            {
+                "expected": _expected_followup_mission_sha256,
+                "actual": config.mission_sha256,
+            },
+        )
     if str(config.transport or "").strip().casefold() == "pro-devspace":
         raise OracleRunError(
             "PRO_WRITABLE_TRANSPORT_FROZEN",
@@ -1614,27 +1661,41 @@ def execute_run(
     )
     qualification_target = web_multi_devspace_qualification_target(config)
     pro_app_read_gate: dict[str, Any] | None = None
-    if STATE.is_pro_readonly_transport(config.transport):
-        try:
-            pro_app_read_gate = pro_app_read_gate_factory(
-                qualification_target,
-                str(config.app_name or ""),
-            )
-        except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
-            raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
     if dry_run:
+        if STATE.is_pro_readonly_transport(config.transport):
+            try:
+                pro_app_read_gate = pro_app_read_gate_factory(
+                    qualification_target,
+                    str(config.app_name or ""),
+                )
+            except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
+                raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
         payload = dry_run_payload(config, layout, argv, prompt)
         if pro_app_read_gate is not None:
             payload["pro_app_read_gate"] = pro_app_read_gate
         return payload
 
-    if STATE.is_devspace_transport(config.transport):
-        try:
-            devspace_qualification_factory(qualification_target)
-        except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
-            raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
+    # Direct runs retain their historical fail-before-layout preflight.  A
+    # follow-up is different: its parent-side round reservation already exists
+    # before execute_run is entered, so every later preflight must have a child
+    # state/log home.  Otherwise a bounded local failure consumes the round key
+    # while leaving no durable explanation or exact child to settle.
+    if _followup_binding is None:
+        if STATE.is_pro_readonly_transport(config.transport):
+            try:
+                pro_app_read_gate = pro_app_read_gate_factory(
+                    qualification_target,
+                    str(config.app_name or ""),
+                )
+            except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
+                raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
+        if STATE.is_devspace_transport(config.transport):
+            try:
+                devspace_qualification_factory(qualification_target)
+            except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
+                raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
+        STATE.cleanup_prior_boot_browser_temps(config.run_root, platform_name=platform_name)
 
-    STATE.cleanup_prior_boot_browser_temps(config.run_root, platform_name=platform_name)
     browser_timeout_seconds = browser_observer_timeout_seconds(config, argv)
     status_audit_seconds = float(config.status_audit_seconds)
     mission_bytes = config.mission_path.read_bytes()
@@ -1695,6 +1756,25 @@ def execute_run(
     oracle_process_pid: int | None = None
     prior_audit_observations: dict[str, dict[str, Any]] = {}
     try:
+        if _followup_binding is not None and STATE.is_pro_readonly_transport(config.transport):
+            try:
+                pro_app_read_gate = pro_app_read_gate_factory(
+                    qualification_target,
+                    str(config.app_name or ""),
+                )
+            except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
+                raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
+            STATE.update_state(
+                layout.state_path,
+                pro_app_read_gate=pro_app_read_gate,
+            )
+        if _followup_binding is not None and STATE.is_devspace_transport(config.transport):
+            try:
+                devspace_qualification_factory(qualification_target)
+            except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
+                raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
+        if _followup_binding is not None:
+            STATE.cleanup_prior_boot_browser_temps(config.run_root, platform_name=platform_name)
         version = version_resolver(
             config.oracle_command,
             run_factory=run_factory,
@@ -1780,6 +1860,42 @@ def execute_run(
                             "ATTACHMENT_CHANGED_BEFORE_SUBMIT",
                             "attachment bytes changed after manifest validation",
                             {"path": str(attachment), "expected": expected, "actual": actual},
+                        )
+                if _expected_manifest_sha256 is not None:
+                    assert _followup_parent_run_dir is not None
+                    manifest_directory = _assert_followup_artifact_directory(
+                        _followup_parent_run_dir,
+                        "followup-manifests",
+                    )
+                    if manifest_path.parent != manifest_directory:
+                        raise OracleRunError(
+                            "FOLLOWUP_MANIFEST_PATH_INVALID",
+                            "the exact follow-up manifest escaped before submit",
+                            {"path": str(manifest_path), "expected_parent": str(manifest_directory)},
+                        )
+                    if manifest_path.is_symlink():
+                        raise OracleRunError(
+                            "FOLLOWUP_MANIFEST_SYMLINK_FORBIDDEN",
+                            "the exact follow-up manifest became a symlink before submit",
+                            {"path": str(manifest_path)},
+                        )
+                    actual_manifest_sha256 = STATE.sha256_file(manifest_path)
+                    if actual_manifest_sha256 != _expected_manifest_sha256:
+                        raise OracleRunError(
+                            "FOLLOWUP_MANIFEST_CHANGED_BEFORE_SUBMIT",
+                            "the exact follow-up manifest changed after child preparation",
+                            {"expected": _expected_manifest_sha256, "actual": actual_manifest_sha256},
+                        )
+                if _expected_followup_mission_sha256 is not None:
+                    actual_mission_sha256 = STATE.sha256_file(config.mission_path)
+                    if actual_mission_sha256 != _expected_followup_mission_sha256:
+                        raise OracleRunError(
+                            "FOLLOWUP_MISSION_CHANGED_BEFORE_SUBMIT",
+                            "the exact follow-up mission changed after child preparation",
+                            {
+                                "expected": _expected_followup_mission_sha256,
+                                "actual": actual_mission_sha256,
+                            },
                         )
                 process = popen_factory(
                     argv,
@@ -3093,7 +3209,42 @@ def _followup_manifest_payload(
     return payload
 
 
-def _write_followup_round_receipt(path: Path, payload: dict[str, Any]) -> str:
+def _followup_path_is_link_or_junction(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(is_junction and is_junction())
+
+
+def _assert_followup_artifact_directory(parent_run_dir: Path, name: str) -> Path:
+    parent = parent_run_dir.resolve(strict=True)
+    directory = parent / name
+    if (
+        not directory.exists()
+        or _followup_path_is_link_or_junction(directory)
+        or not directory.is_dir()
+        or directory.resolve(strict=True) != directory
+    ):
+        raise OracleRunError(
+            "FOLLOWUP_ARTIFACT_DIRECTORY_INVALID",
+            "follow-up artifact directory must be a real directory inside the exact parent run",
+            {"path": str(directory)},
+        )
+    return directory
+
+
+def _write_followup_round_receipt(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    parent_run_dir: Path | None = None,
+) -> str:
+    if parent_run_dir is not None:
+        directory = _assert_followup_artifact_directory(parent_run_dir, "followup-rounds")
+        if path.parent != directory or _followup_path_is_link_or_junction(path):
+            raise OracleRunError(
+                "FOLLOWUP_RECEIPT_PATH_INVALID",
+                "follow-up receipt escaped the exact parent artifact directory",
+                {"path": str(path), "expected_parent": str(directory)},
+            )
     encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
         with path.open("xb") as handle:
@@ -3107,6 +3258,19 @@ def _write_followup_round_receipt(path: Path, payload: dict[str, Any]) -> str:
             {"round_receipt": str(path)},
         ) from exc
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _prepare_followup_artifact_directory(parent_run_dir: Path, name: str) -> Path:
+    """Create one parent-local artifact directory without following a link."""
+    directory = parent_run_dir / name
+    if directory.exists() and (_followup_path_is_link_or_junction(directory) or not directory.is_dir()):
+        raise OracleRunError(
+            "FOLLOWUP_ARTIFACT_DIRECTORY_INVALID",
+            "follow-up artifact directory must be a real directory inside the exact parent run",
+            {"path": str(directory)},
+        )
+    directory.mkdir(parents=False, exist_ok=True)
+    return _assert_followup_artifact_directory(parent_run_dir, name)
 
 
 def _followup_artifact_observation(value: Any) -> dict[str, Any]:
@@ -3136,6 +3300,7 @@ def _persist_followup_completion_receipt(
     browser_receipt: dict[str, Any] | None,
     identity_status: str,
     archive_transition: dict[str, Any] | None = None,
+    parent_run_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Append the actual child round outcome without rewriting reservation data."""
     state = STATE.load_state(child_state_path)
@@ -3172,7 +3337,11 @@ def _persist_followup_completion_receipt(
         "archive_transition": archive_transition,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
-    digest = _write_followup_round_receipt(receipt_path, payload)
+    digest = _write_followup_round_receipt(
+        receipt_path,
+        payload,
+        parent_run_dir=parent_run_dir,
+    )
     return {"path": str(receipt_path), "sha256": digest, "payload": payload}
 
 
@@ -3196,24 +3365,30 @@ def followup_run(
         raise OracleRunError("FOLLOWUP_ROUND_KEY_INVALID", "round_key must be a safe 1-64 character identifier")
     parent, ownership, browser, conversation_url, artifact_hashes, archive_contract = _require_followup_parent(directory)
     parent_slug = str((parent.get("oracle") or {}).get("slug") or "")
-    child_run_id = str(run_id or f"followup-{uuid.uuid4().hex}").strip().casefold()
-    if STATE.RUN_ID_RE.fullmatch(child_run_id) is None:
-        raise OracleRunError("FOLLOWUP_RUN_ID_INVALID", "follow-up run_id must be a safe identifier")
     project_root = Path(str(parent.get("project_root") or "")).resolve(strict=True)
     child_mission = STATE.exact_regular_file(mission_path, label="followup_mission")
     if not STATE.is_within(project_root, child_mission):
         raise OracleRunError("FOLLOWUP_MISSION_OUTSIDE_PROJECT", "follow-up mission must remain in the exact parent project root")
     STATE.read_utf8_strict(child_mission)
     run_root = directory.parent.resolve()
-    child_slug = STATE.oracle_slug(project_root, child_run_id)
-    expected_port = STATE.reserve_loopback_cdp_port()
     receipt_path = directory / "followup-rounds" / f"{normalized_round_key}.json"
     if receipt_path.exists():
         raise OracleRunError(
             "FOLLOWUP_ROUND_DUPLICATE",
             "this parent conversation already has the requested follow-up round key",
-            {"round_receipt": str(receipt_path)},
+            {
+                "round_receipt": str(receipt_path),
+                "remediation": (
+                    "preserve the immutable reservation; after proving the prior controller ended, "
+                    "use a new round_key rather than deleting or replaying this key"
+                ),
+            },
         )
+    child_run_id = str(run_id or f"followup-{uuid.uuid4().hex}").strip().casefold()
+    if STATE.RUN_ID_RE.fullmatch(child_run_id) is None:
+        raise OracleRunError("FOLLOWUP_RUN_ID_INVALID", "follow-up run_id must be a safe identifier")
+    child_slug = STATE.oracle_slug(project_root, child_run_id)
+    expected_port = STATE.reserve_loopback_cdp_port()
     manifest_payload = _followup_manifest_payload(
         parent, mission_path=child_mission, run_id=child_run_id, archive_contract=archive_contract
     )
@@ -3258,17 +3433,94 @@ def followup_run(
             "argv_plan": ["--followup", parent_slug, "--slug", child_slug],
             "submitted_question": False,
         }
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    encoded_manifest = (json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    try:
-        with manifest_path.open("xb") as handle:
-            handle.write(encoded_manifest)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except FileExistsError as exc:
-        raise OracleRunError("FOLLOWUP_MANIFEST_CONFLICT", "follow-up manifest path already exists", {"manifest": str(manifest_path)}) from exc
-    receipt_sha256 = _write_followup_round_receipt(receipt_path, receipt)
+    # One exact parent conversation accepts at most one active follow-up
+    # controller, regardless of round key. Hold this lock through execute_run:
+    # a detached controller in the reservation-to-child-layout gap must block a
+    # second key from reaching the same composer.
+    with STATE.exact_run_recovery_mutex(
+        directory,
+        timeout_seconds=30,
+        platform_name=execute_kwargs.get("platform_name"),
+    ):
+        if receipt_path.exists():
+            raise OracleRunError(
+                "FOLLOWUP_ROUND_DUPLICATE",
+                "this parent conversation already has the requested follow-up round key",
+                {"round_receipt": str(receipt_path)},
+            )
+        manifest_directory = _prepare_followup_artifact_directory(directory, "followup-manifests")
+        receipt_directory = _prepare_followup_artifact_directory(directory, "followup-rounds")
+        manifest_path = manifest_directory / manifest_path.name
+        receipt_path = receipt_directory / receipt_path.name
+        encoded_manifest = (json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        try:
+            with manifest_path.open("xb") as handle:
+                handle.write(encoded_manifest)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except FileExistsError as exc:
+            raise OracleRunError("FOLLOWUP_MANIFEST_CONFLICT", "follow-up manifest path already exists", {"manifest": str(manifest_path)}) from exc
+        try:
+            receipt_sha256 = _write_followup_round_receipt(
+                receipt_path,
+                receipt,
+                parent_run_dir=directory,
+            )
+        except Exception:
+            # The manifest was created by this exact locked attempt. Remove
+            # only that still byte-identical, unreferenced file; changed or
+            # redirected evidence remains preserved fail-closed.
+            try:
+                if (
+                    not _followup_path_is_link_or_junction(manifest_path)
+                    and manifest_path.is_file()
+                    and manifest_path.read_bytes() == encoded_manifest
+                    and _assert_followup_artifact_directory(
+                        directory,
+                        "followup-manifests",
+                    ) == manifest_path.parent
+                ):
+                    manifest_path.unlink()
+            except OSError:
+                pass
+            raise
+        return _launch_followup_reserved_round(
+            directory=directory,
+            parent=parent,
+            parent_slug=parent_slug,
+            conversation_url=conversation_url,
+            archive_contract=archive_contract,
+            normalized_round_key=normalized_round_key,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            receipt_sha256=receipt_sha256,
+            manifest_path=manifest_path,
+            run_root=run_root,
+            child_run_id=child_run_id,
+            child_slug=child_slug,
+            expected_port=expected_port,
+            execute_kwargs=execute_kwargs,
+        )
+
+
+def _launch_followup_reserved_round(
+    *,
+    directory: Path,
+    parent: dict[str, Any],
+    parent_slug: str,
+    conversation_url: str,
+    archive_contract: dict[str, Any],
+    normalized_round_key: str,
+    receipt: dict[str, Any],
+    receipt_path: Path,
+    receipt_sha256: str,
+    manifest_path: Path,
+    run_root: Path,
+    child_run_id: str,
+    child_slug: str,
+    expected_port: int,
+    execute_kwargs: dict[str, Any],
+) -> dict[str, Any]:
     followup_binding = {
         "schema": "codex.chatgpt.oracle-followup-binding/v1",
         "source_thread_id": STATE.source_thread_id_from_state(parent),
@@ -3279,6 +3531,31 @@ def followup_run(
         "child": receipt["child"],
         "conversation_url": conversation_url,
     }
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    launch_attempt_id = uuid.uuid4().hex
+    launch_path = receipt_path.with_name(
+        f"{normalized_round_key}.{launch_attempt_id}.launch.json"
+    )
+    launch_payload = {
+        "schema": "codex.chatgpt.oracle-followup-launch/v1",
+        "source_thread_id": STATE.source_thread_id_from_state(parent),
+        "round_key": normalized_round_key,
+        "launch_attempt_id": launch_attempt_id,
+        "reservation_sha256": receipt_sha256,
+        "manifest_sha256": manifest_sha256,
+        "parent_run_id": parent.get("run_id"),
+        "child_run_id": child_run_id,
+        "child_slug": child_slug,
+        "child_run_dir": str(run_root / child_run_id),
+        "phase": "execute-run-entered",
+        "submission_action": "not-reached-at-receipt",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    launch_sha256 = _write_followup_round_receipt(
+        launch_path,
+        launch_payload,
+        parent_run_dir=directory,
+    )
     try:
         result = execute_run(
             manifest_path,
@@ -3286,9 +3563,12 @@ def followup_run(
             _cdp_port=expected_port,
             _followup_parent_slug=parent_slug,
             _followup_binding=followup_binding,
+            _expected_manifest_sha256=manifest_sha256,
+            _followup_parent_run_dir=directory,
+            _expected_followup_mission_sha256=receipt["child"]["mission_sha256"],
             **execute_kwargs,
         )
-    except Exception:
+    except Exception as exc:
         # If a child layout exists, seal what is known before propagating the
         # launcher failure.  The parent ownership is never changed here.
         child_state_path = run_root / child_run_id / "state.json"
@@ -3301,9 +3581,54 @@ def followup_run(
                 browser_receipt=None,
                 identity_status="launcher-exception-identity-unavailable",
                 archive_transition=None,
+                parent_run_dir=directory,
+            )
+        else:
+            failure_path = receipt_path.with_name(
+                f"{normalized_round_key}.{launch_attempt_id}.prelaunch-failure.json"
+            )
+            error_payload = (
+                exc.envelope()["error"]
+                if isinstance(exc, OracleRunError)
+                else {"code": "ORACLE_RUN_FAILED", "message": str(exc), "evidence": {}}
+            )
+            proven_pre_layout_codes = {
+                "FOLLOWUP_ARTIFACT_DIRECTORY_INVALID",
+                "FOLLOWUP_MANIFEST_CHANGED_BEFORE_PREPARE",
+                "FOLLOWUP_MANIFEST_PATH_INVALID",
+                "FOLLOWUP_MANIFEST_SYMLINK_FORBIDDEN",
+                "FOLLOWUP_MISSION_CHANGED_BEFORE_PREPARE",
+                "FOLLOWUP_PARENT_RUN_DIR_REQUIRED",
+            }
+            submission_action = (
+                "none"
+                if str(error_payload.get("code") or "") in proven_pre_layout_codes
+                else "submitted_unknown"
+            )
+            failure_payload = {
+                "schema": "codex.chatgpt.oracle-followup-prelaunch-failure/v1",
+                "source_thread_id": STATE.source_thread_id_from_state(parent),
+                "round_key": normalized_round_key,
+                "launch_attempt_id": launch_attempt_id,
+                "reservation_sha256": receipt_sha256,
+                "manifest_sha256": manifest_sha256,
+                "launch_receipt_sha256": launch_sha256,
+                "child_run_id": child_run_id,
+                "child_slug": child_slug,
+                "child_run_dir": str(child_state_path.parent),
+                "child_state_absent": True,
+                "submission_action": submission_action,
+                "error": error_payload,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _write_followup_round_receipt(
+                failure_path,
+                failure_payload,
+                parent_run_dir=directory,
             )
         raise
     result["followup_round_receipt"] = {"path": str(receipt_path), "sha256": receipt_sha256}
+    result["followup_launch_receipt"] = {"path": str(launch_path), "sha256": launch_sha256}
     child_state_path = run_root / child_run_id / "state.json"
     if child_state_path.exists():
         child_state = STATE.load_state(child_state_path)
@@ -3348,6 +3673,7 @@ def followup_run(
             browser_receipt=child_browser,
             identity_status=identity_status,
             archive_transition=archive_transition,
+            parent_run_dir=directory,
         )
         result["followup_round_result_receipt"] = {"path": completion["path"], "sha256": completion["sha256"]}
         if identity_error or archive_error:

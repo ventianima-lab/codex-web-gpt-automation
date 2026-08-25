@@ -1,5 +1,30 @@
 # 기술 변경 기록
 
+## 1.20.3 - Preserve follow-up evidence before browser launch
+
+- A live read-only Pro `followup` now creates the exact child run directory,
+  state, stdout, and stderr before the app-read, DevSpace-root, runtime-version,
+  and compatibility preflights. A bounded failure therefore produces a normal
+  pre-submit child and round-result receipt instead of leaving only a consumed
+  parent reservation.
+- Every non-dry-run follow-up appends a parent-side launch receipt before
+  entering the child runner. An exception that occurs even before the child
+  layout exists appends a hash-bound prelaunch-failure receipt with the exact
+  error and `submission_action: none`.
+- Follow-up manifests are parsed from the same verified byte buffer whose
+  SHA-256 is sealed in the launch receipt and are checked again immediately
+  before `Popen`. The reservation mission SHA-256 is enforced both before
+  child preparation and immediately before submission. A parent-scoped
+  controller mutex serializes every round key through execution, and symlinked
+  parent artifact directories or manifest leaves fail closed.
+- An unknown exception without child state is recorded as
+  `submitted_unknown`; only the bounded pre-layout manifest/mission/path
+  failures may claim `submission_action: none`.
+- `--dry-run` remains side-effect free. Historical reservation-only round keys
+  are immutable and stay consumed; operators must preserve them and, only
+  after proving the detached controller ended, choose a new round key rather
+  than deleting or replaying the old reservation.
+
 ## 1.20.2 - Prove exact app reads and close onboarding gaps
 
 - New read-only Pro runs are blocked before browser creation unless a recent
