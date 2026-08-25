@@ -1566,6 +1566,9 @@ def execute_run(
     devspace_qualification_factory: Callable[[Path], dict[str, Any]] = (
         DEVSPACE_PREFLIGHT.ensure_exact_root_qualified
     ),
+    pro_app_read_gate_factory: Callable[[Path, str], dict[str, Any]] = (
+        DEVSPACE_PREFLIGHT.ensure_recent_registered_app_read_gate
+    ),
     exact_recovery_factory: Callable[..., dict[str, Any]] | None = None,
     _cdp_port: int | None = None,
     _followup_parent_slug: str | None = None,
@@ -1609,10 +1612,21 @@ def execute_run(
         cdp_port=cdp_port,
         followup_parent_slug=_followup_parent_slug,
     )
-    if dry_run:
-        return dry_run_payload(config, layout, argv, prompt)
-
     qualification_target = web_multi_devspace_qualification_target(config)
+    pro_app_read_gate: dict[str, Any] | None = None
+    if STATE.is_pro_readonly_transport(config.transport):
+        try:
+            pro_app_read_gate = pro_app_read_gate_factory(
+                qualification_target,
+                str(config.app_name or ""),
+            )
+        except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
+            raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
+    if dry_run:
+        payload = dry_run_payload(config, layout, argv, prompt)
+        if pro_app_read_gate is not None:
+            payload["pro_app_read_gate"] = pro_app_read_gate
+        return payload
 
     if STATE.is_devspace_transport(config.transport):
         try:
@@ -1651,6 +1665,11 @@ def execute_run(
             cdp_port=cdp_port,
         ),
     )
+    if pro_app_read_gate is not None:
+        STATE.update_state(
+            layout.state_path,
+            pro_app_read_gate=pro_app_read_gate,
+        )
     if _followup_binding is not None:
         STATE.persist_followup_binding(layout.state_path, _followup_binding)
     layout.stdout_path.touch()
@@ -1900,6 +1919,7 @@ def execute_run(
     }
     status = "complete" if transport_complete and semantic_complete else "attention_required"
     if transport_complete:
+        provider_session = STATE.provider_session_evidence(layout.state_path)
         state = STATE.update_state(
             layout.state_path,
             status=status,
@@ -1914,6 +1934,7 @@ def execute_run(
                 if task_outcome in {"executed", "not_executed", "blocked"}
                 else task_outcome
             ),
+            provider_session=provider_session,
             browser_observer={
                 "status": "process-exited",
                 "timeout_seconds": browser_timeout_seconds,
@@ -1926,6 +1947,7 @@ def execute_run(
         response_timeout = post_submit_response_timed_out(
             layout.stdout_path, layout.stderr_path
         )
+        provider_session = STATE.provider_session_evidence(layout.state_path)
         state = STATE.update_state(
             layout.state_path,
             status="running" if response_timeout or delivery_timeout else status,
@@ -1946,6 +1968,7 @@ def execute_run(
                 if delivery_timeout
                 else None
             ),
+            provider_session=provider_session,
             browser_observer={
                 "status": "process-exited",
                 "timeout_seconds": browser_timeout_seconds,

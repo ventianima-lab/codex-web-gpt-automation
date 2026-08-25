@@ -56,7 +56,7 @@ def test_write_json_atomic_retries_bounded_windows_replace_race(
     }
     assert len(calls) == 3
     assert sleeps == list(state.ATOMIC_REPLACE_BACKOFF_SECONDS[:2])
-    assert list(tmp_path.glob("state.json.tmp.*")) == []
+    assert list(tmp_path.glob(".t-*")) == []
 
 
 def test_write_json_atomic_keeps_permanent_windows_replace_failure_fail_closed(
@@ -83,7 +83,7 @@ def test_write_json_atomic_keeps_permanent_windows_replace_failure_fail_closed(
 
     assert calls == state.ATOMIC_REPLACE_MAX_ATTEMPTS
     assert destination.read_text(encoding="utf-8") == '{"status":"original"}\n'
-    assert list(tmp_path.glob("state.json.tmp.*")) == []
+    assert list(tmp_path.glob(".t-*")) == []
 
 
 def test_write_json_atomic_does_not_retry_unrecognized_permission_error(
@@ -113,7 +113,20 @@ def test_write_json_atomic_does_not_retry_unrecognized_permission_error(
 
     assert calls == 1
     assert not destination.exists()
-    assert list(tmp_path.glob("state.json.tmp.*")) == []
+    assert list(tmp_path.glob(".t-*")) == []
+
+
+def test_write_json_atomic_uses_short_same_directory_temp_name(tmp_path: Path) -> None:
+    state = load_state()
+    directory = tmp_path
+    for segment in ("host-state", "projects", "f" * 24, "runs", "a" * 32):
+        directory /= segment
+    destination = directory / "user-confirmed-no-submission.json"
+
+    state.write_json_atomic(destination, {"status": "settled"})
+
+    assert json.loads(destination.read_text(encoding="utf-8")) == {"status": "settled"}
+    assert list(directory.glob(".t-*")) == []
 
 
 def test_v1_task_outcome_accepts_exact_provider_reference_footer(tmp_path: Path) -> None:
@@ -584,6 +597,138 @@ def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_u
 
     receipt = state.browser_identity_receipt_path(layout.run_dir)
     receipt.write_text(receipt.read_text(encoding="utf-8").replace("target-exact", "target-other"), encoding="utf-8")
+    assert state.proven_browser_identity_receipt(layout.state_path) is None
+
+
+def test_provider_session_terminal_requires_exact_browser_identity_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    config = state.load_manifest(manifest(tmp_path, mission.resolve(), source_thread_id=task_id))
+    layout = state.create_layout(config, run_id="provider-run-123456")
+    layout.run_dir.mkdir(parents=True)
+    layout.browser_temp_path.mkdir()
+    state.write_json_atomic(
+        layout.state_path,
+        state.state_payload(config, layout, status="running", resolved_version="0.18.0", cdp_port=43101),
+    )
+    state.persist_ownership_receipt(layout.state_path, oracle_process_pid=101)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    profile = layout.browser_temp_path / "oracle-browser-isolated"
+    meta = {
+        "status": "completed",
+        "completedAt": "2026-08-25T12:00:00Z",
+        "browser": {
+            "runtime": {
+                "chromePid": 102,
+                "controllerPid": 101,
+                "chromePort": 43101,
+                "userDataDir": str(profile),
+                "chromeTargetId": "target-exact",
+                "tabUrl": "https://chatgpt.com/c/exact-conversation",
+                "promptSubmitted": True,
+            }
+        },
+    }
+    meta_path = session_root / layout.slug / "meta.json"
+    meta_path.parent.mkdir(parents=True)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    unbound = state.provider_session_evidence(layout.state_path)
+    assert unbound["terminal_confirmed"] is False
+    assert unbound["binding"] == "unconfirmed"
+    assert unbound["reason"] == "browser-identity-receipt-unavailable"
+    assert unbound["observed_conversation_url"] == "https://chatgpt.com/c/exact-conversation"
+
+    assert state.capture_browser_identity_receipt(layout.state_path) is not None
+    bound = state.provider_session_evidence(layout.state_path)
+    assert bound["terminal_confirmed"] is True
+    assert bound["binding"] == "exact-browser-identity-receipt"
+    assert bound["reason"] == "oracle-meta-terminal"
+    assert bound["bound_conversation_url"] == "https://chatgpt.com/c/exact-conversation"
+
+    meta["status"] = "error"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    browser_error = state.provider_session_evidence(layout.state_path)
+    assert browser_error["terminal_confirmed"] is False
+    assert browser_error["binding"] == "exact-browser-identity-receipt"
+    assert browser_error["reason"] == "oracle-meta-nonterminal"
+
+
+def test_update_state_can_append_gate_and_provider_evidence_without_status_transition(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    config = state.load_manifest(manifest(tmp_path, mission.resolve()))
+    layout = state.create_layout(config, run_id="metadata-only-123456")
+    layout.run_dir.mkdir(parents=True)
+    state.write_json_atomic(
+        layout.state_path,
+        state.state_payload(config, layout, status="prepared", resolved_version="0.18.0", cdp_port=43101),
+    )
+
+    updated = state.update_state(
+        layout.state_path,
+        pro_app_read_gate={"qualified": True, "run_id": "canary"},
+        provider_session={"terminal_confirmed": False, "binding": "none"},
+    )
+
+    assert updated["status"] == "prepared"
+    assert updated["exit_code"] is None
+    assert updated["pro_app_read_gate"]["qualified"] is True
+    assert updated["provider_session"]["binding"] == "none"
+
+
+def test_port_mismatch_persists_forensic_candidate_without_granting_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    config = state.load_manifest(manifest(tmp_path, mission.resolve()))
+    layout = state.create_layout(config, run_id="mismatch-run-123456")
+    layout.run_dir.mkdir(parents=True)
+    layout.browser_temp_path.mkdir()
+    state.write_json_atomic(
+        layout.state_path,
+        state.state_payload(config, layout, status="running", resolved_version="0.18.0", cdp_port=43101),
+    )
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    meta_path = session_root / layout.slug / "meta.json"
+    meta_path.parent.mkdir(parents=True)
+    meta_path.write_text(
+        json.dumps(
+            {
+                "browser": {
+                    "runtime": {
+                        "chromePid": 102,
+                        "controllerPid": 101,
+                        "chromePort": 43102,
+                        "userDataDir": str(layout.browser_temp_path / "oracle-browser"),
+                        "chromeTargetId": "target-candidate",
+                        "tabUrl": "https://chatgpt.com/c/candidate-conversation",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert state.capture_browser_identity_receipt(layout.state_path) is None
+    stored = state.load_state(layout.state_path)
+    assert stored["oracle"]["conversation_url_candidate"] == "https://chatgpt.com/c/candidate-conversation"
+    assert stored["browser_identity"]["port_mismatch"]["observed_cdp_port"] == 43102
+    assert stored["browser_identity"]["receipt_path"] is None
     assert state.proven_browser_identity_receipt(layout.state_path) is None
 
 

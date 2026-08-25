@@ -303,6 +303,15 @@ def execute_run(runner, *args, **kwargs):
         "devspace_qualification_factory",
         lambda root: {"qualified": True, "project_root": str(root)},
     )
+    kwargs.setdefault(
+        "pro_app_read_gate_factory",
+        lambda root, app_name: {
+            "schema": "codex.chatgpt.pro-devspace-app-read-gate/v1",
+            "qualified": True,
+            "project_root": str(root),
+            "app_name": app_name,
+        },
+    )
     return runner.execute_run(*args, **kwargs)
 
 
@@ -1192,6 +1201,12 @@ def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_p
             "ok": True, "changed": [], "service_restart_required": False,
         },
         devspace_qualification_factory=lambda root: {"qualified": True, "project_root": str(root)},
+        pro_app_read_gate_factory=lambda root, app_name: {
+            "schema": "codex.chatgpt.pro-devspace-app-read-gate/v1",
+            "qualified": True,
+            "project_root": str(root),
+            "app_name": app_name,
+        },
     )
 
     argv = captured["command"]
@@ -1207,6 +1222,50 @@ def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_p
     assert prompt.index(str(tmp_path)) < prompt.index(str(tmp_path / "mission.md"))
     assert "Perform read-only work only; do not modify files" in prompt
     assert preflight_calls == [True]
+
+
+def test_pro_readonly_dry_run_fails_before_layout_without_fresh_app_read_gate(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+    calls: list[tuple[str, str]] = []
+
+    def missing_gate(root: Path, app_name: str):
+        calls.append((str(root), app_name))
+        raise runner.DEVSPACE_PREFLIGHT.DevSpacePreflightError(
+            "PRO_DEVSPACE_APP_READ_GATE_REQUIRED",
+            "fresh regular non-Pro canary required",
+            {"required_tools": ["open_workspace", "read", "read_chunk"]},
+        )
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.execute_run(
+            pro_readonly_manifest(tmp_path, run_id="6" * 32),
+            dry_run=True,
+            pro_app_read_gate_factory=missing_gate,
+        )
+
+    assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
+    assert exc.value.evidence["required_tools"] == ["open_workspace", "read", "read_chunk"]
+    assert calls == [(str(tmp_path.resolve()), "DevSpace")]
+    assert not (tmp_path.parent / f"{tmp_path.name}-host-state" / "runs").exists()
+
+
+def test_pro_readonly_dry_run_reports_bound_app_read_gate(tmp_path: Path) -> None:
+    runner = load_runner()
+    result = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="9" * 32),
+        dry_run=True,
+    )
+
+    assert result["status"] == "dry-run"
+    assert result["pro_app_read_gate"] == {
+        "schema": "codex.chatgpt.pro-devspace-app-read-gate/v1",
+        "qualified": True,
+        "project_root": str(tmp_path.resolve()),
+        "app_name": "DevSpace",
+    }
 
 
 def test_new_writable_pro_manifest_is_rejected_before_layout_or_browser(tmp_path: Path) -> None:
@@ -1260,6 +1319,7 @@ def test_d_coin_missing_exact_root_blocks_before_oracle_or_run_creation(tmp_path
             compat_factory=lambda *args, **kwargs: calls.append("compat"),
             devspace_compat_factory=lambda: calls.append("devspace-compat"),
             devspace_qualification_factory=missing_root,
+            pro_app_read_gate_factory=lambda _root, _app: {"qualified": True},
         )
 
     assert exc.value.code == "DEVSPACE_EXACT_ROOT_UNAVAILABLE"

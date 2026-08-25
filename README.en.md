@@ -30,15 +30,18 @@
 |---|---|---|---|
 | [First-install guide](docs/FIRST_INSTALL.en.md) | Run `python doctor.py` | [Diagnostics and recovery](docs/README.md) | [Contribution guide](CONTRIBUTING.md) |
 
-Follow this order: install, register the exact DevSpace root, sign in to the
-dedicated Oracle browser, manually register the ChatGPT app as `codex`, then
-run an ordinary non-Pro connection probe. Before updating an existing install,
+Follow this order: install, approve the stable HTTPS endpoint, register the
+exact DevSpace root, establish reboot persistence, verify both endpoints, sign
+in to the dedicated Oracle browser, grant scoped Local Network access,
+manually register the ChatGPT app as `codex`, then run an ordinary non-Pro
+connection probe. Before updating an existing install,
 read the [latest release notes](https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest).
 
 When you hand only the repository URL to an AI coding agent, have it read the
 [install contract](docs/INSTALL_AGENT.md) too. After installation the
-`python onboard.py start` wizard walks the remaining stages one at a time and
-reports completion only after the real project-root read check passes.
+`python onboard.py start` wizard walks the nine stages one at a time. Login and
+app-registration confirmations remain user attestations; completion is reported
+only after the real project-root read check passes.
 
 ## Why use it?
 

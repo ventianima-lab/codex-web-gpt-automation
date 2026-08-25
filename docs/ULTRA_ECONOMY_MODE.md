@@ -22,6 +22,10 @@ $ultra-economy-mode 초절약모드로 이 작업을 끝내줘.
 재검사하지 않습니다. 새 Codex 작업에서 초절약모드를 처음 요청할 때만 다시 한
 번 안내합니다. `~/.codex/config.toml`을 자동 변경하지도 않습니다.
 
+이 활성화 확인은 Pro 사용 승인이 아닙니다. 초절약모드의 첫 읽기 전용 Pro 설계
+자문을 쓰려면 사용자가 별도로 Pro 사용을 명시해야 합니다. 승인이 없으면
+`ultra-economy` 실행을 시작하지 않고 일반 non-Pro 종합 모드를 제안합니다.
+
 ## 작업 분담
 
 ```text
@@ -31,7 +35,7 @@ $ultra-economy-mode 초절약모드로 이 작업을 끝내줘.
   └─ 최종 결정론적 명령 1회
 
 웹 세션
-  ├─ Pro: 읽기 전용 설계
+  ├─ Pro: 별도 명시 승인된 읽기 전용 설계
   ├─ regular: 별도 설계 검토 + 구현 미션 작성
   ├─ regular: 코드 구현 + 프로젝트 테스트
   └─ regular: 별도 최종 검증, 필요하면 다음 구현 세션으로 수리 반송
@@ -53,6 +57,7 @@ $ultra-economy-mode 초절약모드로 이 작업을 끝내줘.
   "workflow_id": "stable-hex-or-uuid",
   "workflow_profile": "ultra-economy",
   "initial_stage": "pro",
+  "allow_pro": true,
   "project_root": "D:\\project",
   "workflow_dir": "D:\\project\\.workflow\\ultra-economy",
   "initial_mission_path": "D:\\project\\missions\\design.md",
@@ -74,9 +79,11 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_comprehensive.py" `
   --manifest D:\project\workflow.json --dry-run
 ```
 
-dry-run은 첫 단계가 명시적으로 선택된 qualified Pro의 읽기 전용 DevSpace 설계·자문·검토
-단계인지 확인하고 실제 제출은 하지 않습니다. 파일 생성·수정·삭제와 명령 실행은 뒤따르는
-regular `GPT-5.6` `extra-high` DevSpace 단계가 맡습니다. 실제 실행은 `--dry-run`만 제거합니다.
+dry-run은 별도 Pro 승인에 결속된 `allow_pro: true`와 qualified Pro의 읽기 전용
+DevSpace 설계·자문·검토 단계인지 확인하고 실제 제출은 하지 않습니다. 초절약모드
+선택 자체를 Pro 승인으로 간주하지 않습니다. 파일 생성·수정·삭제와 명령 실행은
+뒤따르는 regular `GPT-5.6` `extra-high` DevSpace 단계가 맡습니다. 실제 실행은
+`--dry-run`만 제거합니다.
 
 ## 완료·중단 조건
 

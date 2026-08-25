@@ -537,7 +537,7 @@ def test_published_0171_terminal_marker_fallback_is_stable_exact_and_thinking_in
     assert node is not None
     script = f"""
 import {{ createTerminalGateState, classifyTurnTerminal, hasContractTerminalMarker }} from {json.dumps(assistant.as_uri())};
-import {{ shouldWarnThinkingStatusUndetected, formatThinkingUndetectedWarningLog }} from {json.dumps(thinking.as_uri())};
+import {{ shouldWarnThinkingStatusUndetected, shouldWarnThinkingStatusMissing, formatThinkingUndetectedWarningLog, formatThinkingStatusMissingWarningLog }} from {json.dumps(thinking.as_uri())};
 {helper_source}
 const config = {{
   barConfirmCycles: 3,
@@ -592,7 +592,11 @@ console.log(JSON.stringify({{
   warnAtThreshold: shouldWarnThinkingStatusUndetected(false, false, 300000),
   warnAfterDetected: shouldWarnThinkingStatusUndetected(true, false, 600000),
   warnAfterLogged: shouldWarnThinkingStatusUndetected(false, true, 600000),
+  warnMissingEarly: shouldWarnThinkingStatusMissing(1000, false, 300999),
+  warnMissingAtThreshold: shouldWarnThinkingStatusMissing(1000, false, 301000),
+  warnMissingAfterLogged: shouldWarnThinkingStatusMissing(1000, true, 600000),
   warningText: formatThinkingUndetectedWarningLog(0, 300000),
+  warningAfterDetectedText: formatThinkingStatusMissingWarningLog(0, 601000, true, 301000),
   inheritedFollowupPort: bindFollowupBrowserPort({{ debugPort: 56527, profile: 'parent' }}, null),
   isolatedFollowupPort: bindFollowupBrowserPort({{ debugPort: 56527, profile: 'parent' }}, 56442),
 }}));
@@ -625,7 +629,11 @@ console.log(JSON.stringify({{
     assert payload["warnAtThreshold"] is True
     assert payload["warnAfterDetected"] is False
     assert payload["warnAfterLogged"] is False
+    assert payload["warnMissingEarly"] is False
+    assert payload["warnMissingAtThreshold"] is True
+    assert payload["warnMissingAfterLogged"] is False
     assert "independent terminal watchdog remains active" in payload["warningText"]
+    assert "previously detected thinking status has been absent" in payload["warningAfterDetectedText"]
     assert payload["inheritedFollowupPort"] == {"debugPort": 56527, "profile": "parent"}
     assert payload["isolatedFollowupPort"] == {"debugPort": 56442, "profile": "parent"}
 

@@ -84,6 +84,10 @@ def test_manifest_covers_runtime_and_schemas() -> None:
         'tests/fixtures/planner-v8-app-trace-quiescent-incident.json',
     }
     assert required <= includes
+    assert {
+        'bin/oracle-compat/0.17.1/thinkingStatus.undetected-warning.patch',
+        'bin/oracle-compat/0.17.1/thinkingStatus.undetected-warning.v1.19.2.patch',
+    } <= includes
     assert not any('*' in path for path in includes if not (path.endswith('/schemas/*.json') or path == 'contracts/install/*.json'))
     package_files = set(json.loads((ROOT / 'package.json').read_text(encoding='utf-8'))['files'])
     assert {
@@ -186,6 +190,21 @@ def test_tag_push_workflow_publishes_only_validated_annotated_release() -> None:
     assert 'git cat-file -t "refs/tags/${tag}"' in workflow
     assert 'git rev-parse HEAD' in workflow and 'git rev-list -n 1' in workflow
     assert 'scripts/check_docs.py --root .' in workflow
+    assert 'actions: read' in workflow
+    assert 'pull-requests: read' in workflow
+    assert 'Require reviewed validation PR and exact-commit portability CI' in workflow
+    assert 'release-portability.yml/runs?head_sha=${release_commit}&event=push' in workflow
+    assert '.head_branch == "main"' in workflow
+    assert '.conclusion == "success"' in workflow
+    assert 'commits/${release_commit}/pulls?per_page=100' in workflow
+    assert '.merge_commit_sha == $sha' in workflow
+    assert '.commit_id == $sha' in workflow
+    assert '.state == "CHANGES_REQUESTED"' in workflow
+    assert '.state == "APPROVED"' in workflow
+    assert '.state == "COMMENTED"' in workflow
+    assert 'INDEPENDENT_REVIEW: PASS' in workflow
+    assert 'gsub("^\\\\s+|\\\\s+$"; "") | length) >= 40' in workflow
+    assert 'timeout-minutes: 50' in workflow
     assert 'gh release create "${RELEASE_TAG}" --verify-tag --generate-notes' in workflow
     assert 'releases/tags/${RELEASE_TAG}' in workflow
 

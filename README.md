@@ -29,14 +29,16 @@
 |---|---|---|---|
 | [최초 설치 가이드](docs/FIRST_INSTALL.md) | `python doctor.py`로 현재 상태 확인 | [진단·복구 문서](docs/README.md) | [기여 가이드](CONTRIBUTING.md) |
 
-설치 → DevSpace exact root 등록 → Oracle 전용 브라우저 로그인 → ChatGPT 앱
+설치 → 고정 HTTPS 주소 승인 → DevSpace exact root 등록 → 재부팅 유지 서비스 →
+endpoint 확인 → Oracle 전용 브라우저 로그인 → Local Network 권한 → ChatGPT 앱
 `codex` 수동 등록 → 일반 비-Pro 연결 검사 순서로 진행합니다. 기존 설치를
 업데이트할 때는 [최신 릴리스](https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest)의
 변경 기록을 먼저 확인하세요.
 
 저장소 주소만 AI 코딩 에이전트에게 주고 설치를 맡길 때는
 [설치 계약](docs/INSTALL_AGENT.md)을 함께 읽히세요. 설치 후 `python onboard.py start`
-마법사가 남은 단계를 하나씩 안내하고, 실제 프로젝트 읽기 검증까지 끝난 뒤에만
+마법사가 남은 9단계를 하나씩 안내합니다. 로그인·앱 등록 `confirm`은 사용자 확인으로
+표시하며, 실제 프로젝트 읽기 검증까지 끝난 뒤에만
 설치 완료로 판정합니다.
 
 ## 왜 이 도구를 쓰나요?

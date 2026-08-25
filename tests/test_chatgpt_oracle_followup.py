@@ -104,6 +104,8 @@ def test_browser_identity_port_mismatch_is_persisted_and_never_becomes_authority
         "expected_cdp_port": 43101,
         "observed_cdp_port": 43102,
         "oracle_meta_path": str(meta_path),
+        "conversation_url_candidate": "https://chatgpt.com/c/exact-parent-conversation",
+        "target_id_candidate": "exact-target",
     }
 
 
@@ -170,6 +172,12 @@ def test_followup_child_executes_with_durable_v1_watchdog_contract(
             },
             devspace_qualification_factory=lambda root: {
                 "qualified": True, "project_root": str(root),
+            },
+            pro_app_read_gate_factory=lambda root, app_name: {
+                "schema": "codex.devspace.pro-app-read-gate/v1",
+                "qualified": True,
+                "project_root": str(root),
+                "app_name": app_name,
             },
         )
 

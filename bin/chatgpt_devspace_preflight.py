@@ -3,6 +3,7 @@ from __future__ import annotations
 """Lightweight first-use exact-root qualification for DevSpace transports."""
 
 import hashlib
+import importlib.util
 import json
 import os
 import sys
@@ -13,6 +14,8 @@ from typing import Any, Callable
 
 
 QUALIFICATION_SCHEMA = "codex.chatgpt.devspace-root-qualification/v1"
+PRO_APP_READ_GATE_SCHEMA = "codex.chatgpt.pro-devspace-app-read-gate/v1"
+PRO_APP_READ_GATE_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 class DevSpacePreflightError(RuntimeError):
@@ -20,6 +23,144 @@ class DevSpacePreflightError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.evidence = evidence or {}
+
+
+def _load_onboarding_module() -> Any:
+    path = Path(__file__).resolve().with_name("codex_web_gpt_onboarding.py")
+    name = "codex_web_gpt_onboarding_devspace_gate"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"onboarding verifier unavailable: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def ensure_recent_registered_app_read_gate(
+    project_root: Path,
+    app_name: str,
+    *,
+    codex_home: Path | None = None,
+    devspace_home: Path | None = None,
+    now: datetime | None = None,
+    max_age_seconds: int = PRO_APP_READ_GATE_MAX_AGE_SECONDS,
+    onboarding_loader: Callable[[], Any] = _load_onboarding_module,
+) -> dict[str, Any]:
+    """Require a recent cryptographic regular-run read proof before Pro.
+
+    The proof is deliberately produced by the ordinary non-Pro onboarding
+    final gate.  A local HTTP health check, allowedRoots entry, successful
+    ``open_workspace`` call, or model-authored marker is not enough: the gate
+    revalidates the exact open/read/read_chunk receipts and conversation echo.
+    This function is read-only and is safe to call from ``--dry-run``.
+    """
+    if not isinstance(max_age_seconds, int) or max_age_seconds <= 0:
+        raise ValueError("max_age_seconds must be a positive integer")
+    root = project_root.expanduser().resolve()
+    expected_app = str(app_name or "").strip()
+    checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    state_file = (
+        (codex_home or (Path.home() / ".codex")).expanduser().resolve()
+        / "state"
+        / "codex-web-gpt-automation"
+        / "onboarding"
+        / "state.json"
+    )
+
+    reason = "missing-or-invalid-final-gate"
+    recorded: dict[str, Any] | None = None
+    state: dict[str, Any] | None = None
+    try:
+        onboarding = onboarding_loader()
+        state = onboarding.load_state(codex_home=codex_home)
+        resolved_home = onboarding._codex_home(codex_home)
+        resolved_devspace = (
+            devspace_home or (Path.home() / ".devspace")
+        ).expanduser().resolve()
+        candidate = onboarding._final_gate_receipt(
+            resolved_home,
+            resolved_devspace,
+            state,
+        )
+        if isinstance(candidate, dict):
+            recorded = candidate
+    except Exception:
+        recorded = None
+
+    if isinstance(state, dict) and recorded is not None:
+        configured_app = str(state.get("app_name") or "").strip()
+        roots = {
+            _path_key(Path(str(value)).expanduser().resolve())
+            for value in state.get("allowed_roots") or []
+        }
+        try:
+            recorded_root = Path(str(recorded.get("root") or "")).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            recorded_root = None
+        recorded_at = _parse_utc(recorded.get("recorded_at"))
+        age_seconds = (
+            (checked_at - recorded_at).total_seconds()
+            if recorded_at is not None
+            else None
+        )
+        if configured_app != expected_app:
+            reason = "registered-app-name-mismatch"
+        elif _path_key(root) not in roots:
+            reason = "exact-root-not-covered-by-verified-app"
+        elif recorded_root is None or _path_key(recorded_root) != _path_key(root):
+            reason = "final-gate-root-mismatch"
+        elif age_seconds is None or age_seconds < -300:
+            reason = "final-gate-time-invalid"
+        elif age_seconds > max_age_seconds:
+            reason = "final-gate-expired"
+        else:
+            return {
+                "schema": PRO_APP_READ_GATE_SCHEMA,
+                "qualified": True,
+                "project_root": str(root),
+                "app_name": configured_app,
+                "evidence_root": str(recorded.get("root") or ""),
+                "recorded_at": recorded_at.isoformat(),
+                "checked_at": checked_at.isoformat(),
+                "age_seconds": max(0, int(age_seconds)),
+                "max_age_seconds": max_age_seconds,
+                "run_id": str(recorded.get("run_id") or ""),
+                "conversation_url": str(recorded.get("conversation_url") or ""),
+                "state_path": str(state_file),
+                "receipt_count": len(recorded.get("tool_read_receipts") or []),
+            }
+
+    raise DevSpacePreflightError(
+        "PRO_DEVSPACE_APP_READ_GATE_REQUIRED",
+        "read-only Pro is blocked until a fresh regular non-Pro registered-app canary proves open_workspace, read, and read_chunk",
+        {
+            "project_root": str(root),
+            "app_name": expected_app,
+            "state_path": str(state_file),
+            "reason": reason,
+            "max_age_seconds": max_age_seconds,
+            "required_transport": "devspace",
+            "required_model": "gpt-5.6",
+            "required_thinking_time": "extra-high",
+            "required_tools": ["open_workspace", "read", "read_chunk"],
+            "next_action": "RUN_FRESH_REGULAR_NON_PRO_FINAL_GATE_CANARY",
+            "instructions": "Complete or refresh onboarding stage 08_final_gate, then rerun the same Pro dry-run.",
+        },
+    )
 
 
 def _path_key(path: Path) -> str:

@@ -36,6 +36,7 @@ def workflow_manifest(tmp_path: Path) -> Path:
         "workflow_id": "a" * 32,
         "workflow_profile": "ultra-economy",
         "initial_stage": "pro",
+        "allow_pro": True,
         "project_root": str(tmp_path.resolve()),
         "workflow_dir": str((tmp_path / "workflow").resolve()),
         "initial_mission_path": str(mission.resolve()),
@@ -105,3 +106,14 @@ def test_ultra_economy_runtime_dry_run_is_pro_first_and_readonly(tmp_path: Path,
     assert result["stage"] == "pro"
     assert seen["transport"] == "pro-devspace-readonly"
     assert seen["thinking_time"] == "heavy"
+
+
+def test_ultra_economy_requires_separate_explicit_pro_authority(tmp_path: Path) -> None:
+    module = load_comprehensive()
+    path = workflow_manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["allow_pro"] = False
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(module.WorkflowError, match="ULTRA_ECONOMY_PRO_AUTHORIZATION_REQUIRED"):
+        module.load_manifest(path)

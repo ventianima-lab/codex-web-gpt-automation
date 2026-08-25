@@ -1182,6 +1182,38 @@ def test_clean_room_wizard_walks_every_user_boundary_to_hash_bound_completion(
 
 
 @pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        ("ko", "로컬 설치·연결 설정 진행 중"),
+        ("en", "Local install and connection setup in progress"),
+    ],
+)
+def test_initial_completion_label_does_not_claim_install_is_complete(
+    tmp_path: Path, language: str, expected: str
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=False)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+
+    step = module.next_step(
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        language=language,
+        **environment["probes"],
+    )
+
+    assert step["done"] is False
+    assert step["current_stage"] in {"01_install", "02_stable_endpoint"}
+    assert step["completion_label"] == expected
+    assert "complete" not in step["completion_label"].lower()
+
+
+@pytest.mark.parametrize(
     ("mutation", "case"),
     [
         (lambda state: state.pop("provider"), "missing-provider"),

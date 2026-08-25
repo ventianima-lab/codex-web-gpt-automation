@@ -1,5 +1,9 @@
 # Ultra GPT closed workflow audit
 
+> New workflows use `workflow_profile: ultra-gpt` and opt in with
+> `closed_audit`. Never use `workflow_profile: strict-ultra` for new work; that
+> name remains only for exact legacy recovery and schema compatibility.
+
 The closed audit is an opt-in contract inside the existing `ultra-gpt`
 comprehensive workflow, not a separate execution mode. It does not replace the
 scheduler. The existing Oracle Multi v2 writer waves, isolated worktrees,
