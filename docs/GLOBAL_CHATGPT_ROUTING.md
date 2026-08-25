@@ -110,8 +110,13 @@ The follow-up command requires the exact terminal parent run directory, a
 project-contained UTF-8 mission,
 and a unique round key. Raw Oracle follow-up options remain blocked. Each round
 gets a new Oracle run/slug but must prove the unchanged ChatGPT conversation
-and append hash-bound reservation/result receipts. It never starts
-implementation, edits files, or runs commands. A
+and append hash-bound reservation/result receipts. A dry-run creates no
+reservation. A live attempt creates child state/logs before
+local preflight and appends a launch receipt, so a pre-browser failure remains
+auditable. A historical reservation with no child run stays immutable and is
+never replayed or deleted; after the prior controller is proven stopped, the
+owner uses a new round key.
+It never starts implementation, edits files, or runs commands. A
 separately explicit immutable-evidence request may use `pro-attachment`. Its required
 `WEB_MULTI_NEEDED` decision may start the ready-to-run advisory Web Multi stage
 after the exact Pro session is terminal; that advisory still returns to the

@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -941,6 +943,355 @@ def test_followup_dry_run_is_same_task_and_same_conversation_without_writes(tmp_
         archive_contract=result["round_receipt_plan"]["parent"]["archive_contract"],
     )
     assert payload["archive"] == "always"
+
+
+def test_followup_actual_preflight_failure_has_child_state_logs_and_result_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    original_execute = runner.execute_run
+
+    def execute_child(manifest_path, **kwargs):
+        def fail_read_gate(_root, _app_name):
+            raise runner.DEVSPACE_PREFLIGHT.DevSpacePreflightError(
+                "PRO_DEVSPACE_APP_READ_GATE_REQUIRED",
+                "regular app read proof is unavailable",
+                {"reason": "test-preflight-failure"},
+            )
+
+        return original_execute(
+            manifest_path,
+            **kwargs,
+            pro_app_read_gate_factory=fail_read_gate,
+            devspace_qualification_factory=lambda root: {"qualified": True, "project_root": str(root)},
+            version_resolver=lambda *_args, **_kwargs: "oracle 0.18.0",
+            compat_factory=lambda version: {"ok": True, "version": version},
+            devspace_compat_factory=lambda: {
+                "ok": True, "changed": [], "service_restart_required": False,
+            },
+        )
+
+    monkeypatch.setattr(runner, "execute_run", execute_child)
+    result = runner.followup_run(
+        parent.run_dir,
+        mission_path=mission,
+        round_key="preflight-evidence",
+        run_id="followup-preflight-evidence-0001",
+    )
+
+    child = parent.run_dir.parent / "followup-preflight-evidence-0001"
+    state = runner.STATE.load_state(child / "state.json")
+    assert result["ok"] is False
+    assert child.is_dir()
+    assert (child / "stdout.log").is_file()
+    assert "PRO_DEVSPACE_APP_READ_GATE_REQUIRED" in (child / "stderr.log").read_text(encoding="utf-8")
+    assert state["session_authority"] == "pre_submit"
+    assert state["status"] == "failed"
+    result_receipt = parent.run_dir / "followup-rounds" / "preflight-evidence.result.json"
+    assert result_receipt.is_file()
+    recorded = json.loads(result_receipt.read_text(encoding="utf-8"))
+    assert recorded["conversation_binding"]["identity_status"] == "not-applicable-pre-submit"
+    assert recorded["child"]["status"] == "failed"
+
+
+def test_followup_pre_layout_exception_has_parent_launch_and_failure_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    dry = runner.followup_run(
+        parent.run_dir,
+        mission_path=mission,
+        round_key="prelayout-exception",
+        run_id="followup-33333333333333333333333333333333",
+        dry_run=True,
+    )
+    assert not Path(dry["round_receipt_path"]).exists()
+
+    observed: dict[str, str] = {}
+
+    def fail_before_layout(manifest_path, **kwargs):
+        observed["manifest_sha256"] = hashlib.sha256(Path(manifest_path).read_bytes()).hexdigest()
+        observed["expected_manifest_sha256"] = kwargs["_expected_manifest_sha256"]
+        raise runner.OracleRunError(
+            "TEST_PRELAYOUT_FAILURE",
+            "simulated failure before child layout creation",
+        )
+
+    monkeypatch.setattr(runner, "execute_run", fail_before_layout)
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.followup_run(
+            parent.run_dir,
+            mission_path=mission,
+            round_key="prelayout-exception",
+            run_id="followup-33333333333333333333333333333333",
+        )
+    assert exc.value.code == "TEST_PRELAYOUT_FAILURE"
+    assert not (parent.run_dir.parent / "followup-33333333333333333333333333333333").exists()
+    launches = list((parent.run_dir / "followup-rounds").glob("prelayout-exception.*.launch.json"))
+    failures = list((parent.run_dir / "followup-rounds").glob("prelayout-exception.*.prelaunch-failure.json"))
+    assert len(launches) == 1
+    assert len(failures) == 1
+    launch = json.loads(launches[0].read_text(encoding="utf-8"))
+    failure = json.loads(failures[0].read_text(encoding="utf-8"))
+    assert launch["submission_action"] == "not-reached-at-receipt"
+    assert failure["submission_action"] == "submitted_unknown"
+    assert failure["error"]["code"] == "TEST_PRELAYOUT_FAILURE"
+    assert failure["launch_receipt_sha256"] == hashlib.sha256(launches[0].read_bytes()).hexdigest()
+    assert observed["manifest_sha256"] == observed["expected_manifest_sha256"]
+
+
+def test_followup_manifest_swap_after_reservation_fails_before_child_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    original_execute = runner.execute_run
+
+    def swap_manifest(manifest_path, **kwargs):
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        payload["app_name"] = "foreign-app"
+        Path(manifest_path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return original_execute(manifest_path, **kwargs)
+
+    monkeypatch.setattr(runner, "execute_run", swap_manifest)
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.followup_run(
+            parent.run_dir,
+            mission_path=mission,
+            round_key="manifest-swap",
+            run_id="followup-manifest-swap-0001",
+        )
+    assert exc.value.code == "FOLLOWUP_MANIFEST_CHANGED_BEFORE_PREPARE"
+    assert not (parent.run_dir.parent / "followup-manifest-swap-0001").exists()
+    failures = list((parent.run_dir / "followup-rounds").glob("manifest-swap.*.prelaunch-failure.json"))
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text(encoding="utf-8"))
+    assert failure["submission_action"] == "none"
+    assert failure["error"]["code"] == "FOLLOWUP_MANIFEST_CHANGED_BEFORE_PREPARE"
+
+
+def test_followup_mission_swap_after_reservation_fails_before_child_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    original_execute = runner.execute_run
+
+    def swap_mission(manifest_path, **kwargs):
+        mission.write_text("changed after reservation\n", encoding="utf-8")
+        return original_execute(manifest_path, **kwargs)
+
+    monkeypatch.setattr(runner, "execute_run", swap_mission)
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.followup_run(
+            parent.run_dir,
+            mission_path=mission,
+            round_key="mission-swap",
+            run_id="followup-mission-swap-0001",
+        )
+    assert exc.value.code == "FOLLOWUP_MISSION_CHANGED_BEFORE_PREPARE"
+    assert not (parent.run_dir.parent / "followup-mission-swap-0001").exists()
+    failures = list((parent.run_dir / "followup-rounds").glob("mission-swap.*.prelaunch-failure.json"))
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text(encoding="utf-8"))
+    assert failure["submission_action"] == "none"
+    assert failure["error"]["code"] == "FOLLOWUP_MISSION_CHANGED_BEFORE_PREPARE"
+
+
+def test_followup_reservation_write_failure_cleans_only_own_unreferenced_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    original_write = runner._write_followup_round_receipt
+
+    def fail_reservation(path, payload, **kwargs):
+        if path.name == "reservation-write-failure.json":
+            raise runner.OracleRunError(
+                "TEST_RESERVATION_WRITE_FAILED",
+                "simulated reservation write failure",
+            )
+        return original_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(runner, "_write_followup_round_receipt", fail_reservation)
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.followup_run(
+            parent.run_dir,
+            mission_path=mission,
+            round_key="reservation-write-failure",
+            run_id="followup-reservation-write-failure-0001",
+        )
+    assert exc.value.code == "TEST_RESERVATION_WRITE_FAILED"
+    assert list((parent.run_dir / "followup-manifests").iterdir()) == []
+    assert list((parent.run_dir / "followup-rounds").iterdir()) == []
+    assert not (parent.run_dir.parent / "followup-reservation-write-failure-0001").exists()
+
+
+def test_followup_unknown_exception_without_child_state_stays_submitted_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+
+    def ambiguous_failure(_manifest_path, **_kwargs):
+        raise RuntimeError("controller disappeared at an unknown boundary")
+
+    monkeypatch.setattr(runner, "execute_run", ambiguous_failure)
+    with pytest.raises(RuntimeError):
+        runner.followup_run(
+            parent.run_dir,
+            mission_path=mission,
+            round_key="ambiguous-no-child-state",
+            run_id="followup-ambiguous-no-child-state-0001",
+        )
+    failures = list(
+        (parent.run_dir / "followup-rounds").glob(
+            "ambiguous-no-child-state.*.prelaunch-failure.json"
+        )
+    )
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text(encoding="utf-8"))
+    assert failure["submission_action"] == "submitted_unknown"
+    assert failure["error"]["code"] == "ORACLE_RUN_FAILED"
+
+
+def test_followup_manifest_config_is_parsed_from_the_verified_byte_buffer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    original_execute = runner.execute_run
+    original_load = runner.STATE.load_manifest
+    observed: dict[str, str] = {}
+
+    def execute_with_parse_race(manifest_path, **kwargs):
+        original_bytes = Path(manifest_path).read_bytes()
+
+        def racing_load(path, **load_kwargs):
+            payload = json.loads(original_bytes.decode("utf-8"))
+            payload["app_name"] = "foreign-app"
+            Path(path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            try:
+                config = original_load(path, **load_kwargs)
+                observed["app_name"] = str(config.app_name)
+                return config
+            finally:
+                Path(path).write_bytes(original_bytes)
+
+        monkeypatch.setattr(runner.STATE, "load_manifest", racing_load)
+        try:
+            def record_gate(_root, app):
+                observed["gate_app"] = app
+                return {"ok": True, "app_name": app}
+
+            return original_execute(
+                manifest_path,
+                **kwargs,
+                pro_app_read_gate_factory=record_gate,
+                devspace_qualification_factory=lambda root: {"qualified": True, "project_root": str(root)},
+                version_resolver=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    runner.OracleRunError("TEST_STOP_BEFORE_SUBMIT", "stop after parsing")
+                ),
+            )
+        finally:
+            monkeypatch.setattr(runner.STATE, "load_manifest", original_load)
+
+    monkeypatch.setattr(runner, "execute_run", execute_with_parse_race)
+    result = runner.followup_run(
+        parent.run_dir,
+        mission_path=mission,
+        round_key="manifest-parse-race",
+        run_id="followup-manifest-parse-race-0001",
+    )
+    assert result["ok"] is False
+    assert observed == {"app_name": "codex", "gate_app": "codex"}
+
+
+@pytest.mark.parametrize("artifact_name", ["followup-rounds", "followup-manifests"])
+def test_followup_rejects_symlinked_parent_artifact_directory(
+    artifact_name: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    external = tmp_path / "external-rounds"
+    external.mkdir()
+    link = parent.run_dir / artifact_name
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(runner.OracleRunError) as caught:
+        runner.followup_run(
+            parent.run_dir,
+            mission_path=mission,
+            round_key="symlink-escape",
+            run_id="followup-symlink-escape-0001",
+        )
+    assert caught.value.code == "FOLLOWUP_ARTIFACT_DIRECTORY_INVALID"
+    assert list(external.iterdir()) == []
+
+
+def test_followup_same_round_concurrency_creates_one_reservation_and_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "execute_run", lambda *_args, **_kwargs: {"ok": False})
+
+    def invoke() -> str:
+        try:
+            runner.followup_run(parent.run_dir, mission_path=mission, round_key="same-key-race")
+            return "winner"
+        except runner.OracleRunError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _index: invoke(), range(2)))
+
+    assert sorted(outcomes) == ["FOLLOWUP_ROUND_DUPLICATE", "winner"]
+    assert len(list((parent.run_dir / "followup-rounds").glob("same-key-race.json"))) == 1
+    assert len(list((parent.run_dir / "followup-manifests").glob("*.json"))) == 1
+
+
+def test_followup_different_round_keys_share_one_parent_controller_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    entered_first = threading.Event()
+    release_first = threading.Event()
+    entered: list[str] = []
+
+    def blocked_execute(manifest_path, **_kwargs):
+        entered.append(Path(manifest_path).name)
+        if len(entered) == 1:
+            entered_first.set()
+            assert release_first.wait(timeout=10)
+        return {"ok": False}
+
+    monkeypatch.setattr(runner, "execute_run", blocked_execute)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            runner.followup_run,
+            parent.run_dir,
+            mission_path=mission,
+            round_key="different-key-one",
+        )
+        assert entered_first.wait(timeout=10)
+        second = pool.submit(
+            runner.followup_run,
+            parent.run_dir,
+            mission_path=mission,
+            round_key="different-key-two",
+        )
+        assert not second.done()
+        assert len(entered) == 1
+        release_first.set()
+        assert first.result(timeout=10)["ok"] is False
+        assert second.result(timeout=10)["ok"] is False
+
+    assert len(entered) == 2
+    reservations = [
+        path
+        for path in (parent.run_dir / "followup-rounds").glob("different-key-*.json")
+        if ".launch." not in path.name
+    ]
+    assert len(reservations) == 2
 
 
 def test_followup_archived_parent_url_mismatch_fails_before_child_artifacts(

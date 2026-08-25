@@ -433,10 +433,22 @@ def load_manifest(
     *,
     platform_name: str | None = None,
     bind_runtime_task: bool = False,
+    raw_bytes: bytes | None = None,
 ) -> OracleConfig:
     manifest_path = absolute_path(path, label="manifest_path", must_exist=True)
     try:
-        payload = json.loads(read_utf8_strict(manifest_path))
+        manifest_text = (
+            read_utf8_strict(manifest_path)
+            if raw_bytes is None
+            else raw_bytes.decode("utf-8", errors="strict")
+        )
+        payload = json.loads(manifest_text)
+    except UnicodeDecodeError as exc:
+        raise OracleStateError(
+            "UTF8_REQUIRED",
+            "manifest must be valid UTF-8",
+            {"path": str(manifest_path), "offset": exc.start},
+        ) from exc
     except json.JSONDecodeError as exc:
         raise OracleStateError("MANIFEST_JSON_INVALID", "manifest must contain one JSON object", {"line": exc.lineno, "column": exc.colno}) from exc
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
