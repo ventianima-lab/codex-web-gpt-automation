@@ -954,7 +954,10 @@ def confirm_service_restarted(
     *,
     package_root: Path | None = None,
     local_port: int = 7676,
-    wait_timeout_seconds: float = 20,
+    # A first hash-verified npx materialization can take longer than the HTTP
+    # readiness window on Windows.  Keep waiting on the stronger exact process
+    # identity instead of weakening confirmation to a port or health probe.
+    wait_timeout_seconds: float = 120,
     service_probe=current_devspace_service_identity,
     sleep: Any = time.sleep,
 ) -> dict[str, Any]:

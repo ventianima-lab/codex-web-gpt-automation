@@ -362,6 +362,84 @@ def test_restart_confirmation_rejects_old_or_foreign_listener(
     assert marker.is_file()
 
 
+def test_restart_confirmation_waits_through_managed_npx_cold_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "package.json").write_text(
+        json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8"
+    )
+    (package / "sample.txt").write_bytes(b"after\n")
+    compat.PATCHES = {
+        "sample.txt": {
+            "patch": "unused.patch",
+            "pristine": digest(b"before\n"),
+            "patched": digest(b"after\n"),
+        }
+    }
+    monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
+    marker = compat._write_restart_marker([package])
+    marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    patched_at = int(marker_payload["created_at_unix_ns"])
+    probes = 0
+    sleeps: list[float] = []
+    clock = [0.0]
+
+    def advance_clock(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(compat.time, "monotonic", lambda: clock[0])
+
+    def delayed_service_probe(port: int) -> dict[str, object] | None:
+        nonlocal probes
+        probes += 1
+        if probes < 121:
+            return None
+        if probes < 241:
+            return {
+                "pid": 11,
+                "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+                "started_at_unix_ns": patched_at - 1,
+                "local_port": port,
+            }
+        return {
+            "pid": 22,
+            "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+            "started_at_unix_ns": patched_at + 1,
+            "local_port": port,
+        }
+
+    with pytest.raises(compat.DevSpaceCompatError) as legacy_bound:
+        compat.confirm_service_restarted(
+            package_root=package,
+            wait_timeout_seconds=20,
+            service_probe=delayed_service_probe,
+            sleep=advance_clock,
+        )
+    assert legacy_bound.value.code == "DEVSPACE_RESTART_NOT_PROVEN"
+    assert marker.exists()
+
+    probes = 0
+    sleeps.clear()
+    clock[0] = 0.0
+    confirmed = compat.confirm_service_restarted(
+        package_root=package,
+        service_probe=delayed_service_probe,
+        sleep=advance_clock,
+    )
+
+    assert probes == 241
+    assert sum(sleeps) == pytest.approx(60.0)
+    assert confirmed["restart_confirmed"] is True
+    assert confirmed["restart_marker_cleared"] is True
+    assert confirmed["service_identity"]["pid"] == 22
+    assert not marker.exists()
+
+
 def test_stop_service_requires_exact_devspace_identity() -> None:
     compat = load_compat()
     stopped: list[int] = []
