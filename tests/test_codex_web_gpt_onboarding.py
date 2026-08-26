@@ -819,6 +819,27 @@ def test_every_stage_has_readable_instructions_in_both_languages(tmp_path: Path,
         assert "찾을 수 없습니다" not in instructions[0]
 
 
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_final_gate_instructions_require_manual_registered_app_action_refresh_before_fresh_canary(
+    tmp_path: Path, language: str
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    state = module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    instructions = "\n".join(module.stage_instructions("08_final_gate", state, language))
+
+    assert "Action control" in instructions
+    assert "Refresh" in instructions
+    assert "Business" in instructions
+    assert "read_chunk" in instructions
+    assert "post-register" in instructions
+    assert "open_workspace/read" in instructions
+
+
 @pytest.mark.parametrize("provider", ["cloudflare", "ngrok", "custom"])
 def test_non_tailscale_instructions_never_route_through_tailscale_helper(
     tmp_path: Path, provider: str

@@ -59,6 +59,17 @@ or Settings > Plugins > Developer mode. A missing Create button is first a UI,
 workspace, or developer-mode diagnostic—not proof that a higher plan is
 required.
 
+ChatGPT keeps a registered app's Action list as a snapshot. If a fresh final
+canary sees `open_workspace` and `read` but no `read_chunk`, or it sees no
+server-generated Audit receipt IDs, do not accept the partial result. The user
+must manually open the exact `codex` app's overflow menu under **Workspace
+settings > Apps**, select **Action control > Refresh**, then review and enable
+the new Actions. On Business, or when Refresh is unavailable, recreate and
+publish the app with the same exact `/mcp` URL, review and enable the Actions
+currently exposed by the server, and complete Owner approval manually. Agents must not automate
+these ChatGPT settings. Afterwards run the one `post-register` command shown by
+stage `08_final_gate`, then run a fresh regular non-Pro auditNonce canary.
+
 ## Final gate
 
 Unauthenticated local and public `/mcp` returning HTTP 401 is healthy. The final
@@ -79,6 +90,11 @@ and effort, terminal EXECUTED state, conversation URL, output hash, listing,
 workspace identity, and final `TASK_OUTCOME: EXECUTED` marker. Only
 `Full install and real project-root read verified` means the installation is
 complete.
+
+The canary must prove `open_workspace`, a separate `read`, and complete
+offset-zero `read_chunk` of the same file, with all three server-generated
+receipt IDs echoed in its answer. `open_workspace` plus `read` is still a
+failure, including after an app refresh.
 
 For detailed Tailscale service setup and recovery, see
 [DevSpace + Tailscale](DEVSPACE_TAILSCALE_SETUP.md). The Korean full guide is

@@ -105,6 +105,17 @@ Chrome의 Local Network 권한은 `06b_local_network_access`에서 먼저
 
 Plus/Pro에서도 보통 등록할 수 있으므로 요금제는 마지막 가설입니다.
 
+ChatGPT의 등록 앱 Action 목록은 고정 스냅샷일 수 있습니다. 새 final canary에서
+`open_workspace`와 `read`만 보이고 `read_chunk`가 없거나 서버 생성 Audit receipt ID가
+보이지 않으면 부분 성공으로 처리하지 않습니다. Enterprise/Edu 관리자는
+`워크스페이스 설정 → 앱`에서 정확한 `codex` 앱의 더보기 메뉴를 열고
+`Action control → Refresh`를 직접 실행한 뒤 새 Action을 검토·활성화합니다.
+Business 또는 Refresh가 없는 UI에서는 같은 exact `/mcp` URL로 앱을 다시 만들고
+게시한 뒤 서버가 현재 노출한 Action을 검토·활성화하고 Owner 승인을 직접 완료합니다.
+에이전트는 이 ChatGPT 설정을
+자동 조작하지 않습니다. 그 뒤 `08_final_gate`가 출력한 `post-register`를 한 번 실행하고,
+새 일반 비-Pro auditNonce canary를 실행합니다.
+
 ### 실제 연결 확인
 
 인증 없는 local/public `/mcp`의 HTTP `401`은 정상입니다. 연결 거부 또는 timeout은
@@ -132,6 +143,10 @@ python onboard.py record-final-gate --run-dir <Oracle run 디렉터리> `
 `FINAL_GATE_EVIDENCE_INSUFFICIENT`로 거부합니다.
 일반 비-Pro Oracle 이외의 transport는
 `FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE`로 거부합니다.
+
+canary는 반드시 같은 workspaceId의 `open_workspace`, 별도 `read`, 같은 파일의 offset
+0부터 EOF까지 `read_chunk` 및 서버 생성 receipt ID 세 개를 모두 증명해야 합니다.
+`open_workspace/read`만 성공한 것은 앱 갱신 뒤에도 최종 gate를 통과시키지 않습니다.
 
 ## 0. 공개 경로 선택
 
