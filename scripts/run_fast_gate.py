@@ -22,7 +22,32 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FAST_TARGETS = [
     "tests/test_chatgpt_oracle_state.py",
-    "tests/test_chatgpt_oracle_run.py",
+    # The full runner module now contains hundreds of exhaustive lifecycle
+    # contradiction permutations and takes about 65 seconds by itself.  Keep a
+    # bounded cross-section of the launch, ownership, read-gate, completion,
+    # restart, and recovery contracts here; the full v4/CI suite still runs
+    # every permutation.
+    "tests/test_chatgpt_oracle_run.py::test_default_oracle_command_is_pinned_to_the_hash_validated_version",
+    "tests/test_chatgpt_oracle_run.py::test_conversation_url_helpers_preserve_exact_binding_and_detect_conflicts",
+    "tests/test_chatgpt_oracle_run.py::test_new_runs_use_dynamic_cdp_port_instead_of_global_9222",
+    "tests/test_chatgpt_oracle_run.py::test_fresh_execution_binds_runtime_task_but_plain_manifest_loading_stays_unbound",
+    "tests/test_chatgpt_oracle_run.py::test_task_outcome_terminal_watchdog_is_exactly_v1_and_scrubs_inherited_state",
+    "tests/test_chatgpt_oracle_run.py::test_foreign_task_recovery_is_fail_closed_before_browser_or_oracle_access",
+    "tests/test_chatgpt_oracle_run.py::test_legacy_unbound_recovery_is_not_adopted_by_the_current_task",
+    "tests/test_chatgpt_oracle_run.py::test_dry_run_never_executes_and_has_no_file_flag",
+    "tests/test_chatgpt_oracle_run.py::test_default_signed_in_profile_is_copied_per_run_and_window_is_hidden",
+    "tests/test_chatgpt_oracle_run.py::test_regular_runs_use_provider_window_and_nonterminal_status_audit",
+    "tests/test_chatgpt_oracle_run.py::test_pro_readonly_dry_run_fails_before_layout_without_fresh_app_read_gate",
+    "tests/test_chatgpt_oracle_run.py::test_pro_readonly_dry_run_reports_bound_app_read_gate",
+    "tests/test_chatgpt_oracle_run.py::test_new_writable_pro_manifest_is_rejected_before_layout_or_browser",
+    "tests/test_chatgpt_oracle_run.py::test_d_coin_missing_exact_root_blocks_before_oracle_or_run_creation",
+    "tests/test_chatgpt_oracle_run.py::test_complete_requires_zero_exit_and_nonempty_output",
+    "tests/test_chatgpt_oracle_run.py::test_v1_task_outcome_separates_transport_success_from_execution",
+    "tests/test_chatgpt_oracle_run.py::test_devspace_patch_change_blocks_before_submission_until_restart",
+    "tests/test_chatgpt_oracle_run.py::test_post_submit_nonzero_requires_exact_recovery_and_never_restarts",
+    "tests/test_chatgpt_oracle_run.py::test_recovery_captures_output_and_updates_state",
+    "tests/test_chatgpt_oracle_run.py::test_unresolved_exact_session_blocks_different_parent_submission",
+    "tests/test_chatgpt_oracle_run.py::test_recovery_never_downgrades_durable_complete",
     "tests/test_chatgpt_oracle_diagnose.py",
     "tests/test_chatgpt_oracle_incident.py",
     "tests/test_chatgpt_oracle_compat.py",

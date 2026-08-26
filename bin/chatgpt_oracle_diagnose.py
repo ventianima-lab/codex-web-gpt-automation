@@ -38,6 +38,7 @@ SCHEMA = "codex.chatgpt.oracle-diagnosis/v1"
 # never reached the composer must never be reported as a recovery defect.
 PRE_SUBMIT_HOST = "pre-submit-host-environment"
 PRE_SUBMIT_UI = "pre-submit-ui-contract"
+OWNERSHIP_CONFLICT = "submission-ownership-conflict"
 BROWSER_LIFETIME = "browser-lifetime-lost"
 PROVIDER_INCOMPLETE = "post-submit-provider-incomplete"
 RECOVERY_BINDING = "post-submit-recovery-binding"
@@ -53,6 +54,7 @@ BUCKETS = (
     ACTIVE,
     PRE_SUBMIT_HOST,
     PRE_SUBMIT_UI,
+    OWNERSHIP_CONFLICT,
     BROWSER_LIFETIME,
     PROVIDER_INCOMPLETE,
     RECOVERY_BINDING,
@@ -61,6 +63,16 @@ BUCKETS = (
 )
 
 SIGNATURE_RULES: tuple[tuple[str, str, str], ...] = (
+    (
+        "project submit mutex could not be acquired",
+        OWNERSHIP_CONFLICT,
+        "project-submit-mutex-held",
+    ),
+    (
+        "PROJECT_SESSION_STILL_LIVE",
+        OWNERSHIP_CONFLICT,
+        "same-task-project-session-still-live",
+    ),
     ("rsync", PRE_SUBMIT_HOST, "oracle-profile-copy-requires-rsync"),
     ("cannot be combined with", PRE_SUBMIT_HOST, "oracle-launch-flags-mutually-exclusive"),
     ("app mention suggestion did not appear", PRE_SUBMIT_UI, "app-mention-suggestion-absent"),
@@ -82,6 +94,7 @@ SIGNATURE_RULES: tuple[tuple[str, str, str], ...] = (
 REMEDIATION = {
     PRE_SUBMIT_HOST: "Fix the local launch contract; no web submission occurred, so a fresh run is safe.",
     PRE_SUBMIT_UI: "Relax or realign the ChatGPT UI contract; no web submission occurred, so a fresh run is safe.",
+    OWNERSHIP_CONFLICT: "Another run owns the task or submit mutex; inspect and resolve that exact owner before any fresh run.",
     BROWSER_LIFETIME: "Keep the Oracle-owned browser alive for the run; recover the exact slug before any retry.",
     PROVIDER_INCOMPLETE: "Resume the exact slug with live recovery; never resubmit.",
     RECOVERY_BINDING: "Reopen only the persisted exact conversation URL; never resubmit.",
@@ -219,8 +232,18 @@ def classify_run(
         return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
     if outcome in {"not_executed", "blocked"} and has_output:
         evidence_text = "\n".join((stdout_text, transcript_text, output_text))
+        read_route_refresh = STATE.terminal_devspace_read_route_refresh_evidence(
+            state, output_text
+        )
+        terminal_nonexecution = STATE.terminal_devspace_nonexecution_evidence(
+            state, output_text
+        )
         if STATE.recursive_self_observation_evidence(state, output_text) is not None:
             signature = "post-submit-recursive-self-observation"
+        elif read_route_refresh is not None:
+            signature = str(read_route_refresh["signature"])
+        elif terminal_nonexecution is not None:
+            signature = str(terminal_nonexecution["signature"])
         elif "OAuth token request failed" in evidence_text and "503" in evidence_text:
             signature = "registered-app-oauth-token-request-503"
         elif _same_workspace_read_network_failure_evidence(evidence_text):
@@ -292,7 +315,10 @@ def diagnose(state_root: Path | None = None) -> dict[str, Any]:
         output_path = Path(str(artifacts.get("output") or (run_dir / "output.md")))
         verdict = classify_run(
             state,
-            stdout_text=_read_text(run_dir / "stdout.log"),
+            stdout_text="\n".join((
+                _read_text(run_dir / "stdout.log"),
+                _read_text(run_dir / "stderr.log"),
+            )),
             has_output=_output_is_nonempty(output_path),
             transcript_text=_read_text(run_dir / "transcript.md"),
             output_text=_read_text(output_path),

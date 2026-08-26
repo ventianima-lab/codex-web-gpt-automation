@@ -1,5 +1,21 @@
 # 기술 변경 기록
 
+## 1.20.4 - Validate DevSpace 1.0.8
+
+- DevSpace `1.0.8` is the explicit current runtime for new setup and managed
+  macOS launches after archive-integrity, exact patch, and compatibility-gate
+  validation. DevSpace `1.0.7` is retained as the rollback LKG; neither path
+  resolves a moving npm `latest` tag.
+- The release portability workflow prepares only the hash-verified published
+  `1.0.8` archive before running the cross-platform contract suite.
+- DevSpace `1.0.8` adds an optional local-agent daemon and provider CLI
+  adapters. Managed ChatGPT workspace services pin `DEVSPACE_SUBAGENTS=false`;
+  enabling that separate execution surface remains an explicit user action.
+- The fast pre-submit gate now runs a named cross-section of runner launch,
+  ownership, app-read, completion, restart, and recovery contracts while the
+  full suite retains every exhaustive contradiction permutation. This restores
+  the 100-second CI budget without reducing full release coverage.
+
 ## 1.20.3 - Preserve follow-up evidence before browser launch
 
 - A live read-only Pro `followup` now creates the exact child run directory,

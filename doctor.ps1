@@ -12,6 +12,8 @@ $Warnings = @()
 $Commands = @('powershell -ExecutionPolicy Bypass -File .\install.ps1 -WhatIf')
 $LocalMultiGptEnabled = $false
 $LocalMultiGptDoctor = $null
+$LegacyDependencyMode = $null
+$InstallReceiptSchema = $null
 
 function Get-Sha256([string]$Path) {
   $stream = $null
@@ -51,6 +53,7 @@ if (!$Receipt) {
     if (@('codexpro.install-receipt/v2','codexpro.install-receipt/v3') -notcontains [string]$Value.schema) {
       throw 'unsupported install receipt schema'
     }
+    $InstallReceiptSchema = [string]$Value.schema
     foreach ($Record in $Value.files) {
       $Path = Get-SafeChild $CodexRoot ([string]$Record.path)
       if (!(Test-Path -LiteralPath $Path)) {
@@ -63,6 +66,7 @@ if (!$Receipt) {
       }
     }
     $LocalMultiGptEnabled = [bool]$Value.optional_components.local_multi_gpt.enabled
+    $LegacyDependencyMode = [string]$Value.dependency.mode
   } catch {
     $Issues += @{code='RECEIPT_INVALID'; detail=$_.Exception.Message}
   }
@@ -127,9 +131,17 @@ if (Test-Path -LiteralPath $UpdateReceiptPath) {
   }
 }
 
-if (($Agbrowse -or $UpdateReceipt) -and (!$Python -or !(Test-Path -LiteralPath $Contract))) {
+$VerifyLegacyContract = (
+  [bool]$UpdateReceipt -or
+  $LegacyDependencyMode -eq 'applied' -or
+  $InstallReceiptSchema -eq 'codexpro.install-receipt/v2'
+)
+if ($Agbrowse -and !$VerifyLegacyContract) {
+  $Warnings += @{code='LEGACY_AGBROWSE_UNMANAGED'; detail='PATH agbrowse is outside this install receipt and was not contract-validated'}
+}
+if ($VerifyLegacyContract -and (!$Python -or !(Test-Path -LiteralPath $Contract))) {
   $Issues += @{code='CONTRACT_UNVERIFIED'; detail='Python or contract manifest unavailable'}
-} elseif ($Agbrowse -or $UpdateReceipt) {
+} elseif ($VerifyLegacyContract) {
   if ($UpdateReceipt -and (Get-Sha256 $Contract) -ne [string]$UpdateReceipt.contract_sha256) {
     $Issues += @{code='CONTRACT_RECEIPT_HASH_MISMATCH'; contract=$Contract}
   } else {
@@ -170,7 +182,7 @@ if (($Agbrowse -or $UpdateReceipt) -and (!$Python -or !(Test-Path -LiteralPath $
   commands = $Commands
   agbrowse = @{selected_version=$SelectedVersion; contract=$Contract; update_receipt=$UpdateReceiptPath}
   oracle = @{package='@steipete/oracle';current_version='0.18.0';last_known_good='0.17.1';policy='newest-validated-stable';resolution='npx at explicit run time'}
-  devspace = @{package='@waishnav/devspace';current_version='1.0.7';last_known_good='1.0.4';policy='newest-validated-stable';setup='explicit setup skill only'}
+  devspace = @{package='@waishnav/devspace';current_version='1.0.8';last_known_good='1.0.7';policy='newest-validated-stable';setup='explicit setup skill only'}
   local_multi_gpt = @{enabled=$LocalMultiGptEnabled;doctor=$LocalMultiGptDoctor}
   codexpro = @{
     installation = 'external'

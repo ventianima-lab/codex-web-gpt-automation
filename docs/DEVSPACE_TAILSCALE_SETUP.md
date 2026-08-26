@@ -45,6 +45,17 @@ the connector after the one-hour access token expires. After upgrading an
 existing setup from metadata that omitted `offline_access`, recreate or
 reconnect the app once so ChatGPT reads the corrected OAuth metadata.
 
+The managed launch also pins `DEVSPACE_SUBAGENTS=false`. DevSpace 1.0.8's
+optional local-agent daemon and provider CLI adapters remain disabled unless
+the user separately and explicitly approves that additional execution surface;
+an inherited or persisted setting must not silently enable it.
+
+Managed recovery primes the exact pinned package before native validation and
+permits a rebuild only for the hash-bound `better-sqlite3@12.11.1` dependency.
+The resulting service is supervised with redacted, bounded live logs and
+PID/start/exit evidence. It requires two consecutive loopback `/mcp` and
+`/healthz` observations before repairing Funnel routing.
+
 ## Manual ChatGPT registration
 
 Enable Developer Mode in ChatGPT and manually create the connector:
@@ -118,7 +129,7 @@ three-artifact hash-bound `settle-recursive-self-observation` receipt; a general
 BLOCKED answer or a simple run-ID mention never qualifies.
 
 When a previously healthy long-running session fails only as its access token
-expires, the managed DevSpace 1.0.7 compatibility layer also checks a bounded
+expires, the managed DevSpace 1.0.8 compatibility layer also checks a bounded
 server-side refresh replay grace. It returns the same rotated pair only for an
 identical client, scope, and resource during a 30-second window, keeps at most
 32 entries in memory, and rejects expiry, mismatch, or revocation. This avoids

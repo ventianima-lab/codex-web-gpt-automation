@@ -143,9 +143,12 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
         "bin/chatgpt_oracle_dispatch.py",
         "bin/chatgpt_oracle_multi.py",
         "bin/chatgpt_oracle_comprehensive.py",
-        "bin/devspace-compat/1.0.7/oauth-refresh-replay.patch",
-        "bin/devspace-compat/1.0.7/workspace-write-and-read-bridge.patch",
-        "bin/devspace-compat/1.0.7/workspaces.patch",
+        "bin/devspace-compat/1.0.8/oauth-refresh-replay.patch",
+        "bin/devspace-compat/1.0.8/artifact-audit-readonly.patch",
+        "bin/devspace-compat/1.0.8/workspace-write-and-read-bridge.patch",
+        "bin/devspace-compat/1.0.8/tool-read-receipts.patch",
+        "bin/devspace-compat/1.0.8/workspaces.patch",
+        "bin/devspace-compat/1.0.7/tool-read-receipts.patch",
         "bin/devspace-compat/1.0.4/directory-read.patch",
         "bin/devspace-compat/1.0.4/delete-file.patch",
         "bin/devspace-compat/1.0.4/trash-file.patch",
@@ -173,8 +176,8 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
     assert manifest["external"]["oracle"]["tested_version"] == "0.18.0"
     assert manifest["external"]["oracle"]["last_known_good"]["version"] == "0.17.1"
     assert manifest["external"]["devspace"]["license"] == "MIT"
-    assert manifest["external"]["devspace"]["tested_version"] == "1.0.7"
-    assert manifest["external"]["devspace"]["last_known_good"]["version"] == "1.0.4"
+    assert manifest["external"]["devspace"]["tested_version"] == "1.0.8"
+    assert manifest["external"]["devspace"]["last_known_good"]["version"] == "1.0.7"
     assert manifest["external"]["agbrowse"]["role"] == "persisted-run-recovery-only"
     assert manifest["external"]["agbrowse"]["default_install"] is False
     assert manifest["external"]["codexpro"]["frozen"] is True

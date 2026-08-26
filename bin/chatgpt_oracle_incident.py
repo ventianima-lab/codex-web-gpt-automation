@@ -39,6 +39,8 @@ STATE = DIAGNOSE.STATE
 LEGACY_SCHEMA = "codex.chatgpt.oracle-incident/v1"
 SCHEMA = "codex.chatgpt.oracle-incident/v2"
 OPERATIONAL_INSTRUCTION_SCHEMA = "codex.chatgpt.oracle-operational-instruction/v1"
+WORKFLOW_STATE_SCHEMA = "codex.chatgpt.oracle-comprehensive-state/v1"
+MISSING_LAYOUT_PRE_SUBMIT_SCHEMA = "codex.chatgpt.oracle-missing-layout-pre-submit/v1"
 
 # Exactly one role may edit automation sources.
 MAINTENANCE_OWNER = "automation-maintenance-session"
@@ -70,6 +72,15 @@ class IncidentError(RuntimeError):
 
     def envelope(self) -> dict[str, Any]:
         return {"ok": False, "error": {"code": self.code, "message": str(self), "evidence": self.evidence}}
+
+
+def _validate_reporter_role(reporter_role: str) -> None:
+    if reporter_role != REPORTER_ROLE:
+        raise IncidentError(
+            "INCIDENT_REPORTER_ROLE_INVALID",
+            f"an incident packet is reported by {REPORTER_ROLE}",
+            {"reporter_role": reporter_role},
+        )
 
 
 def _report_identity(state: dict[str, Any]) -> tuple[str | None, str | None, str]:
@@ -106,6 +117,10 @@ def _operational_instruction(
         action = "none"
         reason = "exact-run-already-terminal"
         executable = False
+    elif lifecycle == "pre_submit_settled" and owner is not None and evaluator == owner:
+        action = "rerun-settled-workflow"
+        reason = "workflow-proof-confirms-oracle-layout-was-never-created"
+        executable = True
     elif owner is None:
         action = "none"
         reason = "legacy-run-has-no-task-recovery-authority"
@@ -128,18 +143,16 @@ def _operational_instruction(
         "action": action,
         "reason": reason,
         "executable_by_evaluated_thread": executable,
-        "fresh_state_check_required": action == "inspect-owned-exact-run",
+        "fresh_state_check_required": action in {
+            "inspect-owned-exact-run",
+            "rerun-settled-workflow",
+        },
     }
 
 
 def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[str, Any]:
     """Build one incident packet from persisted run evidence only."""
-    if reporter_role != REPORTER_ROLE:
-        raise IncidentError(
-            "INCIDENT_REPORTER_ROLE_INVALID",
-            f"an incident packet is reported by {REPORTER_ROLE}",
-            {"reporter_role": reporter_role},
-        )
+    _validate_reporter_role(reporter_role)
     directory = run_dir.expanduser().resolve(strict=True)
     state_path = directory / "state.json"
     if not state_path.is_file():
@@ -153,7 +166,10 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
     output_path = Path(str(artifacts.get("output") or (directory / "output.md")))
     verdict = DIAGNOSE.classify_run(
         state,
-        stdout_text=DIAGNOSE._read_text(directory / "stdout.log"),
+        stdout_text="\n".join((
+            DIAGNOSE._read_text(directory / "stdout.log"),
+            DIAGNOSE._read_text(directory / "stderr.log"),
+        )),
         has_output=DIAGNOSE._output_is_nonempty(output_path),
         transcript_text=DIAGNOSE._read_text(directory / "transcript.md"),
         output_text=DIAGNOSE._read_text(output_path),
@@ -179,13 +195,79 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         if owner_thread is not None
         else []
     )
+    # A diagnostic bucket is not authority to replace a run.  In particular,
+    # ``submitted_unknown`` can resemble a host/UI failure while still retaining
+    # a possible browser submission.  Require the state module's exact durable
+    # pre-submit proof before a same-task packet may say a fresh run is safe.
+    pre_submit_authority = (
+        STATE.proven_pre_submit_failure(state_path)
+        or STATE.proven_pre_submit_session_absence(state_path)
+    )
     recursive_authority = STATE.proven_recursive_self_observation_fresh_run_authority(
         state_path
+    )
+    terminal_nonexecution_authority = (
+        STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
+    )
+    read_route_refresh_authority = (
+        STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+            state_path
+        )
+    )
+    if (
+        (
+            terminal_nonexecution_authority is not None
+            and terminal_nonexecution_authority.get("authorized_source_thread_id")
+            == evaluated_from_thread
+        )
+        or (
+            read_route_refresh_authority is not None
+            and read_route_refresh_authority.get("authorized_source_thread_id")
+            == evaluated_from_thread
+        )
+    ):
+        owners = STATE.unresolved_project_sessions(
+            directory.parent,
+            project_root,
+            exclude_run_id=str(state.get("run_id") or ""),
+            source_thread_id=evaluated_from_thread,
+        )
+    pre_submit_fresh_safe = (
+        ownership_scope == "same-task"
+        and bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI}
+        and pre_submit_authority is not None
+        and not owners
     )
     recursive_fresh_safe = (
         str(verdict["signature"]) == "post-submit-recursive-self-observation"
         and recursive_authority is not None
         and not owners
+    )
+    terminal_nonexecution_fresh_safe = (
+        str(verdict["signature"])
+        in STATE.TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES
+        and terminal_nonexecution_authority is not None
+        and terminal_nonexecution_authority.get("signature")
+        == str(verdict["signature"])
+        and terminal_nonexecution_authority.get("authorized_source_thread_id")
+        == evaluated_from_thread
+        and not owners
+    )
+    read_route_refresh_fresh_safe = (
+        str(verdict["signature"])
+        == STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE
+        and read_route_refresh_authority is not None
+        and read_route_refresh_authority.get("signature")
+        == str(verdict["signature"])
+        and read_route_refresh_authority.get("authorized_source_thread_id")
+        == evaluated_from_thread
+        and not owners
+    )
+    fresh_run_authority = (
+        read_route_refresh_authority
+        or terminal_nonexecution_authority
+        or recursive_authority
+        or (pre_submit_authority if pre_submit_fresh_safe else None)
     )
     return {
         "schema": SCHEMA,
@@ -212,17 +294,21 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
             evaluator=evaluated_from_thread,
             scope=ownership_scope,
         ),
-        # Only a proven pre-submit failure is safe to retry: nothing reached the
-        # composer, so a fresh run cannot duplicate a live web submission.
+        # Pre-submit proof remains the normal fresh-run authority. The only
+        # terminal exceptions are exact task-bound append-only receipts.
         "safe_for_fresh_run": (
-            ownership_scope == "same-task"
-            and (
-                (bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI} and not owners)
-                or recursive_fresh_safe
+            (
+                ownership_scope == "same-task"
+                and (
+                    pre_submit_fresh_safe
+                    or recursive_fresh_safe
+                    or read_route_refresh_fresh_safe
+                )
             )
+            or terminal_nonexecution_fresh_safe
         ),
         "unresolved_owners": owners,
-        "fresh_run_authority": recursive_authority,
+        "fresh_run_authority": fresh_run_authority,
         "remediation": DIAGNOSE.REMEDIATION.get(bucket, ""),
         "evidence_paths": sorted(
             str(path)
@@ -234,6 +320,134 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
             )
             if path.is_file()
         ),
+    }
+
+
+def build_missing_layout_packet(
+    workflow_state_path: Path,
+    *,
+    reporter_role: str = REPORTER_ROLE,
+) -> dict[str, Any]:
+    """Report an exact missing-layout incident without granting replacement authority."""
+    _validate_reporter_role(reporter_role)
+    path = workflow_state_path.expanduser().resolve(strict=True)
+    try:
+        workflow = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise IncidentError(
+            "INCIDENT_WORKFLOW_STATE_INVALID",
+            "the comprehensive workflow state is not valid UTF-8 JSON",
+            {"workflow_state_path": str(path)},
+        ) from error
+    if not isinstance(workflow, dict) or workflow.get("schema") != WORKFLOW_STATE_SCHEMA:
+        raise IncidentError(
+            "INCIDENT_WORKFLOW_STATE_INVALID",
+            f"workflow state schema must be {WORKFLOW_STATE_SCHEMA}",
+            {"workflow_state_path": str(path)},
+        )
+    records = workflow.get("records") if isinstance(workflow.get("records"), list) else []
+    settlement = next(
+        (
+            record
+            for record in reversed(records)
+            if isinstance(record, dict)
+            and record.get("settlement") == "oracle-layout-not-created-pre-submit"
+        ),
+        None,
+    )
+    proof = settlement.get("settlement_proof") if isinstance(settlement, dict) else None
+    if (
+        not isinstance(proof, dict)
+        or proof.get("schema") != MISSING_LAYOUT_PRE_SUBMIT_SCHEMA
+        or proof.get("kind") != "oracle-layout-not-created"
+        or proof.get("safe_for_fresh_run") is not False
+        or str(proof.get("workflow_id") or "") != str(workflow.get("workflow_id") or "")
+        or str(proof.get("attempt_id") or "") != str(settlement.get("run_id") or "")
+        or str(proof.get("run_dir") or "") != str(settlement.get("run_dir") or "")
+    ):
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_PROOF_INVALID",
+            "workflow state lacks an exact missing-layout pre-submit settlement proof",
+            {"workflow_state_path": str(path)},
+        )
+    run_dir = Path(str(proof["run_dir"])).expanduser()
+    manifest_path = Path(str(proof.get("oracle_manifest_path") or "")).expanduser()
+    if not run_dir.is_absolute() or run_dir.exists() or run_dir.is_symlink():
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_PROOF_INVALID",
+            "the settled Oracle run directory must remain absent",
+            {"run_dir": str(run_dir)},
+        )
+    try:
+        manifest_path = manifest_path.resolve(strict=True)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        project_root = Path(str(manifest.get("project_root") or "")).expanduser().resolve(strict=True)
+    except (OSError, UnicodeDecodeError, TypeError, json.JSONDecodeError) as error:
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_BINDING_INVALID",
+            "the settled attempt's Oracle manifest binding is unavailable",
+            {"oracle_manifest_path": str(manifest_path)},
+        ) from error
+    attempt_id = str(proof["attempt_id"])
+    manifest_run_id = str(manifest.get("run_id") or manifest.get("requested_run_id") or "")
+    if not isinstance(manifest, dict) or manifest_run_id != attempt_id or not project_root.is_dir():
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_BINDING_INVALID",
+            "the settled attempt does not match its Oracle manifest",
+            {"oracle_manifest_path": str(manifest_path), "attempt_id": attempt_id},
+        )
+    owner = str(workflow.get("source_thread_id") or "").strip().casefold() or None
+    evaluator = STATE.current_source_thread_id()
+    if evaluator is None:
+        raise IncidentError(
+            "INCIDENT_EVALUATED_FROM_THREAD_REQUIRED",
+            "a v2 incident report requires the exact evaluating Codex task ID",
+            {"attempt_id": attempt_id, "owner_source_thread_id": owner},
+        )
+    scope = "legacy-unbound" if owner is None else "same-task" if owner == evaluator else "foreign-task"
+    owners = (
+        STATE.unresolved_project_sessions(
+            run_dir.resolve().parent,
+            project_root,
+            exclude_run_id=attempt_id,
+            source_thread_id=owner,
+        )
+        if owner is not None
+        else []
+    )
+    state_stub = {
+        "run_id": attempt_id,
+        "source_thread_id": owner,
+        "oracle": {"slug": f"oracle-settled-{attempt_id[:10]}"},
+    }
+    return {
+        "schema": SCHEMA,
+        "run_dir": str(run_dir.resolve()),
+        "project_root": str(project_root),
+        "bucket": DIAGNOSE.PRE_SUBMIT_HOST,
+        "signature": "oracle-layout-not-created-pre-submit",
+        "lifecycle": "attention_required",
+        "authority_source": "workflow-missing-layout-unproven",
+        "conversation_url": "",
+        "reporter_role": reporter_role,
+        "repair_owner": MAINTENANCE_OWNER,
+        "reporter_may_edit_automation_sources": False,
+        "run_owner_source_thread_id": owner,
+        "evaluated_from_thread": evaluator,
+        "target_source_thread_id": owner,
+        "ownership_scope": scope,
+        "operational_instruction": _operational_instruction(
+            state_stub,
+            lifecycle="attention_required",
+            owner=owner,
+            evaluator=evaluator,
+            scope=scope,
+        ),
+        "safe_for_fresh_run": False,
+        "unresolved_owners": owners,
+        "fresh_run_authority": None,
+        "remediation": DIAGNOSE.REMEDIATION.get(DIAGNOSE.PRE_SUBMIT_HOST, ""),
+        "evidence_paths": [str(path), str(manifest_path)],
     }
 
 
@@ -348,6 +562,13 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 False,
                 False,
             )
+        elif lifecycle == "pre_submit_settled" and scope == "same-task":
+            expected_instruction = (
+                "rerun-settled-workflow",
+                "workflow-proof-confirms-oracle-layout-was-never-created",
+                True,
+                True,
+            )
         elif scope == "legacy-unbound":
             expected_instruction = (
                 "none",
@@ -385,6 +606,47 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 "the operational action must match the exact lifecycle and task ownership scope",
                 {"expected": expected_instruction, "actual": actual_instruction},
             )
+        if packet.get("safe_for_fresh_run") is True and packet.get("bucket") in {
+            DIAGNOSE.PRE_SUBMIT_HOST,
+            DIAGNOSE.PRE_SUBMIT_UI,
+        }:
+            state_path = Path(str(packet["run_dir"])) / "state.json"
+            proof = (
+                STATE.proven_pre_submit_failure(state_path)
+                or STATE.proven_pre_submit_session_absence(state_path)
+            )
+            if proof is None or packet.get("fresh_run_authority") != proof:
+                raise IncidentError(
+                    "INCIDENT_FRESH_RUN_AUTHORITY_INVALID",
+                    "pre-submit fresh-run authority requires exact durable state evidence",
+                )
+        if packet.get("safe_for_fresh_run") is True and packet.get("bucket") == DIAGNOSE.TASK_NOT_EXECUTED:
+            state_path = Path(str(packet["run_dir"])) / "state.json"
+            signature = str(packet.get("signature") or "")
+            if signature == "post-submit-recursive-self-observation":
+                proof = STATE.proven_recursive_self_observation_fresh_run_authority(state_path)
+            elif signature in STATE.TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES:
+                proof = STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
+                if proof is not None and proof.get("authorized_source_thread_id") != evaluator:
+                    proof = None
+            elif signature == STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE:
+                proof = STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+                    state_path
+                )
+                if proof is not None and proof.get("authorized_source_thread_id") != evaluator:
+                    proof = None
+            else:
+                proof = None
+            claimed = packet.get("fresh_run_authority")
+            if (
+                proof is None
+                or not isinstance(claimed, dict)
+                or claimed.get("sha256") != proof.get("sha256")
+            ):
+                raise IncidentError(
+                    "INCIDENT_FRESH_RUN_AUTHORITY_INVALID",
+                    "terminal fresh-run authority requires a revalidated, exact append-only receipt",
+                )
     return packet
 
 
@@ -392,7 +654,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build or validate one Oracle incident packet.")
     commands = parser.add_subparsers(dest="command", required=True)
     report = commands.add_parser("report")
-    report.add_argument("--run-dir", type=Path, required=True)
+    source = report.add_mutually_exclusive_group(required=True)
+    source.add_argument("--run-dir", type=Path)
+    source.add_argument("--workflow-state", type=Path)
     check = commands.add_parser("validate")
     check.add_argument("--packet", type=Path, required=True)
     return parser
@@ -402,7 +666,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "report":
-            packet = validate_packet(build_packet(args.run_dir))
+            packet = validate_packet(
+                build_packet(args.run_dir)
+                if args.run_dir is not None
+                else build_missing_layout_packet(args.workflow_state)
+            )
         else:
             packet = validate_packet(
                 json.loads(args.packet.expanduser().resolve(strict=True).read_text(encoding="utf-8"))

@@ -22,15 +22,24 @@ def test_fast_gate_targets_exist_and_cover_the_pre_submit_contracts() -> None:
     gate = load("fast_gate_test", SCRIPTS / "run_fast_gate.py")
 
     for target in gate.FAST_TARGETS:
-        assert (ROOT / target).is_file(), target
+        assert (ROOT / target.split("::", 1)[0]).is_file(), target
 
-    covered = set(gate.FAST_TARGETS)
+    covered = {target.split("::", 1)[0] for target in gate.FAST_TARGETS}
     # The buckets that actually blocked runs before submission must be gated.
     assert "tests/test_chatgpt_oracle_state.py" in covered
     assert "tests/test_chatgpt_oracle_run.py" in covered
     assert "tests/test_chatgpt_oracle_compat.py" in covered
     assert "tests/test_chatgpt_oracle_incident.py" in covered
     assert "tests/test_chatgpt_oracle_diagnose.py" in covered
+    selected_runner_contracts = {
+        target for target in gate.FAST_TARGETS
+        if target.startswith("tests/test_chatgpt_oracle_run.py::")
+    }
+    assert len(selected_runner_contracts) >= 20
+    assert any("fresh_app_read_gate" in target for target in selected_runner_contracts)
+    assert any("dynamic_cdp_port" in target for target in selected_runner_contracts)
+    assert any("foreign_task_recovery" in target for target in selected_runner_contracts)
+    assert "tests/test_chatgpt_oracle_run.py" not in gate.FAST_TARGETS
     assert gate.FAST_DESELECTS == [
         "tests/test_chatgpt_oracle_compat.py::test_archived_parent_direct_restore_requires_exact_control_and_composer_transition"
     ]
@@ -48,7 +57,8 @@ def test_fast_gate_is_a_strict_subset_of_the_full_suite() -> None:
         f"tests/{path.name}" for path in (ROOT / "tests").glob("test_*.py")
     }
 
-    assert set(gate.FAST_TARGETS) < all_tests
+    covered = {target.split("::", 1)[0] for target in gate.FAST_TARGETS}
+    assert covered < all_tests
 
 
 def test_fast_gate_hides_windows_console_windows() -> None:

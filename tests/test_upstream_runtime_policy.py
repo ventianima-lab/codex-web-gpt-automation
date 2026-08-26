@@ -65,7 +65,8 @@ def test_checked_in_policy_separates_reporter_from_gated_maintainer_mutation() -
     assert policy["promotion"]["promotion_automation_schedule"] == "every-6-hours"
     assert "devspace-open-workspace-same-id-read" in policy["promotion"]["required_gates"]
     assert policy["runtimes"]["oracle"]["current"]["version"] == "0.18.0"
-    assert policy["runtimes"]["devspace"]["current"]["version"] == "1.0.7"
+    assert policy["runtimes"]["devspace"]["current"]["version"] == "1.0.8"
+    assert policy["runtimes"]["devspace"]["last_known_good"]["version"] == "1.0.7"
 
 
 def test_offline_fixture_reports_sync_and_hash_bound_archives() -> None:
@@ -135,7 +136,7 @@ def test_main_allows_drift_for_workflow_issue_handling(tmp_path: Path, capsys) -
     module = load_module()
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     fixture_path = tmp_path / "fixture.json"
-    fixture_path.write_text(json.dumps(fixture(policy, devspace_latest="1.0.8")), encoding="utf-8")
+    fixture_path.write_text(json.dumps(fixture(policy, devspace_latest="1.0.9")), encoding="utf-8")
     output = tmp_path / "report.json"
     assert module.main(["--fixture", str(fixture_path), "--output", str(output), "--allow-drift"]) == 0
     assert json.loads(output.read_text(encoding="utf-8"))["drifted"] == ["devspace"]

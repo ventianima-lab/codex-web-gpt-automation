@@ -67,7 +67,7 @@
 | `bin/chatgpt_oracle_profiles.py` | lane별 throwaway 프로필 |
 | `bin/chatgpt_oracle_diagnose.py` | 실패 서명 분류 |
 | `bin/chatgpt_oracle_incident.py` | 단일 수리 소유자 인계 패킷 |
-| `bin/chatgpt_devspace_compat.py` | DevSpace 1.0.7 current 호환 패치와 1.0.4 롤백 LKG |
+| `bin/chatgpt_devspace_compat.py` | DevSpace 1.0.8 current 호환 패치와 1.0.7 롤백 LKG |
 
 ## 레거시 스텁 문서
 

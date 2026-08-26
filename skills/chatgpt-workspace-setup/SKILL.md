@@ -40,12 +40,17 @@ Afterward the helper starts `devspace serve` hidden and creates an HTTPS Funnel
 to `127.0.0.1:7676`. During `devspace init`, enter only the listed roots and
 the public origin `https://<hostname>` (without `/mcp`).
 
-Before starting or restarting DevSpace 1.0.7, run the installed
+Before starting or restarting DevSpace 1.0.8, run the installed
 `bin/chatgpt_devspace_compat.py`. It hash-validates the exact upstream
 `dist/workspaces.js`, backs it up, and applies bounded concurrent discovery
 that skips transient `.pytest-*` and cache trees. If it reports
 `service_restart_required=true`, restart DevSpace before any Oracle
 submission. Unknown versions or hashes fail closed.
+
+DevSpace 1.0.8 also ships an optional local-agent daemon and provider CLI
+adapters. The managed ChatGPT workspace service always sets
+`DEVSPACE_SUBAGENTS=false`; enabling that separate execution surface requires
+an explicit user action outside this setup skill.
 
 The same hash-gated compatibility layer exposes read-only `read_chunk` for a
 regular UTF-8 file whose single line exceeds the upstream 50KB line reader.
@@ -79,6 +84,11 @@ Before every managed service launch, the helper loads `better-sqlite3` with the
 active Node runtime and opens an in-memory database. A missing npm 12 native
 binding fails closed with `DEVSPACE_NATIVE_BINDING_UNAVAILABLE`; never approve
 an unbounded list of install scripts automatically.
+
+Recovery first primes the exact pinned package and may approve/rebuild only
+the hash-bound `better-sqlite3@12.11.1` dependency. It starts a redacting
+supervisor that records PID/start/exit evidence and rotates stdout/stderr while
+streaming; request, tool-call, and shell-command logs stay disabled.
 
 The only app information to enter manually in ChatGPT Developer Mode is:
 
@@ -116,7 +126,7 @@ ChatGPT app works. A Pro submission must never be the first connectivity test.
 For a terminal `OAuth token request failed 503` that begins only when a
 previously working long run reaches access-token expiry, run the exact
 DevSpace compatibility helper before changing any credential or ChatGPT app
-setting. Its 1.0.7 contract hash-gates a short, client/scope/resource-bound
+setting. Its 1.0.8 contract hash-gates a short, client/scope/resource-bound
 refresh replay grace and exercises it against an isolated SQLite database.
 Preserve the real OAuth database, roots, Owner credential, and Funnel; restart
 only the exact managed service once, then require a regular non-Pro exact-root

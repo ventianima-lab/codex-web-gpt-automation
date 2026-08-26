@@ -256,6 +256,7 @@ def onboarding_plan(
             "environment": {
                 "DEVSPACE_TOOL_MODE": "full",
                 "DEVSPACE_OAUTH_SCOPES": "devspace,offline_access",
+                "DEVSPACE_SUBAGENTS": "false",
             },
         },
         {

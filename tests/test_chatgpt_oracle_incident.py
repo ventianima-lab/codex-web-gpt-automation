@@ -93,7 +93,10 @@ def test_packet_carries_exact_run_bucket_and_evidence(tmp_path: Path) -> None:
     assert packet["conversation_url"] == "https://chatgpt.com/c/exact"
     assert packet["evaluated_from_thread"] == DEFAULT_EVALUATOR
     assert packet["target_source_thread_id"] == DEFAULT_EVALUATOR
-    assert packet["safe_for_fresh_run"] is True
+    # A classifier label alone cannot authorize a replacement: this fixture
+    # deliberately has no durable exact pre-submit state proof.
+    assert packet["safe_for_fresh_run"] is False
+    assert packet["fresh_run_authority"] is None
     assert str(run_dir / "state.json") in packet["evidence_paths"]
 
 
@@ -128,6 +131,26 @@ def test_bound_packet_routes_only_to_exact_owner_task(tmp_path: Path, monkeypatc
         "executable_by_evaluated_thread": False,
         "fresh_state_check_required": False,
     }
+
+
+def test_ambiguous_submitted_unknown_pre_submit_bucket_never_authorizes_replacement(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    run_dir = write_run(
+        tmp_path,
+        "ambiguous-run",
+        status="attention_required",
+        session_authority="submitted_unknown",
+        stdout="ERROR: ChatGPT app mention was not confirmed in the composer.\n",
+        source_thread_id=DEFAULT_EVALUATOR,
+    )
+
+    packet = module.validate_packet(module.build_packet(run_dir))
+
+    assert packet["bucket"] == module.DIAGNOSE.PRE_SUBMIT_UI
+    assert packet["safe_for_fresh_run"] is False
+    assert packet["fresh_run_authority"] is None
 
 
 def test_v2_build_requires_exact_evaluating_task(
@@ -309,7 +332,7 @@ def test_v2_validation_rejects_impossible_owner_scope_pairs(
     assert exc.value.code == "INCIDENT_OWNERSHIP_SCOPE_INVALID"
 
 
-def test_version_resolution_prelaunch_incident_is_safe_to_retry(tmp_path: Path) -> None:
+def test_version_resolution_label_without_durable_pre_submit_proof_is_not_safe_to_retry(tmp_path: Path) -> None:
     module = load()
     run_dir = write_run(
         tmp_path,
@@ -330,10 +353,11 @@ def test_version_resolution_prelaunch_incident_is_safe_to_retry(tmp_path: Path) 
 
     assert packet["bucket"] == "pre-submit-host-environment"
     assert packet["signature"] == "oracle-version-resolution-prelaunch-timeout"
-    assert packet["safe_for_fresh_run"] is True
+    assert packet["safe_for_fresh_run"] is False
+    assert packet["fresh_run_authority"] is None
 
 
-def test_model_switcher_pre_submit_incident_is_safe_to_retry(tmp_path: Path) -> None:
+def test_model_switcher_label_without_durable_pre_submit_proof_is_not_safe_to_retry(tmp_path: Path) -> None:
     module = load()
     run_dir = write_run(
         tmp_path,
@@ -355,7 +379,8 @@ def test_model_switcher_pre_submit_incident_is_safe_to_retry(tmp_path: Path) -> 
 
     assert packet["bucket"] == "pre-submit-ui-contract"
     assert packet["signature"] == "model-option-label-missing"
-    assert packet["safe_for_fresh_run"] is True
+    assert packet["safe_for_fresh_run"] is False
+    assert packet["fresh_run_authority"] is None
 
 
 def test_version_compatibility_drift_incident_is_safe_to_retry(tmp_path: Path) -> None:
@@ -515,6 +540,200 @@ def test_recursive_self_observation_needs_append_only_user_authority(tmp_path: P
     assert after["fresh_run_authority"]["sha256"] == module.STATE.sha256_file(receipt_path)
 
 
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_signature"),
+    [
+        ("checkout-502", "terminal-devspace-checkout-502-no-execution"),
+        (
+            "app-tools-unavailable",
+            "terminal-devspace-app-tools-unavailable-no-execution",
+        ),
+    ],
+)
+def test_terminal_devspace_nonexecution_authority_releases_only_the_authorized_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_signature: str,
+) -> None:
+    module = load()
+    task_id = DEFAULT_EVALUATOR
+    project_root = tmp_path / "project"
+    if failure_kind == "checkout-502":
+        output = (
+            f"I opened the exact project root {project_root} in checkout mode.\n"
+            "The checkout failed with 502 Upstream or external service errors and no workspace ID.\n"
+            "I did not read the mission, did not run commands, and did not change files.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        )
+    else:
+        output = (
+            "이 세션에는 dev 앱이 제공하는 workspace 도구가 노출되어 있지 않아 "
+            f"지정한 {project_root}를 dev checkout 모드로 열 수 없습니다. "
+            "사용자가 금지한 다른 workspace 커넥터·셸·웹·Oracle 우회는 시도하지 않았으며, "
+            "따라서 미션 파일이나 AGENTS.md도 읽거나 수정하지 않았습니다.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        )
+    run_dir = write_run(
+        tmp_path,
+        "devspace502run",
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+    )
+    mission = run_dir / "mission.md"
+    mission.write_text("review exact project", encoding="utf-8")
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "pro-devspace",
+        "task_outcome_contract": "v1",
+        "mission": {"sha256": module.STATE.sha256_file(mission)},
+    })
+    if failure_kind == "app-tools-unavailable":
+        state["app_name"] = "dev"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    before = module.validate_packet(module.build_packet(run_dir))
+    assert before["signature"] == expected_signature
+    assert before["ownership_scope"] == "legacy-unbound"
+    assert before["safe_for_fresh_run"] is False
+
+    receipt_path = run_dir / "settlements" / "terminal-devspace-nonexecution-fresh-run.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps({
+        "schema": module.STATE.TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA,
+        "confirmation": module.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        "reason": "user authorized a new review after repairing the bounded outage",
+        "authorized_source_thread_id": task_id,
+        "historical_owner_scope": "legacy-unbound",
+        "run_id": state["run_id"],
+        "project_root": state["project_root"],
+        "slug": state["oracle"]["slug"],
+        "transport": state["transport"],
+        "task_outcome": state["task_outcome"],
+        "signature": expected_signature,
+        "state_sha256": module.STATE.sha256_file(state_path),
+        "output_sha256": module.STATE.sha256_file(run_dir / "output.md"),
+        "transcript_sha256": module.STATE.sha256_file(run_dir / "transcript.md"),
+        "stdout_sha256": module.STATE.sha256_file(run_dir / "stdout.log"),
+        "stderr_sha256": module.STATE.sha256_file(run_dir / "stderr.log"),
+        "mission_sha256": module.STATE.sha256_file(mission),
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-25T00:00:00Z",
+    }), encoding="utf-8")
+
+    after = module.validate_packet(module.build_packet(run_dir))
+
+    assert after["safe_for_fresh_run"] is True
+    assert after["fresh_run_authority"]["authorized_source_thread_id"] == task_id
+    foreign = "22222222-2222-4222-8222-222222222222"
+    monkeypatch.setenv("CODEX_THREAD_ID", foreign)
+    foreign_packet = module.build_packet(run_dir)
+    assert foreign_packet["safe_for_fresh_run"] is False
+
+
+def test_terminal_devspace_read_route_refresh_authority_releases_one_probe(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    task_id = DEFAULT_EVALUATOR
+    project_root = tmp_path / "project"
+    escaped_root = str(project_root).replace("\\", "\\\\")
+    output = (
+        "* 앱: `dev`\n"
+        "* Workspace ID: `ws_a0770e8338`\n"
+        f"* 정확한 루트: `{escaped_root}`\n"
+        "* 모드: `checkout`\n"
+        "* 적용 `AGENTS.md`: 전체 확인 완료\n"
+        "* 미션 파일: 전체 확인 완료\n"
+        "* 보고서 첫 Markdown heading: `# Example`\n"
+        "* 저장소 쓰기 작업: 없음\n"
+        "* 금지된 Oracle controller/run 관련 파일·상태·프로세스: 검사하거나 호출하지 않음\n"
+        "현재 `dev` 앱이 이 workspace에서 노출한 도구에 `read_chunk`가 없으며, "
+        "`chunk` 관련 도구가 반환되지 않았습니다.\n"
+        "따라서 다음 단계인 정확히 한 번의 `git status --short --branch` 명령도 실행하지 않았습니다.\n"
+        "* 명령 실행: **안 함**\n"
+        "* exit code: **미확인**\n"
+        "* command output: **없음**\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        tmp_path,
+        "readrouteblocked",
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+        source_thread_id=task_id,
+    )
+    mission = run_dir / "mission.md"
+    mission.write_text(
+        "Call `read_chunk` from `offsetBytes=0` through `eof=true`.\n"
+        "Run exactly one command: `git status --short --branch`.\n"
+        "Run no other command. Do not create, edit, delete, rename, stage, commit, switch, build, or test.\n"
+        "If any required operation fails, report the concrete blocker and stop.\n",
+        encoding="utf-8",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "devspace",
+        "app_name": "dev",
+        "profile": {
+            "model": "gpt-5.6",
+            "model_strategy": "select",
+            "thinking_time": "extra-high",
+        },
+        "task_outcome_contract": "v1",
+        "mission": {"sha256": module.STATE.sha256_file(mission)},
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    before = module.validate_packet(module.build_packet(run_dir))
+    assert before["signature"] == (
+        module.STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE
+    )
+    assert before["safe_for_fresh_run"] is False
+
+    receipt_path = (
+        run_dir / "settlements" / "terminal-devspace-read-route-refresh-fresh-run.json"
+    )
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps({
+        "schema": module.STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_SCHEMA,
+        "confirmation": module.STATE.USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH,
+        "reason": "user refreshed the configured app tools and completed post-register",
+        "authorized_source_thread_id": task_id,
+        "run_id": state["run_id"],
+        "project_root": state["project_root"],
+        "slug": state["oracle"]["slug"],
+        "transport": state["transport"],
+        "task_outcome": state["task_outcome"],
+        "app_name": state["app_name"],
+        "workspace_id": "ws_a0770e8338",
+        "signature": module.STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE,
+        "retry_ordinal": 1,
+        "state_sha256": module.STATE.sha256_file(state_path),
+        "output_sha256": module.STATE.sha256_file(run_dir / "output.md"),
+        "transcript_sha256": module.STATE.sha256_file(run_dir / "transcript.md"),
+        "stdout_sha256": module.STATE.sha256_file(run_dir / "stdout.log"),
+        "stderr_sha256": module.STATE.sha256_file(run_dir / "stderr.log"),
+        "mission_sha256": module.STATE.sha256_file(mission),
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-25T00:00:00Z",
+    }), encoding="utf-8")
+
+    after = module.validate_packet(module.build_packet(run_dir))
+
+    assert after["safe_for_fresh_run"] is True
+    assert after["fresh_run_authority"]["authorized_source_thread_id"] == task_id
+    assert after["fresh_run_authority"]["retry_ordinal"] == 1
+
+
 def test_packet_build_requires_the_exact_persisted_run(tmp_path: Path) -> None:
     module = load()
     empty = tmp_path / "no-run"
@@ -523,6 +742,53 @@ def test_packet_build_requires_the_exact_persisted_run(tmp_path: Path) -> None:
     with pytest.raises(module.IncidentError) as exc:
         module.build_packet(empty)
     assert exc.value.code == "INCIDENT_RUN_STATE_MISSING"
+
+
+def test_missing_layout_packet_is_diagnostic_only_without_durable_run_state(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_dir = tmp_path / "state" / "projects" / "projectkey" / "runs" / ("a" * 32)
+    manifest_path = tmp_path / "oracle.json"
+    manifest_path.write_text(json.dumps({
+        "schema": "codex.chatgpt.oracle-run/v1",
+        "project_root": str(project_root),
+        "run_id": "a" * 32,
+    }), encoding="utf-8")
+    workflow_state = tmp_path / "workflow-state.json"
+    workflow_state.write_text(json.dumps({
+        "schema": "codex.chatgpt.oracle-comprehensive-state/v1",
+        "status": "attention_required",
+        "workflow_id": "b" * 32,
+        "source_thread_id": DEFAULT_EVALUATOR,
+        "records": [{
+            "stage": "plan",
+            "run_id": "a" * 32,
+            "run_dir": str(run_dir),
+            "pre_submit_failure": True,
+            "pre_submit_retry_consumed": False,
+            "settlement": "oracle-layout-not-created-pre-submit",
+            "settlement_proof": {
+                "schema": module.MISSING_LAYOUT_PRE_SUBMIT_SCHEMA,
+                "kind": "oracle-layout-not-created",
+                "safe_for_fresh_run": False,
+                "workflow_id": "b" * 32,
+                "attempt_id": "a" * 32,
+                "run_dir": str(run_dir),
+                "oracle_manifest_path": str(manifest_path),
+            },
+        }],
+    }), encoding="utf-8")
+
+    packet = module.validate_packet(module.build_missing_layout_packet(workflow_state))
+
+    assert packet["lifecycle"] == "attention_required"
+    assert packet["authority_source"] == "workflow-missing-layout-unproven"
+    assert packet["safe_for_fresh_run"] is False
+    assert packet["fresh_run_authority"] is None
+    assert packet["operational_instruction"]["action"] == "inspect-owned-exact-run"
 
 
 def test_build_is_read_only_for_the_reported_run(tmp_path: Path) -> None:

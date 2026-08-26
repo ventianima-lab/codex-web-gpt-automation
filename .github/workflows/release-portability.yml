@@ -20,7 +20,7 @@ jobs:
         with: { node-version: '24.19.0' }
       - run: python -m pip install "pytest>=8,<10"
       - run: python scripts/prepare_oracle_018_ci.py
-      - run: python scripts/prepare_devspace_107_ci.py
+      - run: python scripts/prepare_devspace_108_ci.py
       - run: python scripts/check_portability.py --root .
       - run: python scripts/check_docs.py --root .
       - run: python scripts/run_fast_gate.py --enforce-budget

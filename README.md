@@ -8,7 +8,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
   <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.18.0-8B5CF6">
-  <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.7-14B8A6">
+  <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.8-14B8A6">
 </p>
 
 <p align="center">
@@ -186,7 +186,7 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 GitHub Release가 같은 버전을 가리켜야 합니다. 업그레이드 전에는
 [변경 기록](docs/CHANGELOG.md)을 확인하세요.
 
-현재 기본 검증 기준은 Oracle `0.18.0`, DevSpace `1.0.7`, Node.js `>=24 <27`,
+현재 기본 검증 기준은 Oracle `0.18.0`, DevSpace `1.0.8`, Node.js `>=24 <27`,
 Windows 11 및 macOS 12 이상입니다. 공식 npm `latest`는 즉시 후보로 감지하지만,
 격리된 archive·패치·무전송·교차 플랫폼 검증과 리뷰를 통과한 버전만 current로
 승격합니다. 6시간 감시자는 이슈만 만들고 호스트를 변경하지 않습니다. 별도의 예약된
@@ -194,7 +194,7 @@ Codex 유지관리 자동화가 24시간 안에 검증을 시작해 검증 PR·C
 창의 단일 DevSpace 재시작을 맡고, 차단이 없으면 48시간 내 승격을 목표로 합니다. 안정판
 patch/minor는 모든 게이트가 통과하면 별도 사용자 확인 없이 승인됩니다. major,
 권한/OAuth 변경, 패치 충돌, 실패 또는 모호한 결과만 명시적 사용자 승인이
-필요합니다. 직전 Oracle `0.17.1`과 DevSpace `1.0.4`는 롤백 LKG 및 과거 실행
+필요합니다. 직전 Oracle `0.17.1`과 DevSpace `1.0.7`은 롤백 LKG 및 과거 실행
 복구용으로 보존하며 신규 작업의 기본값으로 사용하지 않습니다. 자세한 계약은
 [업스트림 런타임 정책](docs/UPSTREAM_RUNTIME_POLICY.md)을 참고하세요.
 

@@ -1,0 +1,108 @@
+diff --git a/dist/oauth-provider.js b/dist/oauth-provider.js
+index e0c32d9..e55d95c 100644
+--- a/dist/oauth-provider.js
++++ b/dist/oauth-provider.js
+@@ -3,6 +3,8 @@ import { AccessDeniedError, InvalidGrantError, InvalidRequestError, InvalidToken
+ import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+ import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
+ const CODE_TTL_MS = 5 * 60 * 1000;
++const REFRESH_REPLAY_GRACE_MS = 30 * 1000;
++const MAX_REFRESH_REPLAYS = 32;
+ function randomToken() {
+     return randomBytes(32).toString("base64url");
+ }
+@@ -79,6 +81,7 @@ export class SingleUserOAuthProvider {
+     config;
+     clientsStore;
+     codes = new Map();
++    refreshReplays = new Map();
+     oauthStore;
+     resourceServerUrl;
+     constructor(config, resourceServerUrl, stateDir) {
+@@ -144,9 +147,25 @@ export class SingleUserOAuthProvider {
+         return this.issueTokens(client.client_id, record.params.scopes ?? this.config.scopes, record.params.resource);
+     }
+     async exchangeRefreshToken(client, refreshToken, scopes, resource) {
++        const nowMs = Date.now();
+         const refreshTokenHash = hashToken(refreshToken);
++        this.pruneRefreshReplays(nowMs);
+         const record = this.oauthStore.getRefreshToken(refreshTokenHash);
+-        if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
++        if (!record) {
++            const replay = this.refreshReplays.get(refreshTokenHash);
++            const requestedScopes = scopes ?? replay?.scopes;
++            const requestedResource = resource?.href ?? replay?.resource;
++            if (replay &&
++                replay.expiresAtMs >= nowMs &&
++                replay.clientId === client.client_id &&
++                requestedScopes &&
++                sameStringSet(requestedScopes, replay.scopes) &&
++                requestedResource === replay.resource) {
++                return { ...replay.tokens };
++            }
++            throw new InvalidGrantError("Invalid refresh token");
++        }
++        if (record.clientId !== client.client_id || record.expiresAt < Math.floor(nowMs / 1000)) {
+             throw new InvalidGrantError("Invalid refresh token");
+         }
+         if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
+@@ -156,7 +175,22 @@ export class SingleUserOAuthProvider {
+         if (!requestedScopes.every((scope) => record.scopes.includes(scope))) {
+             throw new AccessDeniedError("Refresh token cannot grant requested scopes");
+         }
+-        return this.issueTokens(client.client_id, requestedScopes, resource ?? (record.resource ? new URL(record.resource) : undefined), refreshTokenHash);
++        const effectiveResource = resource ?? (record.resource ? new URL(record.resource) : undefined);
++        const tokens = this.issueTokens(client.client_id, requestedScopes, effectiveResource, refreshTokenHash);
++        this.refreshReplays.set(refreshTokenHash, {
++            clientId: client.client_id,
++            scopes: [...requestedScopes],
++            resource: effectiveResource?.href,
++            expiresAtMs: nowMs + REFRESH_REPLAY_GRACE_MS,
++            tokens: { ...tokens },
++        });
++        while (this.refreshReplays.size > MAX_REFRESH_REPLAYS) {
++            const oldest = this.refreshReplays.keys().next().value;
++            if (oldest === undefined)
++                break;
++            this.refreshReplays.delete(oldest);
++        }
++        return tokens;
+     }
+     async verifyAccessToken(token) {
+         const record = this.oauthStore.getAccessToken(hashToken(token));
+@@ -175,10 +209,25 @@ export class SingleUserOAuthProvider {
+         const hashed = hashToken(request.token);
+         this.oauthStore.deleteAccessToken(hashed);
+         this.oauthStore.deleteRefreshToken(hashed);
++        for (const [consumedHash, replay] of this.refreshReplays) {
++            if (consumedHash === hashed ||
++                hashToken(replay.tokens.access_token) === hashed ||
++                hashToken(replay.tokens.refresh_token) === hashed) {
++                this.refreshReplays.delete(consumedHash);
++            }
++        }
+     }
+     close() {
++        this.refreshReplays.clear();
+         this.oauthStore.close();
+     }
++    pruneRefreshReplays(nowMs) {
++        for (const [consumedHash, replay] of this.refreshReplays) {
++            if (replay.expiresAtMs < nowMs) {
++                this.refreshReplays.delete(consumedHash);
++            }
++        }
++    }
+     validCodeRecord(client, authorizationCode) {
+         const record = this.codes.get(authorizationCode);
+         if (!record || record.clientId !== client.client_id || record.expiresAtMs < Date.now()) {
+@@ -232,6 +281,9 @@ function authorizationFormFields(client, params) {
+         resource: params.resource?.href,
+     };
+ }
++function sameStringSet(left, right) {
++    return left.length === right.length && left.every((value) => right.includes(value));
++}
+ function hashToken(token) {
+     return createHash("sha256").update(token).digest("base64url");
+ }

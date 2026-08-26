@@ -30,7 +30,11 @@ def test_launchd_services_use_unique_labels_and_exact_allowed_root(tmp_path: Pat
     assert {value["Label"] for value in values.values()} == set(module.LABELS.values())
     assert all(value["CodexProManaged"] is True for value in values.values())
     assert values["supervisor"]["StartInterval"] == 60
+    assert values["devspace"]["ProgramArguments"] == [
+        "/opt/homebrew/bin/npx", "--yes", "@waishnav/devspace@1.0.8", "serve"
+    ]
     assert values["devspace"]["EnvironmentVariables"]["DEVSPACE_TOOL_MODE"] == "full"
+    assert values["devspace"]["EnvironmentVariables"]["DEVSPACE_SUBAGENTS"] == "false"
     for value in values.values():
         assert plistlib.loads(plistlib.dumps(value))["Label"] == value["Label"]
 

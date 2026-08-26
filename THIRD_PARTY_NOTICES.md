@@ -3,7 +3,7 @@
 This repository ships no copy of agbrowse, the Oracle package, DevSpace,
 Codex, CodexPro, browser binaries, or account data. It does ship narrow
 textual compatibility patches for hash-verified Oracle 0.18.0 and DevSpace
-1.0.7, plus Oracle 0.17.1 and DevSpace 1.0.4 rollback-LKG assets and the frozen
+1.0.8, plus Oracle 0.17.1 and DevSpace 1.0.7 rollback-LKG assets and the frozen
 legacy Oracle 0.16.1 recovery lineage.
 
 - `hehee9/multi-gpt@4f5e130` is MIT-licensed. Its attribution and the recorded `server.mjs` hash must be preserved when its upstream-compatible integration is changed.
@@ -26,9 +26,9 @@ legacy Oracle 0.16.1 recovery lineage.
   `bin/oracle-compat/0.16.1` remains frozen for exact legacy recovery. All retain
   the following upstream MIT notice.
 - `@waishnav/devspace` is an external MIT-licensed MCP workspace server. The
-  tested version is 1.0.7, with 1.0.4 retained as rollback LKG. Setup resolves it externally; this repository does
+  tested version is 1.0.8, with 1.0.7 retained as rollback LKG. Setup resolves it externally; this repository does
   not vendor its source. The derivative patch instruction under
-  `bin/devspace-compat/1.0.7` retains the upstream MIT license and is applied
+  `bin/devspace-compat/1.0.8` retains the upstream MIT license and is applied
   only when both the package version and exact source hash match.
 - OMO Codex Light (`lazycodex-ai`) and Tailscale are optional external
   installations. Their executables and source are not redistributed here.

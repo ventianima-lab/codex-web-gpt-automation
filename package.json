@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-automation",
-  "version": "1.20.3",
+  "version": "1.20.4",
   "private": false,
   "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
   "license": "MIT",
@@ -117,7 +117,7 @@
     "scripts/check_docs.py",
     "scripts/check_upstream_runtime_policy.py",
     "scripts/verify_upstream_runtime_maintainer.py",
-    "scripts/prepare_devspace_107_ci.py",
+    "scripts/prepare_devspace_108_ci.py",
     "upstream-runtime-policy.json",
     "upstream-runtime-maintainer-automation.json",
     "contracts/install/",

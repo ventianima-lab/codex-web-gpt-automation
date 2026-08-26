@@ -31,7 +31,7 @@ body:
     id: dependencies
     attributes:
       label: Oracle and DevSpace versions
-      placeholder: Oracle 0.18.0, DevSpace 1.0.7
+      placeholder: Oracle 0.18.0, DevSpace 1.0.8
     validations:
       required: true
   - type: dropdown
