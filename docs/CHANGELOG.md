@@ -1,5 +1,16 @@
 # 기술 변경 기록
 
+## 1.20.7 - Bind registered-app final gates to server receipts
+
+- 새 일반 비-Pro final canary만 `registered_app_final_gate`로 명시해 실제 생성된
+  Oracle `run_id`를 `open_workspace → read → read_chunk`의 동일 `auditNonce`로
+  결속합니다. 세 호출은 재시도 없이 정확히 한 번씩 수행되고 세 서버 생성 영수증 ID를
+  답변에 echo해야 합니다.
+- `onboard.py prepare-final-gate`가 current Codex task에 결속된 exact manifest와
+  dry-run/live/record 명령을 생성합니다. 다른 작업, 일반 터미널, Pro, 비정규 모델/노력은
+  제출 전에 fail-closed 됩니다.
+- 기존 ordinary/Pro/legacy prompt와 v1.20.6 이전 final-gate 기록은 그대로 호환됩니다.
+
 ## 1.20.6 - Explain frozen registered-app Action snapshots
 
 - 최종 canary에서 `open_workspace`와 `read`는 성공하지만 `read_chunk` 또는

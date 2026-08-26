@@ -128,6 +128,20 @@ Business 또는 Refresh가 없는 UI에서는 같은 exact `/mcp` URL로 앱을 
 구체적으로 쓰고, 관찰한 디렉터리 항목을 하나 이상 넣습니다. `--listing`은 반복할 수
 있습니다.
 
+먼저 exact 프로젝트 root 안에 짧은 읽기 전용 canary 미션을 둔 뒤, 현재 Codex 작업에서
+manifest와 dry-run/live 명령을 생성합니다. 이 명령은 새 canary만
+`registered_app_final_gate=true`로 표시하고 현재 작업 ID를 결속합니다.
+
+```powershell
+python onboard.py prepare-final-gate `
+  --root <프로젝트 폴더> `
+  --mission-path <프로젝트 폴더>\missions\onboarding-final-gate.md
+```
+
+출력된 `dry_run_command`를 먼저 실행하고 `submission_action=none`을 확인한 다음,
+출력된 `run_command`를 같은 Codex 작업에서 한 번만 실행합니다. 일반 터미널이나 다른
+Codex 작업에서는 task 결속 검증이 fail-closed 됩니다.
+
 ```powershell
 python onboard.py record-final-gate --run-dir <Oracle run 디렉터리> `
   --root <프로젝트 폴더> `
