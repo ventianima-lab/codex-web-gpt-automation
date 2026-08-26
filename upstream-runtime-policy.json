@@ -54,13 +54,13 @@
       "package": "@waishnav/devspace",
       "registry": "https://registry.npmjs.org/%40waishnav%2Fdevspace",
       "current": {
-        "version": "1.0.7",
-        "integrity": "sha512-kP+Wk52qiMRwdqAP+nV4OZ4HU8feivZQ0k6u4ZUkvqxu8j0Rp/AU8H0K4T43G+zmu9WJKlYLTet7vIUeZHU72A==",
-        "source": "https://www.npmjs.com/package/%40waishnav/devspace/v/1.0.7"
+        "version": "1.0.8",
+        "integrity": "sha512-uyEgFUmt8UcxRy7xnH2rddYdEm6lLIPMKgS2JHwRP7qVnWFtC7j1l4//EOfEVhO4NqGMckWxixNkCWAHPvgZqg==",
+        "source": "https://www.npmjs.com/package/%40waishnav/devspace/v/1.0.8"
       },
       "last_known_good": {
-        "version": "1.0.4",
-        "integrity": "sha512-gYaaweaKWTK7Xb4uImpso2mbp87I7TuCmpenOR1jh1rp0nXisId10UHB9HxU5N1Qa5bDmRcIyHe85Bln2zCuzg=="
+        "version": "1.0.7",
+        "integrity": "sha512-kP+Wk52qiMRwdqAP+nV4OZ4HU8feivZQ0k6u4ZUkvqxu8j0Rp/AU8H0K4T43G+zmu9WJKlYLTet7vIUeZHU72A=="
       }
     }
   }

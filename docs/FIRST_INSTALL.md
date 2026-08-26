@@ -254,14 +254,15 @@ python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py setup 
 
 1. 먼저 고정 hostname을 만들고 `http://127.0.0.1:7676`으로 전달합니다.
 2. 터널 클라이언트를 OS 로그인/서비스로 등록합니다.
-3. `npx --yes @waishnav/devspace@1.0.7 init`을 실행합니다.
+3. `npx --yes @waishnav/devspace@1.0.8 init`을 실행합니다.
 4. exact roots와 public origin을 입력합니다. public origin에는 `/mcp`를 빼고,
    ChatGPT 등록 URL에는 `/mcp`를 붙입니다.
-5. DevSpace 관리 실행 환경에 아래 두 값을 유지합니다.
+5. DevSpace 관리 실행 환경에 아래 세 값을 유지합니다.
 
 ```text
 DEVSPACE_TOOL_MODE=full
 DEVSPACE_OAUTH_SCOPES=devspace,offline_access
+DEVSPACE_SUBAGENTS=false
 ```
 
 임시 URL은 앱 등록 후 바뀌므로 설치 완료 조건을 만족하지 않습니다.

@@ -53,6 +53,7 @@ def test_setup_plan_has_no_secrets_and_is_explicit_only(tmp_path: Path, monkeypa
     assert plan["managed_service_environment"] == {
         "DEVSPACE_TOOL_MODE": "full",
         "DEVSPACE_OAUTH_SCOPES": "devspace,offline_access",
+        "DEVSPACE_SUBAGENTS": "false",
     }
     assert plan["startup_watchdog"] == {
         "windows_mode": "per-user login watchdog",
@@ -61,7 +62,7 @@ def test_setup_plan_has_no_secrets_and_is_explicit_only(tmp_path: Path, monkeypa
     }
     assert plan["devspace_init"][1:3] == [
         "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.7 init",
+        "exec npx --yes @waishnav/devspace@1.0.8 init",
     ]
 
 
@@ -429,6 +430,7 @@ def test_post_register_always_recycles_service_and_preserves_oauth_state(
     ] in calls
     assert launches[0][1]["DEVSPACE_TOOL_MODE"] == "full"
     assert launches[0][1]["DEVSPACE_OAUTH_SCOPES"] == "devspace,offline_access"
+    assert launches[0][1]["DEVSPACE_SUBAGENTS"] == "false"
 
 
 def test_post_register_preserves_shared_funnel_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -528,7 +530,7 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
 
     assert calls[1][1:3] == [
         "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.7 init",
+        "exec npx --yes @waishnav/devspace@1.0.8 init",
     ]
     assert "creationflags" not in call_kwargs[1]
     assert "startupinfo" not in call_kwargs[1]
@@ -538,10 +540,11 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
     assert calls[5] == module.devspace_compat_argv(confirm_restarted=True)
     assert launched and launched[0][0][1:3] == [
         "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.7 serve",
+        "exec npx --yes @waishnav/devspace@1.0.8 serve",
     ]
     assert launched[0][1]["DEVSPACE_TOOL_MODE"] == "full"
     assert launched[0][1]["DEVSPACE_OAUTH_SCOPES"] == "devspace,offline_access"
+    assert launched[0][1]["DEVSPACE_SUBAGENTS"] == "false"
 
 
 def test_windows_startup_watchdog_registration_is_hidden_and_deterministic(tmp_path: Path) -> None:
@@ -687,8 +690,8 @@ def test_owner_password_review_requires_tty_and_rejects_numeric_only(tmp_path: P
 def test_posix_setup_invokes_pinned_devspace_directly(tmp_path: Path) -> None:
     module, current = config(tmp_path)
     plan = module.setup_plan(current, platform_name="posix")
-    assert plan["devspace_init"] == ["npx", "--yes", "@waishnav/devspace@1.0.7", "init"]
-    assert plan["devspace_serve"] == ["npx", "--yes", "@waishnav/devspace@1.0.7", "serve"]
+    assert plan["devspace_init"] == ["npx", "--yes", "@waishnav/devspace@1.0.8", "init"]
+    assert plan["devspace_serve"] == ["npx", "--yes", "@waishnav/devspace@1.0.8", "serve"]
 
 
 def test_tailscale_hostname_is_discovered_from_status_json() -> None:

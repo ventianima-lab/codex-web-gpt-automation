@@ -11,11 +11,11 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
-SUPPORTED_VERSION = "1.0.7"
-# 1.0.4 remains the last-known-good rollback artifact.  It is intentionally
+SUPPORTED_VERSION = "1.0.8"
+# 1.0.7 remains the last-known-good rollback artifact.  It is intentionally
 # not accepted by the updater: applying current compatibility patches to an
 # old package would hide an incomplete rollback from the service health gates.
-LEGACY_LKG_VERSION = "1.0.4"
+LEGACY_LKG_VERSION = "1.0.7"
 CREATE_NO_WINDOW = 0x08000000
 PATCHES = {
     "dist/artifact-tools.js": {
@@ -30,10 +30,10 @@ PATCHES = {
     },
     "dist/server.js": {
         "patch": "workspace-write-and-read-bridge.patch",
-        "pristine": "42d340924421182eea7f2580f96c8d1d5aae459061a6a90804e6900905ef2d72",
-        "patched": "3b258463fcd5a31b754727545ac2b6ecbc0dd922bee568573a8e5a0643842bfc",
+        "pristine": "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263",
+        "patched": "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c",
         "upgrades": {
-            "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967": "tool-read-receipts.patch",
+            "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": "tool-read-receipts.patch",
         },
     },
     "dist/workspaces.js": {
@@ -794,7 +794,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Apply the exact DevSpace 1.0.7 bounded workspace and OAuth refresh "
+            "Apply the exact DevSpace 1.0.8 bounded workspace and OAuth refresh "
             "compatibility patches."
         )
     )

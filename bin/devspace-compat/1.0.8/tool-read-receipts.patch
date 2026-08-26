@@ -1,0 +1,251 @@
+diff --git a/dist/server.js b/dist/server.js
+index 9987ca0..5ad9984 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -1,6 +1,7 @@
+ import { createHash, randomUUID } from "node:crypto";
+ import { createReadStream, readFileSync } from "node:fs";
+ import { access, lstat, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
++import { homedir } from "node:os";
+ import { isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+@@ -102,6 +103,69 @@ const toolNames = {
+     shell: "bash",
+ };
+ const MAX_READ_CHUNK_BYTES = 24 * 1024;
++const AUDIT_NONCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
++function validateAuditNonce(auditNonce) {
++    if (auditNonce === undefined) return undefined;
++    if (typeof auditNonce !== "string" || !AUDIT_NONCE_PATTERN.test(auditNonce)) throw new Error("auditNonce must be 16-128 ASCII letters, digits, dot, underscore, colon, or hyphen");
++    return auditNonce;
++}
++function requestedReceiptPath(path) {
++    if (typeof path !== "string" || path === "" || isAbsolute(path) || /^[A-Za-z]:[\/]/.test(path) || path.startsWith("\\")) return null;
++    return path.replaceAll("\\", "/");
++}
++function toolReadReceiptRoot() { return join(homedir(), ".devspace", "state", "tool-read-receipts"); }
++const auditReadonlyScopes = new Map();
++const AUDIT_RECEIPT_SEQUENCE = ["open_workspace", "read", "read_chunk"];
++function auditReadonlyScopeId(_meta) {
++    const scope = openAiConversationScopeId(_meta);
++    return typeof scope === "string" && scope.trim() !== "" ? scope : null;
++}
++function registerAuditReadonlyWorkspaceOpen(_meta, auditNonce) {
++    const scope = auditReadonlyScopeId(_meta);
++    if (auditNonce === undefined) {
++        if (!scope) return null;
++        const existing = auditReadonlyScopes.get(scope);
++        if (existing?.auditNonce) throw new Error("open_workspace without auditNonce is disabled for this audit-readonly conversation scope");
++        if (!existing) auditReadonlyScopes.set(scope, { auditNonce: null, nextReceiptStep: null, priorTool: "open_workspace" });
++        return scope;
++    }
++    const nonce = validateAuditNonce(auditNonce);
++    if (!scope) throw new Error("auditNonce requires a nonempty OpenAI conversation scope");
++    const existing = auditReadonlyScopes.get(scope);
++    if (existing?.auditNonce === null) throw new Error("auditNonce open_workspace must precede every ordinary workspace, process, or mutation tool in its conversation scope");
++    if (existing?.auditNonce && existing.auditNonce !== nonce) throw new Error("auditNonce does not match the audit-readonly conversation scope");
++    if (!existing) auditReadonlyScopes.set(scope, { auditNonce: nonce, nextReceiptStep: 1, priorTool: null });
++    return scope;
++}
++function assertAuditReadonly(_meta, tool) {
++    const scope = auditReadonlyScopeId(_meta);
++    if (!scope) return;
++    const existing = auditReadonlyScopes.get(scope);
++    if (existing?.auditNonce) throw new Error(`${tool} is disabled for this audit-readonly conversation scope`);
++    if (!existing) auditReadonlyScopes.set(scope, { auditNonce: null, nextReceiptStep: null, priorTool: tool });
++}
++function reserveAuditReceipt(_meta, auditNonce, tool) {
++    if (auditNonce === undefined) return { conversationScopeId: openAiConversationScopeId(_meta) ?? null, auditStep: null };
++    const nonce = validateAuditNonce(auditNonce);
++    const scope = auditReadonlyScopeId(_meta);
++    const state = scope ? auditReadonlyScopes.get(scope) : null;
++    if (!scope || !state?.auditNonce || state.auditNonce !== nonce) throw new Error("audit receipt requires the exact auditNonce open_workspace conversation scope");
++    const step = state.nextReceiptStep;
++    if (!Number.isInteger(step) || AUDIT_RECEIPT_SEQUENCE[step - 1] !== tool) throw new Error(`audit receipt tool order invalid: expected ${AUDIT_RECEIPT_SEQUENCE[step - 1] ?? "no-more-tools"}, received ${tool}`);
++    state.nextReceiptStep += 1;
++    return { conversationScopeId: scope, auditStep: step };
++}
++export async function writeToolReadReceipt({ auditNonce, auditStep = null, tool, workspaceId, canonicalRoot, requestedRelativePath = null, readChunkSha256 = null, readChunkOffsetBytes = null, readChunkBytesReturned = null, readChunkTotalBytes = null, readChunkEof = null, conversationScopeId = null, }, receiptRoot = toolReadReceiptRoot()) {
++    if (auditNonce === undefined) return null;
++    if (!Number.isInteger(auditStep) || auditStep < 1 || auditStep > 3) throw new Error("auditStep must be an integer from 1 through 3");
++    const receipt = { schema: "codex.devspace.tool-read-receipt/v1", receiptId: randomUUID(), auditNonce: validateAuditNonce(auditNonce) ?? null, auditStep, tool, workspaceId, canonicalRoot, requestedRelativePath, readChunkSha256, readChunkOffsetBytes, readChunkBytesReturned, readChunkTotalBytes, readChunkEof, conversationScopeId, timestamp: new Date().toISOString() };
++    await mkdir(receiptRoot, { recursive: true });
++    const receiptPath = join(receiptRoot, receipt.receiptId + ".json");
++    const handle = await open(receiptPath, "wx", 0o600);
++    try { await handle.writeFile(JSON.stringify(receipt) + "\n", "utf8"); await handle.sync(); }
++    finally { await handle.close(); }
++    return { receiptId: receipt.receiptId, receiptPath, receipt };
++}
+ export async function readUtf8Chunk(path, offsetBytes, limitBytes) {
+     const handle = await open(path, "r");
+     try {
+@@ -771,7 +835,8 @@ function registerCodexProcessTools(server, config, workspaces, processSessions)
+         outputSchema: processOutputSchema(),
+         ...toolWidgetDescriptorMeta(config, "shell"),
+         annotations: SHELL_TOOL_ANNOTATIONS,
+-    }, async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, yieldTimeMs, maxOutputTokens }) => {
++    }, async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, yieldTimeMs, maxOutputTokens }, { _meta }) => {
++        assertAuditReadonly(_meta, "exec_command");
+         const startedAt = performance.now();
+         const workspace = workspaces.getWorkspace(workspaceId);
+         const cwd = workspaces.resolveWorkingDirectory(workspace, workingDirectory);
+@@ -830,7 +895,8 @@ function registerCodexProcessTools(server, config, workspaces, processSessions)
+         outputSchema: processOutputSchema(),
+         ...toolWidgetDescriptorMeta(config, "shell"),
+         annotations: SHELL_TOOL_ANNOTATIONS,
+-    }, async ({ workspaceId, sessionId, chars, columns, rows, yieldTimeMs, maxOutputTokens }) => {
++    }, async ({ workspaceId, sessionId, chars, columns, rows, yieldTimeMs, maxOutputTokens }, { _meta }) => {
++        assertAuditReadonly(_meta, "write_stdin");
+         const startedAt = performance.now();
+         workspaces.getWorkspace(workspaceId);
+         const snapshot = await processSessions.write({
+@@ -905,6 +971,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+                 .string()
+                 .optional()
+                 .describe("Git ref to base a worktree on. Only used with mode=\"worktree\". Defaults to HEAD."),
++            auditNonce: z.string().regex(AUDIT_NONCE_PATTERN).optional().describe("Optional 16-128 character audit nonce for a local immutable tool-read receipt."),
+         },
+         outputSchema: {
+             workspaceId: z.string(),
+@@ -931,7 +998,8 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+         },
+         ...toolWidgetDescriptorMeta(config, "workspace"),
+         annotations: { readOnlyHint: true },
+-    }, async ({ path, mode, baseRef }, { _meta }) => {
++    }, async ({ path, mode, baseRef, auditNonce }, { _meta }) => {
++        registerAuditReadonlyWorkspaceOpen(_meta, auditNonce);
+         const startedAt = performance.now();
+         const { workspace, agentsFiles, availableAgentsFiles, workspaceReused, includeBootstrapContext, } = await workspaces.openWorkspace({ path, mode, baseRef }, { conversationScopeId: openAiConversationScopeId(_meta) });
+         if (config.widgets === "changes") {
+@@ -1014,6 +1082,9 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+                 ].filter(Boolean).join("\n"),
+             },
+         ];
++        const auditReceipt = reserveAuditReceipt(_meta, auditNonce, toolNames.openWorkspace);
++        const auditReceiptResult = await writeToolReadReceipt({ auditNonce, auditStep: auditReceipt.auditStep, tool: toolNames.openWorkspace, workspaceId: workspace.id, canonicalRoot: await realpath(workspace.root), conversationScopeId: auditReceipt.conversationScopeId });
++        if (auditReceiptResult) resultContent.push(textBlock(`Audit receipt ID: ${auditReceiptResult.receiptId}`));
+         logToolCall(config, {
+             tool: "open_workspace",
+             workspaceId: workspace.id,
+@@ -1102,11 +1173,12 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+                 .positive()
+                 .optional()
+                 .describe("Maximum number of lines to read."),
++            auditNonce: z.string().regex(AUDIT_NONCE_PATTERN).optional().describe("Optional 16-128 character audit nonce for a local immutable tool-read receipt."),
+         },
+         outputSchema: resultOutputSchema(),
+         ...toolWidgetDescriptorMeta(config, "read"),
+         annotations: { readOnlyHint: true },
+-    }, async ({ workspaceId, ...input }) => {
++    }, async ({ workspaceId, auditNonce, ...input }, { _meta }) => {
+         const startedAt = performance.now();
+         const workspace = workspaces.getWorkspace(workspaceId);
+         const readPath = workspaces.resolveReadPath(workspace, input.path);
+@@ -1124,6 +1196,9 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             return response;
+         }
+         workspaces.markReadPathLoaded(workspace, readPath);
++        const auditReceipt = reserveAuditReceipt(_meta, auditNonce, toolNames.read);
++        const auditReceiptResult = await writeToolReadReceipt({ auditNonce, auditStep: auditReceipt.auditStep, tool: toolNames.read, workspaceId, canonicalRoot: await realpath(workspace.root), requestedRelativePath: requestedReceiptPath(input.path), conversationScopeId: auditReceipt.conversationScopeId });
++        if (auditReceiptResult) response.content.push(textBlock(`Audit receipt ID: ${auditReceiptResult.receiptId}`));
+         const summary = {
+             ...textSummary(response.content),
+             offset: input.offset ?? 1,
+@@ -1160,6 +1235,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             path: z.string().describe("Regular UTF-8 file path, relative to the workspace root."),
+             offsetBytes: z.number().int().nonnegative().default(0).describe("Zero-based UTF-8 byte boundary. Reuse nextOffsetBytes from the previous response."),
+             limitBytes: z.number().int().positive().max(MAX_READ_CHUNK_BYTES).default(MAX_READ_CHUNK_BYTES).describe(`Maximum bytes to return, capped at ${MAX_READ_CHUNK_BYTES}.`),
++            auditNonce: z.string().regex(AUDIT_NONCE_PATTERN).optional().describe("Optional 16-128 character audit nonce for a local immutable tool-read receipt."),
+         },
+         outputSchema: {
+             content: z.string(),
+@@ -1172,16 +1248,18 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+         },
+         ...toolWidgetDescriptorMeta(config, "read"),
+         annotations: { readOnlyHint: true },
+-    }, async ({ workspaceId, path, offsetBytes, limitBytes }) => {
++    }, async ({ workspaceId, path, offsetBytes, limitBytes, auditNonce }, { _meta }) => {
+         const startedAt = performance.now();
+         const workspace = workspaces.getWorkspace(workspaceId);
+         const readPath = workspaces.resolveReadPath(workspace, path);
+         try {
+             const result = await readUtf8Chunk(readPath.absolutePath, offsetBytes, limitBytes);
+             workspaces.markReadPathLoaded(workspace, readPath);
++            const auditReceipt = reserveAuditReceipt(_meta, auditNonce, toolNames.readChunk);
++            const auditReceiptResult = await writeToolReadReceipt({ auditNonce, auditStep: auditReceipt.auditStep, tool: toolNames.readChunk, workspaceId, canonicalRoot: await realpath(workspace.root), requestedRelativePath: requestedReceiptPath(path), readChunkSha256: result.eof ? result.sha256 : null, readChunkOffsetBytes: result.offsetBytes, readChunkBytesReturned: result.bytesReturned, readChunkTotalBytes: result.totalBytes, readChunkEof: result.eof, conversationScopeId: auditReceipt.conversationScopeId });
+             logToolCall(config, { tool: toolNames.readChunk, workspaceId, path, success: true, durationMs: Math.round(performance.now() - startedAt) });
+             return {
+-                content: [textBlock(result.content)], structuredContent: result,
++                content: [textBlock(result.content), ...(auditReceiptResult ? [textBlock(`Audit receipt ID: ${auditReceiptResult.receiptId}`)] : [])], structuredContent: result,
+                 _meta: { tool: toolNames.readChunk, card: { workspaceId, path, summary: { offsetBytes: result.offsetBytes, bytesReturned: result.bytesReturned, totalBytes: result.totalBytes, eof: result.eof, sha256: result.sha256 } } },
+             };
+         }
+@@ -1207,7 +1285,8 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             outputSchema: resultOutputSchema(),
+             ...toolWidgetDescriptorMeta(config, "write"),
+             annotations: WRITE_TOOL_ANNOTATIONS,
+-        }, async ({ workspaceId, ...input }) => {
++        }, async ({ workspaceId, ...input }, { _meta }) => {
++            assertAuditReadonly(_meta, toolNames.write);
+             const startedAt = performance.now();
+             const workspace = workspaces.getWorkspace(workspaceId);
+             workspaces.resolvePath(workspace, input.path);
+@@ -1280,7 +1359,8 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             }),
+             ...toolWidgetDescriptorMeta(config, "edit"),
+             annotations: EDIT_TOOL_ANNOTATIONS,
+-        }, async ({ workspaceId, ...input }) => {
++        }, async ({ workspaceId, ...input }, { _meta }) => {
++            assertAuditReadonly(_meta, toolNames.edit);
+             const startedAt = performance.now();
+             const workspace = workspaces.getWorkspace(workspaceId);
+             workspaces.resolvePath(workspace, input.path);
+@@ -1354,7 +1434,8 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             }),
+             ...toolWidgetDescriptorMeta(config, "edit"),
+             annotations: EDIT_TOOL_ANNOTATIONS,
+-        }, async ({ workspaceId, patch }) => {
++        }, async ({ workspaceId, patch }, { _meta }) => {
++            assertAuditReadonly(_meta, "apply_patch");
+             const startedAt = performance.now();
+             const workspace = workspaces.getWorkspace(workspaceId);
+             const applied = await applyPatch(workspace.root, patch);
+@@ -1647,7 +1728,8 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             outputSchema: resultOutputSchema(),
+             ...toolWidgetDescriptorMeta(config, "shell"),
+             annotations: SHELL_TOOL_ANNOTATIONS,
+-        }, async ({ workspaceId, workingDirectory, ...input }) => {
++        }, async ({ workspaceId, workingDirectory, ...input }, { _meta }) => {
++            assertAuditReadonly(_meta, toolNames.shell);
+             const startedAt = performance.now();
+             const workspace = workspaces.getWorkspace(workspaceId);
+             const cwd = workspaces.resolveWorkingDirectory(workspace, workingDirectory);
+@@ -1710,7 +1792,8 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             }),
+             ...toolWidgetDescriptorMeta(config, "edit"),
+             annotations: DELETE_TOOL_ANNOTATIONS,
+-        }, async ({ workspaceId, path }) => {
++        }, async ({ workspaceId, path }, { _meta }) => {
++            assertAuditReadonly(_meta, toolNames.delete);
+             const startedAt = performance.now();
+             const workspace = workspaces.getWorkspace(workspaceId);
+             let deletion;
+@@ -1772,7 +1855,8 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             }),
+             ...toolWidgetDescriptorMeta(config, "edit"),
+             annotations: TRASH_TOOL_ANNOTATIONS,
+-        }, async ({ workspaceId, path }) => {
++        }, async ({ workspaceId, path }, { _meta }) => {
++            assertAuditReadonly(_meta, toolNames.trash);
+             const startedAt = performance.now();
+             const workspace = workspaces.getWorkspace(workspaceId);
+             let trash;
+@@ -1825,6 +1909,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             config,
+             workspaces,
+             incomingArtifactAdapters,
++            beforeMutation: (_input, _meta) => assertAuditReadonly(_meta, "download_artifact"),
+         });
+     }
+     return server;

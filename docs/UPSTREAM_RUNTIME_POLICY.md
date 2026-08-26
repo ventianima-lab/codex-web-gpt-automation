@@ -59,7 +59,12 @@ Current runtime contract:
 | Runtime | Current | Rollback LKG |
 | --- | --- | --- |
 | Oracle | `0.18.0` | `0.17.1` |
-| DevSpace | `1.0.7` | `1.0.4` |
+| DevSpace | `1.0.8` | `1.0.7` |
+
+DevSpace `1.0.8` includes an optional local-agent daemon and provider CLI
+adapters. The managed ChatGPT workspace service explicitly sets
+`DEVSPACE_SUBAGENTS=false`; upstream promotion does not authorize or silently
+enable that separate execution surface.
 
 This policy intentionally optimizes for fast upstream bug/UI fixes without executing an
 unreviewed moving `latest` tag on a user's machine.

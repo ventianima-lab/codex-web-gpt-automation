@@ -170,7 +170,7 @@ if (($Agbrowse -or $UpdateReceipt) -and (!$Python -or !(Test-Path -LiteralPath $
   commands = $Commands
   agbrowse = @{selected_version=$SelectedVersion; contract=$Contract; update_receipt=$UpdateReceiptPath}
   oracle = @{package='@steipete/oracle';current_version='0.18.0';last_known_good='0.17.1';policy='newest-validated-stable';resolution='npx at explicit run time'}
-  devspace = @{package='@waishnav/devspace';current_version='1.0.7';last_known_good='1.0.4';policy='newest-validated-stable';setup='explicit setup skill only'}
+  devspace = @{package='@waishnav/devspace';current_version='1.0.8';last_known_good='1.0.7';policy='newest-validated-stable';setup='explicit setup skill only'}
   local_multi_gpt = @{enabled=$LocalMultiGptEnabled;doctor=$LocalMultiGptDoctor}
   codexpro = @{
     installation = 'external'

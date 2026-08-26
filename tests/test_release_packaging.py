@@ -1,5 +1,10 @@
 import json
+import importlib.util
+import io
+import tarfile
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[1]
 
@@ -159,6 +164,7 @@ def test_package_is_publishable_and_lockfile_matches() -> None:
         'LICENSE',
         'scripts/run_v4_contract_tests.py',
         'scripts/check_docs.py',
+        'scripts/prepare_devspace_108_ci.py',
         'contracts/install/',
     } <= set(package['files'])
 
@@ -177,6 +183,65 @@ def test_release_workflow_runs_focused_and_full_contract_checks() -> None:
     assert 'scripts/run_v4_contract_tests.py --full' in workflow
     assert 'windows-latest' in workflow
     assert 'macos-14' in workflow
+    assert 'scripts/prepare_devspace_108_ci.py' in workflow
+
+
+def test_devspace_ci_preparer_pins_the_policy_archive_integrity() -> None:
+    policy = json.loads((ROOT / "upstream-runtime-policy.json").read_text(encoding="utf-8"))
+    helper = (ROOT / "scripts" / "prepare_devspace_108_ci.py").read_text(encoding="utf-8")
+    expected = policy["runtimes"]["devspace"]["current"]["integrity"]
+    assert f'DEVSPACE_INTEGRITY = "{expected}"' in helper
+
+
+def test_manual_devspace_launch_docs_disable_optional_subagents_by_default() -> None:
+    guide = (ROOT / "docs" / "FIRST_INSTALL.md").read_text(encoding="utf-8")
+    managed_environment = guide[
+        guide.index("DEVSPACE_TOOL_MODE=full") : guide.index(
+            "임시 URL은 앱 등록 후 바뀌므로", guide.index("DEVSPACE_TOOL_MODE=full")
+        )
+    ]
+    assert "아래 세 값을 유지합니다" in guide
+    assert "DEVSPACE_OAUTH_SCOPES=devspace,offline_access" in managed_environment
+    assert "DEVSPACE_SUBAGENTS=false" in managed_environment
+    tailscale = (ROOT / "docs" / "DEVSPACE_TAILSCALE_SETUP.md").read_text(
+        encoding="utf-8"
+    )
+    assert "`DEVSPACE_SUBAGENTS=false`" in tailscale
+    assert "separately and explicitly approves" in tailscale
+
+
+def test_bug_report_template_tracks_current_devspace_version() -> None:
+    policy = json.loads((ROOT / "upstream-runtime-policy.json").read_text(encoding="utf-8"))
+    current = policy["runtimes"]["devspace"]["current"]["version"]
+    template = (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug-report.yml").read_text(
+        encoding="utf-8"
+    )
+    assert f"DevSpace {current}" in template
+
+
+def test_devspace_ci_preparer_rejects_archive_escape_and_links(tmp_path: Path) -> None:
+    path = ROOT / "scripts" / "prepare_devspace_108_ci.py"
+    spec = importlib.util.spec_from_file_location("prepare_devspace_108_ci_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def archive(member: tarfile.TarInfo, content: bytes = b"") -> bytes:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:gz") as package:
+            member.size = len(content)
+            package.addfile(member, io.BytesIO(content) if content else None)
+        return stream.getvalue()
+
+    traversal = tarfile.TarInfo("package/../escape.txt")
+    with pytest.raises(RuntimeError, match="unsafe path"):
+        module.extract_verified(archive(traversal, b"escape"), tmp_path / "traversal")
+
+    link = tarfile.TarInfo("package/link")
+    link.type = tarfile.SYMTYPE
+    link.linkname = "package.json"
+    with pytest.raises(RuntimeError, match="non-file entry"):
+        module.extract_verified(archive(link), tmp_path / "link")
 
 
 def test_tag_push_workflow_publishes_only_validated_annotated_release() -> None:

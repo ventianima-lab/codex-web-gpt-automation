@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.20.3",
+  "version": "1.20.4",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -24,6 +24,11 @@
     "bin/devspace-compat/1.0.7/workspace-write-and-read-bridge.patch",
     "bin/devspace-compat/1.0.7/tool-read-receipts.patch",
     "bin/devspace-compat/1.0.7/workspaces.patch",
+    "bin/devspace-compat/1.0.8/oauth-refresh-replay.patch",
+    "bin/devspace-compat/1.0.8/artifact-audit-readonly.patch",
+    "bin/devspace-compat/1.0.8/workspace-write-and-read-bridge.patch",
+    "bin/devspace-compat/1.0.8/tool-read-receipts.patch",
+    "bin/devspace-compat/1.0.8/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.patch",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.v1.19.6.patch",
@@ -216,14 +221,14 @@
     },
     "devspace": {
       "package": "@waishnav/devspace",
-      "tested_version": "1.0.7",
+      "tested_version": "1.0.8",
       "license": "MIT",
-      "integrity": "sha512-kP+Wk52qiMRwdqAP+nV4OZ4HU8feivZQ0k6u4ZUkvqxu8j0Rp/AU8H0K4T43G+zmu9WJKlYLTet7vIUeZHU72A==",
+      "integrity": "sha512-uyEgFUmt8UcxRy7xnH2rddYdEm6lLIPMKgS2JHwRP7qVnWFtC7j1l4//EOfEVhO4NqGMckWxixNkCWAHPvgZqg==",
       "last_known_good": {
-        "version": "1.0.4",
-        "integrity": "sha512-gYaaweaKWTK7Xb4uImpso2mbp87I7TuCmpenOR1jh1rp0nXisId10UHB9HxU5N1Qa5bDmRcIyHe85Bln2zCuzg=="
+        "version": "1.0.7",
+        "integrity": "sha512-kP+Wk52qiMRwdqAP+nV4OZ4HU8feivZQ0k6u4ZUkvqxu8j0Rp/AU8H0K4T43G+zmu9WJKlYLTet7vIUeZHU72A=="
       },
-      "installation": "resolved by the explicit setup skill at 1.0.7; exact published hashes are compatibility-patched for bounded OAuth replay, workspace writes, large reads, and context discovery; 1.0.4 remains rollback LKG only"
+      "installation": "resolved by the explicit setup skill at 1.0.8; exact published hashes are compatibility-patched for bounded OAuth replay, workspace writes, large reads, and context discovery; 1.0.7 remains rollback LKG only"
     },
     "codexpro": {
       "package": "codexpro",

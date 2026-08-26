@@ -26,7 +26,7 @@ from typing import Any, Callable, Sequence
 
 DEFAULT_PORT = 7676
 APP_NAME = "codex"
-DEVSPACE_PACKAGE = "@waishnav/devspace@1.0.7"
+DEVSPACE_PACKAGE = "@waishnav/devspace@1.0.8"
 DEVSPACE_TOOL_MODE = "full"
 DEVSPACE_OAUTH_SCOPES = "devspace,offline_access"
 SECRET_PATTERN = re.compile(r"(?i)(password|token|secret|authorization)\s*([:=])\s*[^\s,;]+")
@@ -176,6 +176,7 @@ def setup_plan(
         "managed_service_environment": {
             "DEVSPACE_TOOL_MODE": DEVSPACE_TOOL_MODE,
             "DEVSPACE_OAUTH_SCOPES": DEVSPACE_OAUTH_SCOPES,
+            "DEVSPACE_SUBAGENTS": "false",
         },
         "startup_watchdog": {
             "windows_mode": "per-user login watchdog",
@@ -296,6 +297,11 @@ def devspace_service_environment(base: dict[str, str] | None = None) -> dict[str
     environment = dict(os.environ if base is None else base)
     environment["DEVSPACE_TOOL_MODE"] = DEVSPACE_TOOL_MODE
     environment["DEVSPACE_OAUTH_SCOPES"] = DEVSPACE_OAUTH_SCOPES
+    # DevSpace 1.0.8 adds an optional local-agent daemon that can invoke local
+    # provider CLIs.  The managed ChatGPT workspace service is not an authority
+    # to enable that separate execution surface, even when an inherited host
+    # environment or a legacy config opted into subagents.
+    environment["DEVSPACE_SUBAGENTS"] = "false"
     return environment
 
 
@@ -415,7 +421,7 @@ def refresh_after_app_registration(
 ) -> dict[str, Any]:
     """Recycle the managed server after manual ChatGPT OAuth registration.
 
-    DevSpace 1.0.7 can leave a newly approved ChatGPT connector unable to
+    DevSpace 1.0.8 can leave a newly approved ChatGPT connector unable to
     create its first tool session until the server is recycled.  This command
     is deliberately explicit: it never opens ChatGPT settings and it preserves
     the existing config, Owner credential, OAuth database, roots, and Funnel

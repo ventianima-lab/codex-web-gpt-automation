@@ -45,6 +45,7 @@ def test_plan_orders_the_complete_first_install_without_secrets(tmp_path: Path) 
     assert "owner_token" not in dumped.casefold()
     assert "--browser-manual-login" in dumped
     assert "DEVSPACE_OAUTH_SCOPES" in dumped
+    assert plan["stages"][3]["environment"]["DEVSPACE_SUBAGENTS"] == "false"
 
 
 @pytest.mark.parametrize(

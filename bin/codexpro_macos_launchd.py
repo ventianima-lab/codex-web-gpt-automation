@@ -53,13 +53,14 @@ def service_plists(
         "devspace": {
             **common,
             "Label": LABELS["devspace"],
-            "ProgramArguments": [npx, "--yes", "@waishnav/devspace@1.0.7", "serve"],
+            "ProgramArguments": [npx, "--yes", "@waishnav/devspace@1.0.8", "serve"],
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
             "ThrottleInterval": 15,
             "EnvironmentVariables": {
                 "DEVSPACE_TOOL_MODE": "full",
                 "DEVSPACE_OAUTH_SCOPES": "devspace,offline_access",
+                "DEVSPACE_SUBAGENTS": "false",
                 "PATH": str(Path(npx).parent) + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             },
             "WorkingDirectory": str(project_root),

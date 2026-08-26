@@ -2,7 +2,7 @@
 
 ## 경계
 
-macOS 신규 작업은 Oracle 0.18.0, DevSpace 1.0.7, Tailscale Funnel,
+macOS 신규 작업은 Oracle 0.18.0, DevSpace 1.0.8, Tailscale Funnel,
 OMO Codex Light를 사용한다. 구형 CodexPro/agbrowse 자산은 저장된 Windows
 실행 복구 전용이다. `com.ventianima.codexpro-automation.*`만 이 프로젝트가
 관리하며 기존 `com.openclaw.codexpro*`와 `~/.codexpro`는 건드리지 않는다.

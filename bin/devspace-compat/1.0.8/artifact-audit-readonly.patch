@@ -1,0 +1,16 @@
+diff --git a/dist/artifact-tools.js b/dist/artifact-tools.js
+--- a/dist/artifact-tools.js
++++ b/dist/artifact-tools.js
+@@ -31,4 +31,4 @@ export function isArtifactDownloadSupportedPlatform(platform = process.platform
+     return ARTIFACT_DOWNLOAD_PLATFORMS.has(platform);
+ }
+-export function registerArtifactTools(server, { config, workspaces, incomingArtifactAdapters = [], }) {
++export function registerArtifactTools(server, { config, workspaces, incomingArtifactAdapters = [], beforeMutation = () => {}, }) {
+     const incomingRegistry = new IncomingArtifactAdapterRegistry(incomingArtifactAdapters);
+@@ -48,4 +48,5 @@ export function registerArtifactTools(server, { config, workspaces, incomingArti
+         _meta: { "openai/fileParams": ["file"] },
+         annotations: ARTIFACT_WRITE_ANNOTATIONS,
+-    }, async (input) => executeArtifactTool(config, input, async () => {
++    }, async (input, { _meta }) => executeArtifactTool(config, input, async () => {
++        beforeMutation(input, _meta);
+         const workspace = workspaces.getWorkspace(input.workspaceId);

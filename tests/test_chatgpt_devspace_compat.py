@@ -47,7 +47,7 @@ def test_native_runtime_probe_loads_exact_binding_and_fails_actionably(tmp_path:
     compat = load_compat()
     package = tmp_path / "devspace"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     calls: list[tuple[list[str], dict]] = []
 
     def passing(argv, **kwargs):
@@ -163,7 +163,7 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"before\n")
     patches = tmp_path / "patches"
@@ -218,7 +218,7 @@ def test_exact_devspace_patch_accepts_only_hash_bound_upgrade_chain(
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"middle-one\n")
     patches = tmp_path / "patches"
@@ -267,7 +267,7 @@ def test_restart_confirmation_rejects_old_or_foreign_listener(
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     (package / "sample.txt").write_bytes(b"after\n")
     compat.PATCHES = {
         "sample.txt": {
@@ -356,7 +356,7 @@ def test_service_stop_resolves_current_and_lkg_roots(tmp_path: Path, monkeypatch
     current = tmp_path / "current"
     lkg = tmp_path / "lkg"
     foreign = tmp_path / "foreign"
-    for root, version in ((current, "1.0.7"), (lkg, "1.0.4"), (foreign, "9.9.9")):
+    for root, version in ((current, compat.SUPPORTED_VERSION), (lkg, compat.LEGACY_LKG_VERSION), (foreign, "9.9.9")):
         root.mkdir()
         (root / "package.json").write_text(json.dumps({"version": version}), encoding="utf-8")
     monkeypatch.setattr(compat, "_candidate_roots", lambda: [foreign, lkg, current])
@@ -384,7 +384,7 @@ def test_stop_service_cli_forwards_validated_package_root(
     compat = load_compat()
     lkg = tmp_path / "lkg"
     lkg.mkdir()
-    (lkg / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (lkg / "package.json").write_text(json.dumps({"version": compat.LEGACY_LKG_VERSION}), encoding="utf-8")
     calls: list[dict] = []
     monkeypatch.setattr(
         compat,
@@ -460,7 +460,7 @@ def test_service_identity_rejects_posix_npm_shim_for_foreign_package(
 
 def test_unknown_devspace_version_or_file_hash_fails_closed(tmp_path: Path) -> None:
     compat = load_compat()
-    assert compat.LEGACY_LKG_VERSION == "1.0.4"
+    assert compat.LEGACY_LKG_VERSION == "1.0.7"
     package = tmp_path / "package"
     package.mkdir()
     (package / "package.json").write_text(json.dumps({"version": "2.0.0"}), encoding="utf-8")
@@ -473,7 +473,7 @@ def test_unknown_devspace_version_or_file_hash_fails_closed(tmp_path: Path) -> N
         compat.ensure_devspace_compatibility(package_root=package)
     assert legacy.value.code == "DEVSPACE_VERSION_UNVALIDATED"
 
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     (package / "sample.txt").write_bytes(b"unknown\n")
     compat.PATCHES = {
         "sample.txt": {
@@ -526,7 +526,7 @@ def test_oauth_refresh_patch_is_hash_gated_bounded_and_revocation_aware() -> Non
     assert "this.refreshReplays.clear();" in patch
 
 
-def test_107_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_chunk() -> None:
+def test_108_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_chunk() -> None:
     compat = load_compat()
     patch = (
         MODULE_PATH.parent
@@ -537,10 +537,10 @@ def test_107_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
 
     assert compat.PATCHES["dist/server.js"] == {
         "patch": "workspace-write-and-read-bridge.patch",
-        "pristine": "42d340924421182eea7f2580f96c8d1d5aae459061a6a90804e6900905ef2d72",
-        "patched": "3b258463fcd5a31b754727545ac2b6ecbc0dd922bee568573a8e5a0643842bfc",
+        "pristine": "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263",
+        "patched": "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c",
         "upgrades": {
-            "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967": "tool-read-receipts.patch",
+            "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": "tool-read-receipts.patch",
         },
     }
     assert 'delete: "delete_file"' in patch
@@ -592,7 +592,7 @@ def test_107_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     assert "await writeToolReadReceipt" in receipt_patch
 
 
-def test_107_artifact_write_is_bound_to_audit_readonly_scope() -> None:
+def test_108_artifact_write_is_bound_to_audit_readonly_scope() -> None:
     compat = load_compat()
     artifact_patch = (
         MODULE_PATH.parent
@@ -618,14 +618,14 @@ def test_107_artifact_write_is_bound_to_audit_readonly_scope() -> None:
     assert server_patch.index('assertAuditReadonly(_meta, "download_artifact")') < server_patch.index("return server;")
 
 
-def test_107_tool_read_receipt_upgrade_is_immutable_and_records_only_successes(
+def test_108_tool_read_receipt_upgrade_is_immutable_and_records_only_successes(
     tmp_path: Path,
 ) -> None:
     compat = load_compat()
     try:
         source_root = compat.resolve_package_roots()[0]
     except compat.DevSpaceCompatError as exc:
-        pytest.skip(f"DevSpace 1.0.7 package unavailable: {exc.code}")
+        pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
     source = source_root / "dist" / "server.js"
     if compat.sha256_file(source) != next(iter(compat.PATCHES["dist/server.js"]["upgrades"])):
         pytest.skip("installed DevSpace server is not the prior hash-gated bridge payload")
@@ -689,7 +689,7 @@ def test_107_tool_read_receipt_upgrade_is_immutable_and_records_only_successes(
     assert json.loads(completed.stdout) == {"ok": True}
 
 
-def test_delete_file_contract_is_part_of_the_107_hash_gated_bridge() -> None:
+def test_delete_file_contract_is_part_of_the_108_hash_gated_bridge() -> None:
     compat = load_compat()
     patch_path = MODULE_PATH.parent / "devspace-compat" / compat.SUPPORTED_VERSION / "workspace-write-and-read-bridge.patch"
     patch = patch_path.read_text(encoding="utf-8")
@@ -702,7 +702,7 @@ def test_delete_file_contract_is_part_of_the_107_hash_gated_bridge() -> None:
     assert "readOnlyHint: false" in patch
 
 
-def test_trash_file_contract_is_part_of_the_107_hash_gated_bridge() -> None:
+def test_trash_file_contract_is_part_of_the_108_hash_gated_bridge() -> None:
     compat = load_compat()
     patch = (
         MODULE_PATH.parent
@@ -724,14 +724,14 @@ def test_trash_file_contract_is_part_of_the_107_hash_gated_bridge() -> None:
     assert "readOnlyHint: false" in patch
 
 
-def test_published_107_default_contract_applies_every_current_patch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_published_108_default_contract_applies_every_current_patch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     compat = load_compat()
-    configured = os.environ.get("DEVSPACE_107_PACKAGE_ROOT", "").strip()
-    source = Path(configured) if configured else Path("__devspace_107_cache_unset__")
+    configured = os.environ.get("DEVSPACE_108_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__devspace_108_cache_unset__")
     if not source.is_dir():
         if os.environ.get("CI"):
-            pytest.fail("CI must prepare the exact published DevSpace 1.0.7 package")
-        pytest.skip("published DevSpace 1.0.7 package root is unavailable")
+            pytest.fail("CI must prepare the exact published DevSpace 1.0.8 package")
+        pytest.skip("published DevSpace 1.0.8 package root is unavailable")
     package = tmp_path / "devspace-published"
     shutil.copytree(source, package)
     monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
@@ -768,11 +768,11 @@ def test_delete_file_patch_safety_contract_on_temporary_workspace(
     try:
         source_root = compat.resolve_package_roots()[0]
     except compat.DevSpaceCompatError as exc:
-        pytest.skip(f"DevSpace 1.0.7 package unavailable: {exc.code}")
+        pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
     package = tmp_path / "devspace"
     (package / "dist").mkdir(parents=True)
     shutil.copy2(source_root / "dist" / "server.js", package / "dist" / "server.js")
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
     compat.PATCHES = {"dist/server.js": compat.PATCHES["dist/server.js"]}
     compat.ensure_devspace_compatibility(package_root=package, backup_root=tmp_path / "backup")
@@ -834,11 +834,11 @@ def test_trash_file_patch_safety_and_byte_identity_on_temporary_workspace(
     try:
         source_root = compat.resolve_package_roots()[0]
     except compat.DevSpaceCompatError as exc:
-        pytest.skip(f"DevSpace 1.0.7 package unavailable: {exc.code}")
+        pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
     package = tmp_path / "devspace"
     (package / "dist").mkdir(parents=True)
     shutil.copy2(source_root / "dist" / "server.js", package / "dist" / "server.js")
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
     compat.PATCHES = {"dist/server.js": compat.PATCHES["dist/server.js"]}
 
@@ -903,7 +903,7 @@ def test_directory_read_patch_unknown_upstream_hash_fails_closed(tmp_path: Path)
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     server = package / "dist" / "server.js"
     server.parent.mkdir()
     server.write_text("unknown upstream bytes\\n", encoding="utf-8")
