@@ -895,6 +895,7 @@ def test_prepare_final_gate_writes_exact_host_state_manifest_and_commands(
     manifest_path = Path(result["manifest_path"])
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest_path.is_relative_to(Path(environment["codex_home"]))
+    assert hashlib.sha256(source_thread_id.encode("ascii")).hexdigest()[:16] in manifest_path.name
     assert payload == {
         "schema": "codex.chatgpt.oracle-run/v1",
         "project_root": str(Path(environment["project"]).resolve()),
@@ -915,6 +916,17 @@ def test_prepare_final_gate_writes_exact_host_state_manifest_and_commands(
     assert result["dry_run_command"].endswith(" --dry-run")
     assert "chatgpt_oracle_run.py run --manifest" in result["run_command"]
     assert "missions/onboarding-final-gate.md" in result["record_command_template"]
+    first_manifest_bytes = manifest_path.read_bytes()
+
+    second_thread_id = "00000000-0000-4000-8000-000000000456"
+    monkeypatch.setenv("CODEX_THREAD_ID", second_thread_id)
+    second = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=mission,
+        codex_home=environment["codex_home"],
+    )
+    assert second["manifest_path"] != result["manifest_path"]
+    assert Path(result["manifest_path"]).read_bytes() == first_manifest_bytes
 
 
 def test_prepare_final_gate_rejects_mission_outside_exact_root(
@@ -962,6 +974,63 @@ def test_prepare_final_gate_requires_current_codex_task_binding(
             mission_path=mission,
             codex_home=environment["codex_home"],
         )
+
+
+def test_registered_final_gate_record_requires_live_matching_codex_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        app_name="codex",
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    owner = "00000000-0000-4000-8000-000000000123"
+    run_dir = _bound_final_gate_run(
+        environment,
+        ["missions/onboarding-final-gate.md"],
+        registered_app_final_gate=True,
+        source_thread_id=owner,
+    )
+
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="The exact registered-app final gate was independently verified.",
+            listing=["missions/onboarding-final-gate.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000999")
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_FOREIGN_TASK_RUN"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="The exact registered-app final gate was independently verified.",
+            listing=["missions/onboarding-final-gate.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    recorded = module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="The exact registered-app final gate was independently verified.",
+        listing=["missions/onboarding-final-gate.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    assert recorded["source_thread_id"] == owner
 
 
 @pytest.mark.parametrize("provider", ["cloudflare", "ngrok", "custom"])

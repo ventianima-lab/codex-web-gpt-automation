@@ -841,15 +841,18 @@ def composer_prompt(
                 "registered_app_final_gate requires the exact current run_id to satisfy the auditNonce grammar",
                 {"run_id": run_id},
             )
+        mission_relative = config.mission_path.relative_to(config.project_root).as_posix()
         return (
             f"@{config.app_name} This is a read-only registered-app final gate canary. "
             f"Your first workspace, process, or mutation call must be this exact {config.app_name} app's "
             f"open_workspace for exactly {config.project_root} in checkout mode with auditNonce={run_id}. "
             "Do not call any other workspace connector or any process or mutation tool. "
             "Preserve the returned workspaceId. With that same workspaceId, separately read exactly the mission "
-            f"file {effective_path}, then read_chunk that same file from offsetBytes=0 through eof=true. "
+            f"file {config.mission_path}, then read_chunk that same file from offsetBytes=0 through eof=true. "
             f"Use the exact same auditNonce={run_id} on all three calls. "
             "Echo the three server-generated Audit receipt IDs exactly in the final answer. "
+            f"Also echo the exact app name {config.app_name} and exact mission-relative path "
+            f"{mission_relative} so the host can bind the returned evidence. "
             "Do not retry any audit call: a retry after a receipt exists would make the three-step chain ambiguous. "
             "Perform read-only work only; do not modify files, settings, accounts, or external state. "
             "If any required audit call fails, report that concrete blocker and stop. "

@@ -2073,6 +2073,8 @@ def test_registered_app_final_gate_prompt_binds_exact_generated_layout_run_id_an
     assert f"Use the exact same auditNonce={layout.run_id} on all three calls." in prompt
     assert "With that same workspaceId, separately read exactly the mission file" in prompt
     assert "read_chunk that same file from offsetBytes=0 through eof=true" in prompt
+    assert "echo the exact app name codex" in prompt
+    assert "exact mission-relative path mission.md" in prompt
     assert "Do not call any other workspace connector" in prompt
     assert "Do not retry any audit call" in prompt
     assert "retry the same exact root once" not in prompt

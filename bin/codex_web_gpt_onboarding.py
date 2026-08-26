@@ -932,9 +932,10 @@ def _oracle_final_gate_binding(
     if registered_app_final_gate and SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
         raise OnboardingError("FINAL_GATE_SOURCE_TASK_BINDING_MISSING")
     evaluated_from_thread = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if registered_app_final_gate and SOURCE_THREAD_ID_RE.fullmatch(evaluated_from_thread) is None:
+        raise OnboardingError("FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED")
     if (
         registered_app_final_gate
-        and evaluated_from_thread
         and source_thread_id.casefold() != evaluated_from_thread.casefold()
     ):
         raise OnboardingError("FINAL_GATE_FOREIGN_TASK_RUN")
@@ -1743,10 +1744,11 @@ def prepare_final_gate(
         raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_INSIDE_EXACT_ROOT")
     mission_sha256 = _sha256_file(mission)
     root_hash = hashlib.sha256(os.path.normcase(str(root_path)).encode("utf-8")).hexdigest()[:16]
+    source_thread_hash = hashlib.sha256(source_thread_id.encode("ascii")).hexdigest()[:16]
     target = (
         _codex_home(codex_home)
         / FINAL_GATE_MANIFEST_RELATIVE
-        / f"{root_hash}-{mission_sha256[:16]}.json"
+        / f"{source_thread_hash}-{root_hash}-{mission_sha256[:16]}.json"
     )
     manifest = {
         "schema": FINAL_GATE_MANIFEST_SCHEMA,
