@@ -794,6 +794,126 @@ def test_running_oracle_stage_recovers_exact_run_without_resubmission(tmp_path: 
     assert second["recovery"]["status"] == "recovered"
 
 
+def test_exact_root_preflight_exception_settles_before_layout_without_resubmission(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    attempts = 0
+
+    def exact_root_blocked(oracle_manifest: Path, *, dry_run: bool):
+        nonlocal attempts
+        attempts += 1
+        raise module.RUNNER.OracleRunError(
+            "DEVSPACE_EXACT_ROOT_UNAVAILABLE",
+            "the exact project root is not registered in DevSpace allowedRoots",
+            {"missing_root": str(tmp_path)},
+        )
+
+    workflow_manifest = manifest(tmp_path)
+    result = module.run_workflow(workflow_manifest, oracle_execute=exact_root_blocked)
+    config = module.load_manifest(workflow_manifest)
+    state = json.loads(module._state_path(config, "a" * 32).read_text(encoding="utf-8"))
+    record = state["records"][-1]
+
+    assert attempts == 1
+    assert result["status"] == "attention_required"
+    assert result["safe_for_fresh_run"] is False
+    assert result["settlement"] == "oracle-layout-not-created-pre-submit"
+    assert state["status"] == "attention_required"
+    assert state["pre_submit_retries"] == 0
+    assert record["failure_code"] == "DEVSPACE_EXACT_ROOT_UNAVAILABLE"
+    assert record["settlement_proof"]["kind"] == "oracle-layout-not-created"
+    assert not Path(record["run_dir"]).exists()
+
+
+def test_legacy_missing_layout_state_remains_attention_required_without_submission(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    planned_run_dirs: list[Path] = []
+
+    def legacy_preflight_crash(oracle_manifest: Path, *, dry_run: bool):
+        oracle_config = module.RUNNER.STATE.load_manifest(oracle_manifest)
+        layout = module.RUNNER.STATE.create_layout(
+            oracle_config, run_id=oracle_config.requested_run_id
+        )
+        planned_run_dirs.append(layout.run_dir)
+        raise RuntimeError("legacy exact-root preflight escaped before layout creation")
+
+    workflow_manifest = manifest(tmp_path)
+    with pytest.raises(RuntimeError, match="before layout creation"):
+        module.run_workflow(workflow_manifest, oracle_execute=legacy_preflight_crash)
+
+    config = module.load_manifest(workflow_manifest)
+    config["_review_policy"] = module._review_policy_from_history(config)
+    state_path = module._state_path(config, "a" * 32)
+    legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+    legacy_state["status"] = "attention_required"
+    legacy_state["records"] = [{
+        "stage": "plan",
+        "run_id": legacy_state["current_attempt_id"],
+        "run_dir": legacy_state["oracle_run_dir"],
+        "recovered": True,
+        "recovery_status": None,
+    }]
+    module._write_workflow_state(state_path, config, legacy_state)
+
+    def forbidden_execute(*args, **kwargs):
+        raise AssertionError("settlement must not submit a replacement")
+
+    def forbidden_recover(*args, **kwargs):
+        raise AssertionError("an absent layout has no exact session to recover")
+
+    settled = module.run_workflow(
+        workflow_manifest,
+        oracle_execute=forbidden_execute,
+        oracle_recover=forbidden_recover,
+    )
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert len(planned_run_dirs) == 1
+    assert not planned_run_dirs[0].exists()
+    assert settled["status"] == "attention_required"
+    assert settled["safe_for_fresh_run"] is False
+    assert settled["settlement"] == "oracle-layout-not-created-pre-submit"
+    assert persisted["status"] == "attention_required"
+    assert persisted["pre_submit_retries"] == 0
+    assert persisted["records"][-1]["failure_code"] == "ORACLE_LAYOUT_NOT_CREATED_PRE_SUBMIT"
+
+
+def test_missing_layout_with_execution_result_record_remains_fail_closed(tmp_path: Path) -> None:
+    module = load()
+
+    def legacy_crash(oracle_manifest: Path, *, dry_run: bool):
+        raise RuntimeError("legacy crash")
+
+    workflow_manifest = manifest(tmp_path)
+    with pytest.raises(RuntimeError, match="legacy crash"):
+        module.run_workflow(workflow_manifest, oracle_execute=legacy_crash)
+
+    config = module.load_manifest(workflow_manifest)
+    config["_review_policy"] = module._review_policy_from_history(config)
+    state_path = module._state_path(config, "a" * 32)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["records"] = [{
+        "stage": "plan",
+        "run_dir": state["oracle_run_dir"],
+        "ok": False,
+    }]
+    module._write_workflow_state(state_path, config, state)
+
+    result = module.run_workflow(
+        workflow_manifest,
+        oracle_execute=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("missing-layout recovery must not submit")
+        ),
+    )
+
+    assert result["status"] == "attention_required"
+    assert result["recovery"]["error"] == "ORACLE_RECOVERY_RUN_UNAVAILABLE"
+    assert result.get("safe_for_fresh_run") is not True
+
+
 def test_post_submit_watchdog_persists_same_attempt_and_only_exact_recovers(
     tmp_path: Path,
 ) -> None:

@@ -17,6 +17,16 @@ SUPPORTED_VERSION = "1.0.8"
 # old package would hide an incomplete rollback from the service health gates.
 LEGACY_LKG_VERSION = "1.0.7"
 CREATE_NO_WINDOW = 0x08000000
+NATIVE_DEPENDENCY_NAME = "better-sqlite3"
+NATIVE_DEPENDENCY_VERSION = "12.11.1"
+NATIVE_DEPENDENCY_INTEGRITY = (
+    "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/"
+    "HgASQkNKsWFpseIO9beg5xxpYhbIfA=="
+)
+NATIVE_DEPENDENCY_RESOLVED = (
+    "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.11.1.tgz"
+)
+NATIVE_DEPENDENCY_INSTALL_SCRIPT = "prebuild-install || node-gyp rebuild --release"
 PATCHES = {
     "dist/artifact-tools.js": {
         "patch": "artifact-audit-readonly.patch",
@@ -119,6 +129,163 @@ def resolve_service_stop_roots() -> list[Path]:
             {"versions": [SUPPORTED_VERSION, LEGACY_LKG_VERSION]},
         )
     return list(dict.fromkeys(roots))
+
+
+def _json_object(path: Path, *, code: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DevSpaceCompatError(code, f"{path.name} is unreadable", {"path": str(path)}) from exc
+    if not isinstance(value, dict):
+        raise DevSpaceCompatError(code, f"{path.name} must contain a JSON object", {"path": str(path)})
+    return value
+
+
+def validate_native_dependency(package_root: Path) -> dict[str, Any]:
+    """Bind a native rebuild to the exact tested npx package tree only."""
+    root = package_root.expanduser().resolve(strict=True)
+    if package_version(root) != SUPPORTED_VERSION:
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "native preparation accepts only the tested DevSpace package",
+            {"root": str(root), "version": package_version(root)},
+        )
+    node_modules = root.parent.parent
+    try:
+        workspace = node_modules.parent.resolve(strict=True)
+        dependency = (node_modules / NATIVE_DEPENDENCY_NAME).resolve(strict=True)
+    except OSError as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "tested native dependency is missing from the exact npx package tree",
+            {"root": str(root), "dependency": NATIVE_DEPENDENCY_NAME},
+        ) from exc
+    if not dependency.is_relative_to(workspace):
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "native dependency escapes the exact npx package tree",
+            {"root": str(root), "dependency": str(dependency)},
+        )
+    metadata = _json_object(dependency / "package.json", code="DEVSPACE_NATIVE_DEPENDENCY_INVALID")
+    lock = _json_object(workspace / "package-lock.json", code="DEVSPACE_NATIVE_LOCK_INVALID")
+    packages = lock.get("packages")
+    entry = packages.get(f"node_modules/{NATIVE_DEPENDENCY_NAME}") if isinstance(packages, dict) else None
+    actual = {
+        "name": metadata.get("name"),
+        "version": metadata.get("version"),
+        "install_script": (metadata.get("scripts") or {}).get("install")
+        if isinstance(metadata.get("scripts"), dict)
+        else None,
+        "lock_version": entry.get("version") if isinstance(entry, dict) else None,
+        "lock_integrity": entry.get("integrity") if isinstance(entry, dict) else None,
+        "lock_resolved": entry.get("resolved") if isinstance(entry, dict) else None,
+        "lock_has_install_script": entry.get("hasInstallScript") if isinstance(entry, dict) else None,
+    }
+    expected = {
+        "name": NATIVE_DEPENDENCY_NAME,
+        "version": NATIVE_DEPENDENCY_VERSION,
+        "install_script": NATIVE_DEPENDENCY_INSTALL_SCRIPT,
+        "lock_version": NATIVE_DEPENDENCY_VERSION,
+        "lock_integrity": NATIVE_DEPENDENCY_INTEGRITY,
+        "lock_resolved": NATIVE_DEPENDENCY_RESOLVED,
+        "lock_has_install_script": True,
+    }
+    if actual != expected or lock.get("lockfileVersion") != 3:
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "DevSpace native dependency does not match the tested lock contract",
+            {"root": str(root), "expected": expected, "actual": actual},
+        )
+    return {"root": root, "workspace": workspace, "dependency": dependency}
+
+
+def _native_command(
+    argv: Sequence[str], *, cwd: Path, runner: Any, code: str, message: str, timeout_seconds: int = 180
+) -> subprocess.CompletedProcess[str]:
+    completed = runner(
+        list(argv), cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", check=False, timeout=timeout_seconds, **_git_kwargs(),
+    )
+    if completed.returncode != 0:
+        raise DevSpaceCompatError(code, message, {"stderr": (completed.stderr or "").strip()[-1200:]})
+    return completed
+
+
+def prepare_native_runtime(*, package_root: Path | None = None, runner: Any = subprocess.run) -> dict[str, Any]:
+    """Prime the exact pinned package and approve/rebuild only its native dependency."""
+    roots = resolve_package_roots() if package_root is None else [package_root.expanduser().resolve(strict=True)]
+    npm = shutil.which("npm") or shutil.which("npm.cmd")
+    if not npm:
+        raise DevSpaceCompatError("DEVSPACE_NPM_MISSING", "npm is required for native preparation")
+    checks: list[dict[str, Any]] = []
+    for root in roots:
+        layout = validate_native_dependency(root)
+        try:
+            native = check_native_runtime(package_root=root, runner=runner)
+        except DevSpaceCompatError as exc:
+            if exc.code != "DEVSPACE_NATIVE_BINDING_UNAVAILABLE":
+                raise
+        else:
+            checks.append({"root": str(root), "status": "already-loadable", "native_runtime": native})
+            continue
+        version_result = _native_command(
+            [npm, "--version"], cwd=layout["workspace"], runner=runner,
+            code="DEVSPACE_NPM_VERSION_UNAVAILABLE", message="npm version could not be determined",
+        )
+        npm_version = (version_result.stdout or "").strip()
+        try:
+            npm_major = int(npm_version.split(".", 1)[0])
+        except ValueError as exc:
+            raise DevSpaceCompatError("DEVSPACE_NPM_VERSION_UNAVAILABLE", "npm returned an invalid version") from exc
+        if npm_major < 12:
+            raise DevSpaceCompatError(
+                "DEVSPACE_NPM_VERSION_UNSUPPORTED", "bounded install-script approval requires npm 12 or newer",
+                {"version": npm_version},
+            )
+        policy_path = layout["workspace"] / "package.json"
+        before = _json_object(policy_path, code="DEVSPACE_NATIVE_POLICY_INVALID")
+        before_policy = before.get("allowScripts") or {}
+        if not isinstance(before_policy, dict):
+            raise DevSpaceCompatError("DEVSPACE_NATIVE_POLICY_INVALID", "npx allowScripts policy must be a JSON object")
+        target = f"{NATIVE_DEPENDENCY_NAME}@{NATIVE_DEPENDENCY_VERSION}"
+        conflicts = sorted(
+            key for key in before_policy
+            if key != target and (key == NATIVE_DEPENDENCY_NAME or key.startswith(f"{NATIVE_DEPENDENCY_NAME}@"))
+        )
+        if conflicts:
+            raise DevSpaceCompatError(
+                "DEVSPACE_NATIVE_POLICY_INVALID", "existing native approval policy conflicts with the exact tested version",
+                {"target": target, "conflicts": conflicts},
+            )
+        approval_added = before_policy.get(target) is not True
+        if approval_added:
+            _native_command(
+                [npm, "install-scripts", "approve", target, "--allow-scripts-pin", "--json"],
+                cwd=layout["workspace"], runner=runner, code="DEVSPACE_NATIVE_APPROVAL_FAILED",
+                message="bounded native install-script approval failed",
+            )
+        after = _json_object(policy_path, code="DEVSPACE_NATIVE_POLICY_INVALID")
+        after_policy = after.get("allowScripts")
+        if not isinstance(after_policy, dict) or after_policy.get(target) is not True:
+            raise DevSpaceCompatError("DEVSPACE_NATIVE_APPROVAL_SCOPE_CHANGED", "exact native approval was not persisted")
+        if ({key: value for key, value in before.items() if key != "allowScripts"} !=
+                {key: value for key, value in after.items() if key != "allowScripts"} or
+                any(key != target and after_policy.get(key) != value for key, value in before_policy.items()) or
+                any(key != target and key not in before_policy for key in after_policy)):
+            raise DevSpaceCompatError(
+                "DEVSPACE_NATIVE_APPROVAL_SCOPE_CHANGED", "native approval changed unrelated install-script policy"
+            )
+        _native_command(
+            [npm, "rebuild", target, "--foreground-scripts", "--ignore-scripts=false"],
+            cwd=layout["workspace"], runner=runner, code="DEVSPACE_NATIVE_REBUILD_FAILED",
+            message="bounded better-sqlite3 rebuild failed", timeout_seconds=600,
+        )
+        native = check_native_runtime(package_root=root, runner=runner)
+        checks.append({
+            "root": str(root), "status": "rebuilt-and-loadable", "npm_version": npm_version,
+            "approval_added": approval_added, "native_runtime": native,
+        })
+    return {"ok": True, "version": SUPPORTED_VERSION, "checks": checks}
 
 
 def check_native_runtime(
@@ -546,6 +713,10 @@ def stop_exact_devspace_service(
     service_probe=current_devspace_service_identity,
     stopper: Any | None = None,
     package_roots: Sequence[Path] | None = None,
+    windows_runner: Any = subprocess.run,
+    platform_name: str | None = None,
+    sleeper: Any = time.sleep,
+    stop_timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
     identity = service_probe(local_port)
     if identity is None:
@@ -553,9 +724,10 @@ def stop_exact_devspace_service(
     roots = list(package_roots or resolve_service_stop_roots())
     identity = _assert_devspace_service_identity(identity, roots)
     pid = int(identity["pid"])
+    stop_evidence: dict[str, Any] = {"mode": "injected"}
     if stopper is not None:
         stopper(pid)
-    elif os.name != "nt":
+    elif (platform_name or os.name) != "nt":
         path = Path(__file__).resolve().with_name("codexpro_posix_process.py")
         spec = importlib.util.spec_from_file_location("codexpro_posix_process_stop_runtime", path)
         if spec is None or spec.loader is None:
@@ -566,25 +738,88 @@ def stop_exact_devspace_service(
             module.terminate_exact_process(identity)
         except module.ProcessIdentityError as exc:
             raise DevSpaceCompatError("DEVSPACE_SERVICE_STOP_FAILED", str(exc), {"pid": pid}) from exc
+        stop_evidence = {"mode": "posix-exact-terminate"}
     else:
+        started_at = int(identity.get("started_at_unix_ns") or 0)
+        if pid <= 0 or started_at <= 0:
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_STOP_FAILED",
+                "exact Windows service identity is missing PID/start evidence",
+                {"pid": identity.get("pid"), "started_at_unix_ns": identity.get("started_at_unix_ns")},
+            )
         script = (
-            f"Stop-Process -Id {pid} -Force -ErrorAction Stop; "
-            f"Wait-Process -Id {pid} -ErrorAction SilentlyContinue"
+            f"$targetPid={pid};$expectedStart=[int64]{started_at};$port={int(local_port)};"
+            "function Get-Target {"
+            "$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$targetPid\" -ErrorAction SilentlyContinue;"
+            "if($null -eq $p){return $null};"
+            "$s=[DateTimeOffset]::new($p.CreationDate.ToUniversalTime()).ToUnixTimeMilliseconds()*1000000;"
+            "if([int64]$s -ne $expectedStart){return $null};return $p};"
+            "$initial=Get-Target;$stale=($null -eq $initial);$forced=$false;"
+            "if(!$stale){"
+            "Stop-Process -Id $targetPid -ErrorAction SilentlyContinue;"
+            "for($i=0;$i -lt 50 -and $null -ne (Get-Target);$i++){Start-Sleep -Milliseconds 100};"
+            "if($null -ne (Get-Target)){"
+            "$forced=$true;Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue;"
+            "for($i=0;$i -lt 50 -and $null -ne (Get-Target);$i++){Start-Sleep -Milliseconds 100}}};"
+            "$alive=($null -ne (Get-Target));"
+            "$listener=Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -First 1;"
+            "$released=($null -eq $listener);$ok=(!$alive -and $released);"
+            "[pscustomobject]@{ok=$ok;pid=$targetPid;stale_pid=$stale;forced=$forced;"
+            "process_exited=(!$alive);listener_released=$released;"
+            "listener_pid=$(if($listener){[int]$listener.OwningProcess}else{$null})}|ConvertTo-Json -Compress;"
+            "if($ok){exit 0}else{exit 4}"
         )
-        completed = subprocess.run(
+        completed = windows_runner(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
+            timeout=max(15.0, stop_timeout_seconds + 5.0),
             **_git_kwargs(),
         )
+        try:
+            stop_evidence = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_STOP_FAILED", "exact Windows stop did not return structured evidence",
+                {"pid": pid, "exit_code": completed.returncode, "stdout": (completed.stdout or "").strip()[-1200:]},
+            ) from exc
         if completed.returncode != 0:
             raise DevSpaceCompatError(
                 "DEVSPACE_SERVICE_STOP_FAILED",
                 "the exact DevSpace service could not be stopped",
-                {"pid": pid, "stderr": (completed.stderr or "").strip()[-1200:]},
+                {"pid": pid, "exit_code": completed.returncode, "stop": stop_evidence,
+                 "stderr": (completed.stderr or "").strip()[-1200:]},
             )
-    return {"ok": True, "stopped": True, "pid": pid}
+        if not isinstance(stop_evidence, dict) or not stop_evidence.get("ok"):
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_STOP_FAILED",
+                "exact Windows stop evidence did not prove process exit and listener release",
+                {"pid": pid, "stop": stop_evidence},
+            )
+
+    deadline = time.monotonic() + max(0.0, stop_timeout_seconds)
+    while True:
+        remaining = service_probe(local_port)
+        if remaining is None:
+            break
+        remaining_pid = int(remaining.get("pid") or 0)
+        if remaining_pid != pid:
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_PORT_REBOUND",
+                "the DevSpace port was rebound before exact stop verification completed",
+                {"expected_pid": pid, "listener_pid": remaining_pid},
+            )
+        if time.monotonic() >= deadline:
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_STOP_FAILED",
+                "the exact DevSpace process did not release its listener before timeout",
+                {"pid": pid, "timeout_seconds": stop_timeout_seconds},
+            )
+        sleeper(min(0.1, max(0.0, deadline - time.monotonic())))
+    return {"ok": True, "stopped": True, "pid": pid, "stop": stop_evidence}
 
 
 def _git_kwargs() -> dict[str, Any]:
@@ -801,6 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--package-root", type=Path)
     parser.add_argument("--confirm-service-restarted", action="store_true")
     parser.add_argument("--stop-exact-service", action="store_true")
+    parser.add_argument("--prepare-native-runtime", action="store_true")
     parser.add_argument("--check-native-runtime", action="store_true")
     parser.add_argument("--check-oauth-refresh-replay", action="store_true")
     parser.add_argument("--allow-package-absent", action="store_true")
@@ -810,6 +1046,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected = sum(bool(value) for value in (
             args.confirm_service_restarted,
             args.stop_exact_service,
+            args.prepare_native_runtime,
             args.check_native_runtime,
             args.check_oauth_refresh_replay,
         ))
@@ -818,7 +1055,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "DEVSPACE_COMPAT_ACTION_CONFLICT",
                 "choose only one DevSpace compatibility action",
             )
-        if args.check_native_runtime:
+        if args.prepare_native_runtime:
+            result = prepare_native_runtime(package_root=args.package_root)
+        elif args.check_native_runtime:
             result = check_native_runtime(
                 package_root=args.package_root,
                 allow_package_absent=args.allow_package_absent,

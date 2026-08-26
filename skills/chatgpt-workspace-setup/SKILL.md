@@ -85,6 +85,11 @@ active Node runtime and opens an in-memory database. A missing npm 12 native
 binding fails closed with `DEVSPACE_NATIVE_BINDING_UNAVAILABLE`; never approve
 an unbounded list of install scripts automatically.
 
+Recovery first primes the exact pinned package and may approve/rebuild only
+the hash-bound `better-sqlite3@12.11.1` dependency. It starts a redacting
+supervisor that records PID/start/exit evidence and rotates stdout/stderr while
+streaming; request, tool-call, and shell-command logs stay disabled.
+
 The only app information to enter manually in ChatGPT Developer Mode is:
 
 - Recommended app name: `codex`

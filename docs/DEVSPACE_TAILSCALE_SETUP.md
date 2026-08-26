@@ -50,6 +50,12 @@ optional local-agent daemon and provider CLI adapters remain disabled unless
 the user separately and explicitly approves that additional execution surface;
 an inherited or persisted setting must not silently enable it.
 
+Managed recovery primes the exact pinned package before native validation and
+permits a rebuild only for the hash-bound `better-sqlite3@12.11.1` dependency.
+The resulting service is supervised with redacted, bounded live logs and
+PID/start/exit evidence. It requires two consecutive loopback `/mcp` and
+`/healthz` observations before repairing Funnel routing.
+
 ## Manual ChatGPT registration
 
 Enable Developer Mode in ChatGPT and manually create the connector:

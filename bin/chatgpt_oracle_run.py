@@ -2985,6 +2985,457 @@ def settle_recursive_self_observation_fresh_run(
     return {**preview, "settlement": proven, "settlement_sha256": proven["sha256"]}
 
 
+def settle_terminal_devspace_nonexecution_fresh_run(
+    run_dir: Path,
+    *,
+    confirmation: str,
+    reason: str,
+    expected_state_sha256: str,
+    expected_output_sha256: str,
+    expected_transcript_sha256: str,
+    expected_stdout_sha256: str,
+    expected_stderr_sha256: str,
+    expected_mission_sha256: str,
+    dry_run: bool = False,
+    process_alive: Callable[[int], bool] = process_is_alive,
+) -> dict[str, Any]:
+    """Append authority for a bounded terminal DevSpace failure with no task work."""
+    if (
+        confirmation.strip().casefold()
+        != STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION
+    ):
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_CONFIRMATION_REQUIRED",
+            "confirmation does not authorize a fresh run after terminal DevSpace nonexecution",
+        )
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_REASON_REQUIRED",
+            "an explicit user-authority reason is required",
+        )
+    authorized_thread = STATE.current_source_thread_id()
+    if authorized_thread is None:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_TASK_REQUIRED",
+            "settlement must be issued from one exact Codex task",
+        )
+    directory = run_dir.expanduser().resolve(strict=True)
+    state_path = directory / "state.json"
+    if state_path.is_symlink() or state_path.resolve(strict=True) != (directory / "state.json"):
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_STATE_UNSAFE",
+            "state must be the regular state.json in the exact run directory",
+        )
+    state = STATE.load_state(state_path)
+    owner_thread = STATE.source_thread_id_from_state(state)
+    if owner_thread is not None and owner_thread != authorized_thread:
+        raise OracleRunError(
+            "FOREIGN_TASK_SESSION",
+            "a task may not settle another task's terminal nonexecution",
+            {
+                "owner_source_thread_id": owner_thread,
+                "caller_source_thread_id": authorized_thread,
+                "run_id": state.get("run_id"),
+            },
+        )
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    raw_paths = {
+        "output": Path(str(artifacts.get("output") or directory / "output.md")),
+        "transcript": Path(str(artifacts.get("transcript") or directory / "transcript.md")),
+        "stdout": Path(str(artifacts.get("stdout") or directory / "stdout.log")),
+        "stderr": Path(str(artifacts.get("stderr") or directory / "stderr.log")),
+        "mission": directory / "mission.md",
+    }
+    expected_paths = {name: directory / f"{name}.md" for name in ("output", "transcript", "mission")}
+    expected_paths.update({"stdout": directory / "stdout.log", "stderr": directory / "stderr.log"})
+    resolved_paths: dict[str, Path] = {}
+    try:
+        for name, raw in raw_paths.items():
+            resolved = raw.resolve(strict=True)
+            if raw.is_symlink() or not resolved.is_file() or resolved != expected_paths[name].resolve():
+                raise OSError(f"unsafe {name} path")
+            resolved_paths[name] = resolved
+    except OSError as exc:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_ARTIFACT_UNSAFE",
+            "state, mission, and stream artifacts must be regular files in the exact run",
+        ) from exc
+    actual_hashes = {
+        "state_sha256": STATE.sha256_file(state_path),
+        **{
+            f"{name}_sha256": STATE.sha256_file(path)
+            for name, path in resolved_paths.items()
+        },
+    }
+    expected_hashes = {
+        "state_sha256": expected_state_sha256.strip().casefold(),
+        "output_sha256": expected_output_sha256.strip().casefold(),
+        "transcript_sha256": expected_transcript_sha256.strip().casefold(),
+        "stdout_sha256": expected_stdout_sha256.strip().casefold(),
+        "stderr_sha256": expected_stderr_sha256.strip().casefold(),
+        "mission_sha256": expected_mission_sha256.strip().casefold(),
+    }
+    if any(actual_hashes[key] != expected_hashes[key] for key in actual_hashes):
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_HASH_MISMATCH",
+            "exact terminal run artifacts changed before authority settlement",
+            {"expected": expected_hashes, "actual": actual_hashes},
+        )
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    if mission.get("sha256") != actual_hashes["mission_sha256"]:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_MISSION_MISMATCH",
+            "the persisted mission copy no longer matches the run's mission binding",
+        )
+    output_text = resolved_paths["output"].read_text(encoding="utf-8", errors="strict")
+    evidence = STATE.terminal_devspace_nonexecution_evidence(state, output_text)
+    if evidence is None:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED",
+            "terminal output lacks bounded DevSpace failure and explicit nonexecution proof",
+        )
+    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_alive(pid)]
+    if active_pids:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_PROCESS_ACTIVE",
+            "run-owned Oracle or recovery process is still active",
+            {"active_pids": active_pids},
+        )
+    project_root = Path(str(state.get("project_root") or "")).expanduser().resolve(strict=True)
+    owners = STATE.unresolved_project_sessions(
+        directory.parent,
+        project_root,
+        exclude_run_id=str(state.get("run_id") or ""),
+        source_thread_id=authorized_thread,
+    )
+    if owners:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_OWNER_ACTIVE",
+            "another exact same-task project session still owns submission authority",
+            {"owners": owners},
+        )
+    existing = STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
+    if existing is not None:
+        if existing.get("authorized_source_thread_id") != authorized_thread:
+            raise OracleRunError(
+                "TERMINAL_DEVSPACE_NONEXECUTION_AUTHORITY_CONFLICT",
+                "append-only fresh-run authority belongs to a different Codex task",
+            )
+        return {
+            "ok": True,
+            "status": "terminal_devspace_nonexecution_fresh_run_authorized",
+            "safe_for_fresh_run": True,
+            "scope_released": True,
+            "auto_retry": False,
+            "submission_action": "none",
+            "run_dir": str(directory),
+            "settlement": existing,
+        }
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    receipt = {
+        "schema": STATE.TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA,
+        "confirmation": STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        "reason": normalized_reason,
+        "authorized_source_thread_id": authorized_thread,
+        "historical_owner_scope": "same-task" if owner_thread == authorized_thread else "legacy-unbound",
+        "run_id": state.get("run_id"),
+        "project_root": str(project_root),
+        "slug": oracle.get("slug"),
+        "transport": state.get("transport"),
+        "task_outcome": state.get("task_outcome"),
+        "signature": evidence["signature"],
+        **actual_hashes,
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    receipt_path = directory / "settlements" / "terminal-devspace-nonexecution-fresh-run.json"
+    preview = {
+        "ok": True,
+        "status": "dry-run" if dry_run else "terminal_devspace_nonexecution_fresh_run_authorized",
+        "safe_for_fresh_run": True,
+        "scope_released": True,
+        "auto_retry": False,
+        "submission_action": "none",
+        "run_dir": str(directory),
+        "settlement_path": str(receipt_path),
+        "settlement_payload": receipt,
+    }
+    if dry_run:
+        return preview
+    if receipt_path.parent.exists() and (
+        receipt_path.parent.is_symlink() or receipt_path.parent.resolve().parent != directory
+    ):
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_PATH_UNSAFE",
+            "append-only settlement directory is outside the exact run",
+        )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with receipt_path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_EXISTS",
+            "append-only settlement path already exists but did not validate",
+            {"path": str(receipt_path)},
+        ) from exc
+    proven = STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
+    if proven is None:
+        raise OracleRunError(
+            "TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_INVALID",
+            "written append-only settlement failed revalidation",
+        )
+    return {**preview, "settlement": proven, "settlement_sha256": proven["sha256"]}
+
+
+def settle_terminal_devspace_read_route_refresh_fresh_run(
+    run_dir: Path,
+    *,
+    confirmation: str,
+    reason: str,
+    expected_state_sha256: str,
+    expected_output_sha256: str,
+    expected_transcript_sha256: str,
+    expected_stdout_sha256: str,
+    expected_stderr_sha256: str,
+    expected_mission_sha256: str,
+    dry_run: bool = False,
+    process_alive: Callable[[int], bool] = process_is_alive,
+) -> dict[str, Any]:
+    """Authorize one fresh probe after a user-completed app-tool refresh."""
+    if (
+        confirmation.strip().casefold()
+        != STATE.USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH
+    ):
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_CONFIRMATION_REQUIRED",
+            "confirmation does not authorize a fresh probe after the app-tool refresh",
+        )
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_REASON_REQUIRED",
+            "an explicit user-authority reason is required",
+        )
+    authorized_thread = STATE.current_source_thread_id()
+    if authorized_thread is None:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_TASK_REQUIRED",
+            "settlement must be issued from one exact Codex task",
+        )
+    directory = run_dir.expanduser().resolve(strict=True)
+    state_path = directory / "state.json"
+    if state_path.is_symlink() or state_path.resolve(strict=True) != (directory / "state.json"):
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_STATE_UNSAFE",
+            "state must be the regular state.json in the exact run directory",
+        )
+    state = STATE.load_state(state_path)
+    owner_thread = STATE.source_thread_id_from_state(state)
+    if owner_thread != authorized_thread:
+        raise OracleRunError(
+            "FOREIGN_TASK_SESSION",
+            "a task may settle only its own exact read-route canary",
+            {
+                "owner_source_thread_id": owner_thread or "legacy-unbound",
+                "caller_source_thread_id": authorized_thread,
+                "run_id": state.get("run_id"),
+            },
+        )
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    raw_paths = {
+        "output": Path(str(artifacts.get("output") or directory / "output.md")),
+        "transcript": Path(str(artifacts.get("transcript") or directory / "transcript.md")),
+        "stdout": Path(str(artifacts.get("stdout") or directory / "stdout.log")),
+        "stderr": Path(str(artifacts.get("stderr") or directory / "stderr.log")),
+        "mission": directory / "mission.md",
+    }
+    expected_paths = {name: directory / f"{name}.md" for name in ("output", "transcript", "mission")}
+    expected_paths.update({"stdout": directory / "stdout.log", "stderr": directory / "stderr.log"})
+    resolved_paths: dict[str, Path] = {}
+    try:
+        for name, raw in raw_paths.items():
+            resolved = raw.resolve(strict=True)
+            if raw.is_symlink() or not resolved.is_file() or resolved != expected_paths[name].resolve():
+                raise OSError(f"unsafe {name} path")
+            resolved_paths[name] = resolved
+    except OSError as exc:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_ARTIFACT_UNSAFE",
+            "state, mission, and stream artifacts must be regular files in the exact run",
+        ) from exc
+    actual_hashes = {
+        "state_sha256": STATE.sha256_file(state_path),
+        **{
+            f"{name}_sha256": STATE.sha256_file(path)
+            for name, path in resolved_paths.items()
+        },
+    }
+    expected_hashes = {
+        "state_sha256": expected_state_sha256.strip().casefold(),
+        "output_sha256": expected_output_sha256.strip().casefold(),
+        "transcript_sha256": expected_transcript_sha256.strip().casefold(),
+        "stdout_sha256": expected_stdout_sha256.strip().casefold(),
+        "stderr_sha256": expected_stderr_sha256.strip().casefold(),
+        "mission_sha256": expected_mission_sha256.strip().casefold(),
+    }
+    if any(actual_hashes[key] != expected_hashes[key] for key in actual_hashes):
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_HASH_MISMATCH",
+            "exact terminal canary artifacts changed before authority settlement",
+            {"expected": expected_hashes, "actual": actual_hashes},
+        )
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    mission_text = resolved_paths["mission"].read_text(encoding="utf-8", errors="strict")
+    if (
+        mission.get("sha256") != actual_hashes["mission_sha256"]
+        or not STATE.terminal_devspace_read_route_refresh_mission_contract(mission_text)
+    ):
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_MISSION_MISMATCH",
+            "the immutable mission is not the bounded read-only qualification contract",
+        )
+    output_text = resolved_paths["output"].read_text(encoding="utf-8", errors="strict")
+    evidence = STATE.terminal_devspace_read_route_refresh_evidence(state, output_text)
+    if evidence is None:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_EVIDENCE_REQUIRED",
+            "terminal output does not prove the exact read-only read_chunk exposure failure",
+        )
+    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_alive(pid)]
+    if active_pids:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_PROCESS_ACTIVE",
+            "run-owned Oracle or recovery process is still active",
+            {"active_pids": active_pids},
+        )
+    project_root = Path(str(state.get("project_root") or "")).expanduser().resolve(strict=True)
+    owners = STATE.unresolved_project_sessions(
+        directory.parent,
+        project_root,
+        exclude_run_id=str(state.get("run_id") or ""),
+        source_thread_id=authorized_thread,
+    )
+    if owners:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_OWNER_ACTIVE",
+            "another exact same-task project session still owns submission authority",
+            {"owners": owners},
+        )
+    existing = STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+        state_path
+    )
+    if existing is not None:
+        if existing.get("authorized_source_thread_id") != authorized_thread:
+            raise OracleRunError(
+                "DEVSPACE_READ_ROUTE_REFRESH_AUTHORITY_CONFLICT",
+                "append-only fresh-run authority belongs to a different Codex task",
+            )
+        return {
+            "ok": True,
+            "status": "terminal_devspace_read_route_refresh_fresh_run_authorized",
+            "safe_for_fresh_run": True,
+            "scope_released": True,
+            "auto_retry": False,
+            "submission_action": "none",
+            "run_dir": str(directory),
+            "settlement": existing,
+        }
+    settlement_name = "terminal-devspace-read-route-refresh-fresh-run.json"
+    for sibling_state in sorted(directory.parent.glob("*/state.json"), key=lambda path: str(path)):
+        if sibling_state.parent.resolve() == directory:
+            continue
+        sibling_receipt = sibling_state.parent / "settlements" / settlement_name
+        if not sibling_receipt.exists():
+            continue
+        prior = STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+            sibling_state
+        )
+        if prior is None:
+            raise OracleRunError(
+                "DEVSPACE_READ_ROUTE_REFRESH_PRIOR_SETTLEMENT_INVALID",
+                "a prior read-route refresh receipt exists but no longer validates",
+                {"path": str(sibling_receipt)},
+            )
+        if (
+            str(prior.get("project_root") or "").casefold() == str(project_root).casefold()
+            and prior.get("authorized_source_thread_id") == authorized_thread
+        ):
+            raise OracleRunError(
+                "DEVSPACE_READ_ROUTE_REFRESH_RETRY_ALREADY_USED",
+                "the one authorized post-refresh probe was already released for this task and project",
+                {"prior_run_id": prior.get("run_id"), "prior_receipt": prior.get("path")},
+            )
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    receipt = {
+        "schema": STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_SCHEMA,
+        "confirmation": STATE.USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH,
+        "reason": normalized_reason,
+        "authorized_source_thread_id": authorized_thread,
+        "run_id": state.get("run_id"),
+        "project_root": str(project_root),
+        "slug": oracle.get("slug"),
+        "transport": state.get("transport"),
+        "task_outcome": state.get("task_outcome"),
+        "app_name": state.get("app_name"),
+        "workspace_id": evidence["workspace_id"],
+        "signature": evidence["signature"],
+        "retry_ordinal": 1,
+        **actual_hashes,
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    receipt_path = directory / "settlements" / settlement_name
+    preview = {
+        "ok": True,
+        "status": "dry-run" if dry_run else "terminal_devspace_read_route_refresh_fresh_run_authorized",
+        "safe_for_fresh_run": True,
+        "scope_released": True,
+        "auto_retry": False,
+        "submission_action": "none",
+        "run_dir": str(directory),
+        "settlement_path": str(receipt_path),
+        "settlement_payload": receipt,
+    }
+    if dry_run:
+        return preview
+    if receipt_path.parent.exists() and (
+        receipt_path.parent.is_symlink() or receipt_path.parent.resolve().parent != directory
+    ):
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_PATH_UNSAFE",
+            "append-only settlement directory is outside the exact run",
+        )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with receipt_path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_EXISTS",
+            "append-only settlement path already exists but did not validate",
+            {"path": str(receipt_path)},
+        ) from exc
+    proven = STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+        state_path
+    )
+    if proven is None:
+        raise OracleRunError(
+            "DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_INVALID",
+            "written append-only settlement failed revalidation",
+        )
+    return {**preview, "settlement": proven, "settlement_sha256": proven["sha256"]}
+
+
 def recover_run(
     run_dir: Path,
     *,
@@ -3781,6 +4232,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recursive_parser.add_argument("--reason", required=True)
     recursive_parser.add_argument("--dry-run", action="store_true")
+    terminal_nonexecution_parser = commands.add_parser(
+        "settle-terminal-devspace-nonexecution"
+    )
+    terminal_nonexecution_parser.add_argument("--run-dir", type=Path, required=True)
+    terminal_nonexecution_parser.add_argument("--expected-state-sha256", required=True)
+    terminal_nonexecution_parser.add_argument("--expected-output-sha256", required=True)
+    terminal_nonexecution_parser.add_argument("--expected-transcript-sha256", required=True)
+    terminal_nonexecution_parser.add_argument("--expected-stdout-sha256", required=True)
+    terminal_nonexecution_parser.add_argument("--expected-stderr-sha256", required=True)
+    terminal_nonexecution_parser.add_argument("--expected-mission-sha256", required=True)
+    terminal_nonexecution_parser.add_argument(
+        "--confirmation",
+        choices=(STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,),
+        required=True,
+    )
+    terminal_nonexecution_parser.add_argument("--reason", required=True)
+    terminal_nonexecution_parser.add_argument("--dry-run", action="store_true")
+    read_route_refresh_parser = commands.add_parser(
+        "settle-terminal-devspace-read-route-refresh"
+    )
+    read_route_refresh_parser.add_argument("--run-dir", type=Path, required=True)
+    read_route_refresh_parser.add_argument("--expected-state-sha256", required=True)
+    read_route_refresh_parser.add_argument("--expected-output-sha256", required=True)
+    read_route_refresh_parser.add_argument("--expected-transcript-sha256", required=True)
+    read_route_refresh_parser.add_argument("--expected-stdout-sha256", required=True)
+    read_route_refresh_parser.add_argument("--expected-stderr-sha256", required=True)
+    read_route_refresh_parser.add_argument("--expected-mission-sha256", required=True)
+    read_route_refresh_parser.add_argument(
+        "--confirmation",
+        choices=(STATE.USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH,),
+        required=True,
+    )
+    read_route_refresh_parser.add_argument("--reason", required=True)
+    read_route_refresh_parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -3857,7 +4342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=args.reason,
                 execution_evidence=evidence,
             )
-        else:
+        elif args.command == "settle-recursive-self-observation":
             payload = settle_recursive_self_observation_fresh_run(
                 args.run_dir,
                 confirmation=args.confirmation,
@@ -3865,6 +4350,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_state_sha256=args.expected_state_sha256,
                 expected_output_sha256=args.expected_output_sha256,
                 expected_transcript_sha256=args.expected_transcript_sha256,
+                dry_run=args.dry_run,
+            )
+        elif args.command == "settle-terminal-devspace-nonexecution":
+            payload = settle_terminal_devspace_nonexecution_fresh_run(
+                args.run_dir,
+                confirmation=args.confirmation,
+                reason=args.reason,
+                expected_state_sha256=args.expected_state_sha256,
+                expected_output_sha256=args.expected_output_sha256,
+                expected_transcript_sha256=args.expected_transcript_sha256,
+                expected_stdout_sha256=args.expected_stdout_sha256,
+                expected_stderr_sha256=args.expected_stderr_sha256,
+                expected_mission_sha256=args.expected_mission_sha256,
+                dry_run=args.dry_run,
+            )
+        else:
+            payload = settle_terminal_devspace_read_route_refresh_fresh_run(
+                args.run_dir,
+                confirmation=args.confirmation,
+                reason=args.reason,
+                expected_state_sha256=args.expected_state_sha256,
+                expected_output_sha256=args.expected_output_sha256,
+                expected_transcript_sha256=args.expected_transcript_sha256,
+                expected_stdout_sha256=args.expected_stdout_sha256,
+                expected_stderr_sha256=args.expected_stderr_sha256,
+                expected_mission_sha256=args.expected_mission_sha256,
                 dry_run=args.dry_run,
             )
     except STATE.OracleStateError as exc:

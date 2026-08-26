@@ -414,6 +414,8 @@ exact folder가 `allowedRoots`에 있는지만 가볍게 확인하고, config ha
 - `DEVSPACE_NATIVE_BINDING_UNAVAILABLE`: `npm install-scripts ls`에서 정확한 DevSpace
   native dependency만 검토·승인한 뒤 `better-sqlite3`를 재빌드합니다. doctor가 실제
   메모리 DB 로드에 성공하기 전에는 서비스를 시작하지 않습니다.
+  이 경로는 정확한 1.0.8 package/lock hash와 `better-sqlite3@12.11.1`만 허용하며,
+  서비스 로그는 실행 중에도 redaction·회전됩니다.
 - 앱이 도구를 찾지 못함: 동일 URL의 MCP/OAuth 상태를 확인합니다. 자동으로 앱을
   삭제하거나 다시 만들지 않습니다. 방금 등록·재연결했다면 `post-register`를 한 번만
   실행하고 일반 Oracle 읽기 검사를 반복합니다.

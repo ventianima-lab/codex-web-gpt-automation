@@ -16,12 +16,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TextIO
+import uuid
 
 
 DEFAULT_PORT = 7676
@@ -29,9 +32,21 @@ APP_NAME = "codex"
 DEVSPACE_PACKAGE = "@waishnav/devspace@1.0.8"
 DEVSPACE_TOOL_MODE = "full"
 DEVSPACE_OAUTH_SCOPES = "devspace,offline_access"
-SECRET_PATTERN = re.compile(r"(?i)(password|token|secret|authorization)\s*([:=])\s*[^\s,;]+")
+SERVICE_STATE_SCHEMA = "codex.chatgpt.devspace-managed-service/v1"
+SERVICE_LOG_MAX_BYTES = 5 * 1024 * 1024
+# Values can be quoted and headers/cookie chains may carry more than one secret.
+SECRET_PATTERN = re.compile(
+    r"(?i)\b([a-z0-9_-]*(?:password|token|secret|authorization|cookie|oauth_code|"
+    r"code_verifier)[a-z0-9_-]*)([\"']?\s*[:=]\s*[\"']?)([^\"'\s,;&]+)"
+)
+AUTH_SCHEME_PATTERN = re.compile(
+    r"(?i)\b((?:Bearer|Basic)\s+)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)"
+)
+QUERY_SECRET_PATTERN = re.compile(r"(?i)([?&](?:code|token|access_token|refresh_token)=)[^&\s]+")
+COOKIE_VALUE_PATTERN = re.compile(r"(?i)(\b[^=;\s]*(?:session|token|auth|cookie)[^=;\s]*=)[^;\s]+")
 HOSTNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]*\.ts\.net$", re.IGNORECASE)
 WINDOWS_BOOTSTRAP_RUN_NAME = "Codex Web GPT DevSpace Bootstrap"
+WINDOWS_BOOTSTRAP_WATCH_SECONDS = 30
 
 
 class SetupError(ValueError):
@@ -58,9 +73,20 @@ class SetupConfig:
     def local_mcp_url(self) -> str:
         return f"http://127.0.0.1:{self.local_port}/mcp"
 
+    @property
+    def local_health_url(self) -> str:
+        return f"http://127.0.0.1:{self.local_port}/healthz"
+
+    @property
+    def public_health_url(self) -> str:
+        return f"{self.public_origin}/healthz"
+
 
 def redact(value: str) -> str:
-    return SECRET_PATTERN.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value)
+    redacted = AUTH_SCHEME_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", value)
+    redacted = QUERY_SECRET_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
+    redacted = SECRET_PATTERN.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", redacted)
+    return COOKIE_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
 
 
 def _is_volume_root(path: Path) -> bool:
@@ -154,6 +180,17 @@ def devspace_native_argv(*, allow_package_absent: bool = False) -> list[str]:
     return argv
 
 
+def devspace_native_prepare_argv() -> list[str]:
+    argv = devspace_compat_argv()
+    argv.append("--prepare-native-runtime")
+    return argv
+
+
+def devspace_package_prepare_argv(*, platform_name: str | None = None) -> list[str]:
+    """Materialize the exact pinned npx tree before inspecting/rebuilding it."""
+    return command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "--version"], platform_name=platform_name)
+
+
 def setup_plan(
     config: SetupConfig,
     *,
@@ -172,15 +209,20 @@ def setup_plan(
         "root_merge_applied": bool(preserved),
         "root_safety": "existing allowedRoots are preserved; setup must use the complete displayed list",
         "devspace_init": command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "init"], platform_name=platform_name),
+        "devspace_package_prepare": devspace_package_prepare_argv(platform_name=platform_name),
+        "devspace_native_prepare": devspace_native_prepare_argv(),
         "devspace_serve": command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform_name),
         "managed_service_environment": {
             "DEVSPACE_TOOL_MODE": DEVSPACE_TOOL_MODE,
             "DEVSPACE_OAUTH_SCOPES": DEVSPACE_OAUTH_SCOPES,
             "DEVSPACE_SUBAGENTS": "false",
+            "DEVSPACE_LOG_REQUESTS": "false",
+            "DEVSPACE_LOG_TOOL_CALLS": "false",
+            "DEVSPACE_LOG_SHELL_COMMANDS": "false",
         },
         "startup_watchdog": {
             "windows_mode": "per-user login watchdog",
-            "health_interval_seconds": 300,
+            "health_interval_seconds": WINDOWS_BOOTSTRAP_WATCH_SECONDS,
             "runtime_root_source": str(Path.home() / ".devspace" / "config.json"),
         },
         "tailscale_funnel": [
@@ -199,7 +241,13 @@ def setup_plan(
 
 
 def run_checked(argv: Sequence[str], *, runner: Callable[..., Any] = subprocess.run) -> None:
-    runner(list(argv), check=True, text=True, **windows_subprocess_kwargs())
+    completed = runner(
+        list(argv), check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        **windows_subprocess_kwargs(),
+    )
+    if completed.returncode != 0:
+        summary = redact((completed.stderr or completed.stdout or "").strip())[-1200:]
+        raise SetupError(f"MANAGED_COMMAND_FAILED:{completed.returncode}:{summary}")
 
 
 def run_interactive_checked(
@@ -302,6 +350,9 @@ def devspace_service_environment(base: dict[str, str] | None = None) -> dict[str
     # to enable that separate execution surface, even when an inherited host
     # environment or a legacy config opted into subagents.
     environment["DEVSPACE_SUBAGENTS"] = "false"
+    environment["DEVSPACE_LOG_REQUESTS"] = "false"
+    environment["DEVSPACE_LOG_TOOL_CALLS"] = "false"
+    environment["DEVSPACE_LOG_SHELL_COMMANDS"] = "false"
     return environment
 
 
@@ -361,22 +412,20 @@ def apply_setup(
         ]
         if missing:
             raise SetupError("DEVSPACE_SETUP_DID_NOT_PERSIST_COMPLETE_ALLOWED_ROOTS")
+    run_checked(devspace_package_prepare_argv(platform_name=platform_name), runner=runner)
+    run_checked(devspace_native_prepare_argv(), runner=runner)
     run_checked(devspace_native_argv(), runner=runner)
     run_checked(devspace_compat_argv(), runner=runner)
     run_checked(
         devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
         runner=runner,
     )
-    launch_hidden(
-        command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform_name),
-        popen_factory=popen_factory,
-        environment=devspace_service_environment(),
-        platform_name=platform_name,
-    )
+    launch_managed_devspace_service(popen_factory=popen_factory, platform_name=platform_name)
     run_checked(
         devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
         runner=runner,
     )
+    wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     ensure_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
 
 
@@ -392,23 +441,27 @@ def recover_service(
     local = http_probe(config.local_mcp_url, opener=opener)
     service_started = not local.get("ok")
     if service_started:
+        run_checked(devspace_package_prepare_argv(), runner=runner)
+        run_checked(devspace_native_prepare_argv(), runner=runner)
         run_checked(devspace_native_argv(), runner=runner)
         run_checked(devspace_compat_argv(), runner=runner)
         run_checked(
             devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
             runner=runner,
         )
-        launch_hidden(
-            bash_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"]),
-            popen_factory=popen_factory,
-            environment=devspace_service_environment(),
-        )
+        launch = launch_managed_devspace_service(popen_factory=popen_factory)
         run_checked(
             devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
             runner=runner,
         )
+    readiness = wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     result = ensure_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
-    return {**result, "service_started": service_started}
+    return {
+        **result,
+        "service_started": service_started,
+        "service": managed_service_evidence(locals().get("launch")),
+        "local_readiness": readiness,
+    }
 
 
 def refresh_after_app_registration(
@@ -427,25 +480,26 @@ def refresh_after_app_registration(
     the existing config, Owner credential, OAuth database, roots, and Funnel
     hostname.
     """
+    run_checked(devspace_package_prepare_argv(), runner=runner)
+    run_checked(devspace_native_prepare_argv(), runner=runner)
     run_checked(devspace_native_argv(), runner=runner)
     run_checked(devspace_compat_argv(), runner=runner)
     run_checked(
         devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
         runner=runner,
     )
-    launch_hidden(
-        bash_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"]),
-        popen_factory=popen_factory,
-        environment=devspace_service_environment(),
-    )
+    launch = launch_managed_devspace_service(popen_factory=popen_factory)
     run_checked(
         devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
         runner=runner,
     )
+    readiness = wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     result = refresh_exact_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
     return {
         **result,
         "service_restarted": True,
+        "service": managed_service_evidence(launch),
+        "local_readiness": readiness,
         "credentials_preserved": True,
         "next_action": "VERIFY_REGISTERED_CHATGPT_APP_WITH_ORACLE",
         "verification_boundary": (
@@ -505,13 +559,238 @@ def refresh_exact_public_route(
     }
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def managed_service_paths(codex_home: Path | None = None) -> dict[str, Path]:
+    root = (
+        codex_home
+        or Path(os.environ.get("CODEX_HOME") or Path(__file__).resolve().parents[3])
+    ).expanduser().resolve()
+    log_root = root / "logs" / "codexpro-devspace"
+    state_root = root / "state" / "devspace-service"
+    return {
+        "stdout": log_root / "service.stdout.log",
+        "stderr": log_root / "service.stderr.log",
+        "events": log_root / "service-events.jsonl",
+        "state": state_root / "service-state.json",
+    }
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    if path.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_STATE_SYMLINK_UNSUPPORTED")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _rotate_managed_log(
+    path: Path,
+    *,
+    max_bytes: int = SERVICE_LOG_MAX_BYTES,
+    incoming_bytes: int = 0,
+) -> None:
+    if path.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_LOG_SYMLINK_UNSUPPORTED")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_file():
+        return
+    current_size = path.stat().st_size
+    if incoming_bytes > 0 and current_size + incoming_bytes <= max_bytes:
+        return
+    if incoming_bytes == 0 and current_size < max_bytes:
+        return
+    archive = path.with_name(path.name + ".1")
+    if archive.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_LOG_ARCHIVE_SYMLINK_UNSUPPORTED")
+    archive.unlink(missing_ok=True)
+    os.replace(path, archive)
+
+
+def _bounded_log_records(value: str, *, max_bytes: int) -> list[str]:
+    """Encode one redacted line as records that individually fit the log cap."""
+    if max_bytes < 2:
+        raise SetupError("DEVSPACE_SERVICE_LOG_LIMIT_INVALID")
+    timestamp = f"[{_utc_now()}] "
+    prefix = timestamp if len(timestamp.encode("utf-8")) + 2 < max_bytes else ""
+    payload_budget = max_bytes - len(prefix.encode("utf-8")) - 1
+    records: list[str] = []
+    chunk: list[str] = []
+    chunk_bytes = 0
+    for character in value:
+        encoded_size = len(character.encode("utf-8"))
+        if chunk and chunk_bytes + encoded_size > payload_budget:
+            records.append(f"{prefix}{''.join(chunk)}\n")
+            chunk = []
+            chunk_bytes = 0
+        if encoded_size > payload_budget:
+            continue
+        chunk.append(character)
+        chunk_bytes += encoded_size
+    if chunk or not records:
+        records.append(f"{prefix}{''.join(chunk)}\n")
+    return records
+
+
+def _append_service_event(path: Path, payload: dict[str, Any]) -> None:
+    _rotate_managed_log(path)
+    if path.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_EVENT_LOG_SYMLINK_UNSUPPORTED")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n")
+    os.chmod(path, 0o600)
+
+
+def _copy_redacted_stream(source: TextIO, target: Path, lock: threading.Lock) -> None:
+    """Persist a live stream in bounded form; never wait until process exit to rotate."""
+    for line in iter(source.readline, ""):
+        redacted = redact(line.rstrip())
+        with lock:
+            if target.is_symlink():
+                raise SetupError("DEVSPACE_SERVICE_LOG_SYMLINK_UNSUPPORTED")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            for record in _bounded_log_records(redacted, max_bytes=SERVICE_LOG_MAX_BYTES):
+                record_bytes = len(record.encode("utf-8"))
+                _rotate_managed_log(
+                    target,
+                    max_bytes=SERVICE_LOG_MAX_BYTES,
+                    incoming_bytes=record_bytes,
+                )
+                with target.open("a", encoding="utf-8", newline="\n") as destination:
+                    os.chmod(target, 0o600)
+                    destination.write(record)
+                    destination.flush()
+
+
+def managed_service_runner_argv() -> list[str]:
+    return [sys.executable, str(Path(__file__).resolve()), "service-runner"]
+
+
+def run_managed_devspace_service(
+    *,
+    popen_factory: Callable[..., Any] = subprocess.Popen,
+    platform_name: str | None = None,
+    codex_home: Path | None = None,
+) -> int:
+    """Run DevSpace under a redacting supervisor with PID/start/exit evidence."""
+    platform = platform_name or os.name
+    paths = managed_service_paths(codex_home)
+    for key in ("stdout", "stderr", "events"):
+        _rotate_managed_log(paths[key])
+    started_at = _utc_now()
+    base_state: dict[str, Any] = {
+        "schema": SERVICE_STATE_SCHEMA,
+        "status": "starting",
+        "package": DEVSPACE_PACKAGE,
+        "supervisor_pid": os.getpid(),
+        "started_at": started_at,
+        "stdout_path": str(paths["stdout"]),
+        "stderr_path": str(paths["stderr"]),
+        "events_path": str(paths["events"]),
+        "state_path": str(paths["state"]),
+    }
+    _write_json_atomic(paths["state"], base_state)
+    try:
+        child = popen_factory(
+            command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            shell=False,
+            env=devspace_service_environment(),
+            start_new_session=platform != "nt",
+            **windows_subprocess_kwargs(platform),
+        )
+    except Exception as error:
+        failed = {
+            **base_state,
+            "status": "launch_failed",
+            "ended_at": _utc_now(),
+            "error_type": type(error).__name__,
+            "error": redact(str(error))[:1000],
+        }
+        _write_json_atomic(paths["state"], failed)
+        _append_service_event(paths["events"], {**failed, "event": "launch_failed"})
+        return 1
+    running = {**base_state, "status": "running", "child_pid": int(child.pid)}
+    _write_json_atomic(paths["state"], running)
+    _append_service_event(paths["events"], {**running, "event": "started"})
+    if child.stdout is None or child.stderr is None:
+        raise SetupError("DEVSPACE_SERVICE_PIPE_UNAVAILABLE")
+    stdout_lock, stderr_lock = threading.Lock(), threading.Lock()
+    pumps = (
+        threading.Thread(target=_copy_redacted_stream, args=(child.stdout, paths["stdout"], stdout_lock), daemon=True),
+        threading.Thread(target=_copy_redacted_stream, args=(child.stderr, paths["stderr"], stderr_lock), daemon=True),
+    )
+    for pump in pumps:
+        pump.start()
+    exit_code = int(child.wait())
+    for pump in pumps:
+        pump.join(timeout=5)
+    ended = {**running, "status": "exited", "ended_at": _utc_now(), "exit_code": exit_code}
+    _write_json_atomic(paths["state"], ended)
+    _append_service_event(paths["events"], {**ended, "event": "exited"})
+    return exit_code
+
+
+def launch_managed_devspace_service(
+    *,
+    popen_factory: Callable[..., Any] = subprocess.Popen,
+    platform_name: str | None = None,
+    codex_home: Path | None = None,
+) -> dict[str, Any]:
+    paths = managed_service_paths(codex_home)
+    supervisor = launch_hidden(
+        managed_service_runner_argv(), popen_factory=popen_factory,
+        environment=devspace_service_environment(), platform_name=platform_name,
+    )
+    return {
+        "supervisor_pid": int(supervisor.pid),
+        "state_path": str(paths["state"]),
+        "stdout_path": str(paths["stdout"]),
+        "stderr_path": str(paths["stderr"]),
+        "events_path": str(paths["events"]),
+    }
+
+
+def managed_service_evidence(launch: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    paths = managed_service_paths()
+    if paths["state"].is_file() and not paths["state"].is_symlink():
+        try:
+            payload = json.loads(paths["state"].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("schema") == SERVICE_STATE_SCHEMA:
+            allowed = (
+                "schema", "status", "package", "supervisor_pid", "child_pid", "started_at", "ended_at",
+                "exit_code", "stdout_path", "stderr_path", "events_path", "state_path",
+            )
+            return {key: payload[key] for key in allowed if key in payload}
+    return dict(launch) if launch is not None else None
+
+
 def windows_bootstrap_watchdog_command(codex_home: Path | None = None) -> str:
     root = (codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))).resolve()
     script = root / "scripts" / "start_devspace_bootstrap.ps1"
     powershell = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     return (
         f'"{powershell}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass '
-        f'-File "{script}" -Mode Watch -WatchIntervalSeconds 300'
+        f'-File "{script}" -Mode Watch -WatchIntervalSeconds {WINDOWS_BOOTSTRAP_WATCH_SECONDS}'
     )
 
 
@@ -561,7 +840,7 @@ def register_windows_bootstrap_watchdog(
             "-Mode",
             "Watch",
             "-WatchIntervalSeconds",
-            "300",
+            str(WINDOWS_BOOTSTRAP_WATCH_SECONDS),
         ],
         popen_factory=popen_factory,
         platform_name=platform,
@@ -572,7 +851,7 @@ def register_windows_bootstrap_watchdog(
         "platform": platform,
         "mode": "per-user-login-watchdog",
         "run_name": WINDOWS_BOOTSTRAP_RUN_NAME,
-        "watch_interval_seconds": 300,
+        "watch_interval_seconds": WINDOWS_BOOTSTRAP_WATCH_SECONDS,
     }
 
 
@@ -584,15 +863,34 @@ def wait_for_local_service(
     attempts: int = 60,
     delay_seconds: float = 2.0,
 ) -> dict[str, Any]:
-    """Wait for the exact loopback MCP endpoint without accepting a port-only signal."""
+    """Compatibility wrapper for the stronger managed service readiness check."""
+    return wait_for_local_readiness(
+        config, opener=opener, sleeper=sleeper, attempts=attempts, delay_seconds=delay_seconds,
+    )
+
+
+def wait_for_local_readiness(
+    config: SetupConfig,
+    *,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    sleeper: Callable[[float], None] = time.sleep,
+    attempts: int = 60,
+    delay_seconds: float = 2.0,
+) -> dict[str, Any]:
+    """Require two stable, consecutive loopback MCP and health observations."""
+    consecutive = 0
     last: dict[str, Any] = {"ok": False, "error": "DEVSPACE_LOCAL_SERVICE_NOT_READY"}
     for index in range(max(1, attempts)):
-        last = http_probe(config.local_mcp_url, opener=opener)
-        if last.get("ok"):
-            return last
+        mcp = http_probe(config.local_mcp_url, opener=opener)
+        health = http_probe(config.local_health_url, opener=opener)
+        healthy = bool(mcp.get("ok")) and health.get("status") == 200
+        last = {"ok": healthy, "mcp": mcp, "health": health, "consecutive": consecutive}
+        consecutive = consecutive + 1 if healthy else 0
+        if consecutive >= 2:
+            return {**last, "ok": True, "consecutive": consecutive}
         if index + 1 < attempts:
             sleeper(delay_seconds)
-    raise SetupError("DEVSPACE_LOCAL_SERVICE_NOT_READY")
+    raise SetupError("DEVSPACE_LOCAL_SERVICE_NOT_READY:" + json.dumps(last, ensure_ascii=True, sort_keys=True))
 
 
 def wait_for_public_service(
@@ -606,8 +904,10 @@ def wait_for_public_service(
     """Wait for Funnel relay propagation while retaining the last redacted probe."""
     last: dict[str, Any] = {"ok": False, "error": "DEVSPACE_PUBLIC_ENDPOINT_NOT_READY"}
     for index in range(max(1, attempts)):
-        last = http_probe(config.registration_url, opener=opener)
-        if last.get("ok"):
+        mcp = http_probe(config.registration_url, opener=opener)
+        health = http_probe(config.public_health_url, opener=opener)
+        last = {"ok": bool(mcp.get("ok")) and health.get("status") == 200, "mcp": mcp, "health": health}
+        if last["ok"]:
             return last
         if index + 1 < attempts:
             sleeper(delay_seconds)
@@ -951,6 +1251,7 @@ def parser() -> argparse.ArgumentParser:
     sub.choices["doctor"].add_argument("--chatgpt-call-failed", action="store_true")
     owner = sub.add_parser("owner-password")
     owner.add_argument("--auth-path", type=Path)
+    sub.add_parser("service-runner", help="internal managed DevSpace supervisor")
     return value
 
 
@@ -961,6 +1262,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = review_owner_password_interactive(auth_path=args.auth_path)
             print(json.dumps(result, ensure_ascii=True, indent=2))
             return 0
+        if args.command == "service-runner":
+            return run_managed_devspace_service()
         hostname = args.hostname or discover_tailscale_hostname()
         config = validate_config(args.root, hostname, args.local_port, args.public_port)
         if args.command == "setup":

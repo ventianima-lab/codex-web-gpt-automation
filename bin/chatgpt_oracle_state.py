@@ -181,6 +181,25 @@ USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION = (
 RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA = (
     "codex.chatgpt.oracle-recursive-self-observation-settlement/v1"
 )
+USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION = (
+    "user-authorized-fresh-run-after-terminal-devspace-nonexecution"
+)
+TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA = (
+    "codex.chatgpt.oracle-terminal-devspace-nonexecution-settlement/v1"
+)
+TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES = frozenset((
+    "terminal-devspace-checkout-502-no-execution",
+    "terminal-devspace-app-tools-unavailable-no-execution",
+))
+USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH = (
+    "user-authorized-fresh-run-after-devspace-read-route-refresh"
+)
+TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_SCHEMA = (
+    "codex.chatgpt.oracle-terminal-devspace-read-route-refresh-settlement/v1"
+)
+TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE = (
+    "terminal-devspace-read-chunk-unavailable-after-read-only-probe"
+)
 ORACLE_RECOVERY_STATE_RE = re.compile(r"(?im)^\s*State:\s*[a-z][a-z0-9_-]*\s*$")
 ORACLE_PROFILE_COPY_EBUSY_RE = re.compile(
     r"(?im)^(?:ERROR:\s*|User error \(browser-automation\):\s*)?"
@@ -1871,6 +1890,201 @@ def recursive_self_observation_evidence(
     }
 
 
+def terminal_devspace_nonexecution_evidence(
+    state: dict[str, Any], output_text: str
+) -> dict[str, str] | None:
+    """Recognize a bounded terminal DevSpace failure with explicit nonexecution.
+
+    This signature is intentionally narrower than a generic BLOCKED answer.  A
+    fresh run is safe only when the durable answer binds the exact project and
+    either reports the registered-app checkout 502 with explicit no-work proof,
+    or reports that the exact app exposed no workspace tools and explicitly
+    confirms that it attempted no connector/shell/web fallback and read or
+    modified neither the mission nor AGENTS.md.
+    """
+    run_id = str(state.get("run_id") or "").strip()
+    project_root = str(state.get("project_root") or "").strip()
+    transport = str(state.get("transport") or "").strip().casefold()
+    outcome = str(state.get("task_outcome") or "").strip().casefold()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    slug = str(oracle.get("slug") or "").strip()
+    text = str(output_text or "")
+    folded = text.casefold()
+    marker_matches = TASK_OUTCOME_RE.findall(text)
+    final_nonempty = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+    expected_marker = {
+        "blocked": "TASK_OUTCOME: BLOCKED",
+        "not_executed": "TASK_OUTCOME: NOT_EXECUTED",
+    }.get(outcome)
+    outage = (
+        "502 upstream or external service errors" in folded
+        and "checkout" in folded
+        and ("workspace id" in folded or "workspaceid" in folded)
+    )
+    korean_nonexecution = all(
+        needle in folded
+        for needle in ("미션 파일을 읽거나", "명령 실행", "파일 변경", "수행하지 않았습니다")
+    )
+    english_nonexecution = all(
+        any(needle in folded for needle in alternatives)
+        for alternatives in (
+            ("did not read the mission", "didn't read the mission"),
+            ("did not run commands", "didn't run commands", "no commands were run"),
+            ("did not change files", "didn't change files", "no files were changed"),
+        )
+    )
+    app_name = str(state.get("app_name") or "").strip().casefold()
+    korean_tools_unavailable = all(
+        needle in folded
+        for needle in (
+            "workspace 도구가 노출되어 있지 않아",
+            "열 수 없습니다",
+            "다른 workspace 커넥터·셸·웹·oracle 우회는 시도하지 않았",
+            "미션 파일이나 agents.md도 읽거나 수정하지 않았",
+        )
+    )
+    english_tools_unavailable = all(
+        any(needle in folded for needle in alternatives)
+        for alternatives in (
+            ("workspace tools are not available", "workspace tools are not exposed"),
+            ("could not open", "unable to open"),
+            ("did not try another connector", "did not attempt another connector"),
+            ("did not use the shell", "did not attempt a shell"),
+            ("did not read or modify the mission", "read or modified neither the mission"),
+        )
+    )
+    tools_unavailable = (
+        bool(app_name)
+        and app_name in folded
+        and (korean_tools_unavailable or english_tools_unavailable)
+    )
+    if (
+        not run_id
+        or not slug
+        or not project_root
+        or project_root.casefold() not in folded
+        or transport not in DEVSPACE_TRANSPORTS
+        or state.get("terminal_harvested") is not True
+        or str(state.get("session_authority") or "") != "terminal"
+        or outcome not in {"blocked", "not_executed"}
+        or len(marker_matches) != 1
+        or marker_matches[0].casefold() != outcome
+        or final_nonempty != expected_marker
+        or not (
+            (outage and (korean_nonexecution or english_nonexecution))
+            or tools_unavailable
+        )
+    ):
+        return None
+    signature = (
+        "terminal-devspace-app-tools-unavailable-no-execution"
+        if tools_unavailable
+        else "terminal-devspace-checkout-502-no-execution"
+    )
+    return {
+        "run_id": run_id,
+        "slug": slug,
+        "signature": signature,
+        "transport": transport,
+        "task_outcome": outcome,
+    }
+
+
+def terminal_devspace_read_route_refresh_evidence(
+    state: dict[str, Any], output_text: str
+) -> dict[str, str] | None:
+    """Recognize one exact read-only canary stopped before its command.
+
+    This is not generic BLOCKED authority.  It covers only the first regular
+    DevSpace qualification attempt that opened and read the bound workspace,
+    found ``read_chunk`` absent from the configured app, and explicitly ran no
+    command and performed no write.  A user-completed app-tool refresh may then
+    authorize one fresh probe through a separate append-only receipt.
+    """
+    run_id = str(state.get("run_id") or "").strip()
+    project_root = str(state.get("project_root") or "").strip()
+    app_name = str(state.get("app_name") or "").strip().casefold()
+    transport = str(state.get("transport") or "").strip().casefold()
+    outcome = str(state.get("task_outcome") or "").strip().casefold()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    slug = str(oracle.get("slug") or "").strip()
+    text = str(output_text or "")
+    folded = text.casefold()
+    marker_matches = TASK_OUTCOME_RE.findall(text)
+    final_nonempty = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+    project_candidates = {
+        project_root.casefold(),
+        project_root.replace("\\", "\\\\").casefold(),
+    }
+    workspace_ids = re.findall(
+        r"(?im)^\s*\*\s*workspace id:\s*`(?P<workspace>ws_[a-z0-9]+)`\s*$",
+        text,
+    )
+    required_korean = (
+        f"* 앱: `{app_name}`",
+        "* 모드: `checkout`",
+        "* 적용 `agents.md`: 전체 확인 완료",
+        "* 미션 파일: 전체 확인 완료",
+        "* 보고서 첫 markdown heading:",
+        "* 저장소 쓰기 작업: 없음",
+        "금지된 oracle controller/run 관련 파일·상태·프로세스: 검사하거나 호출하지 않음",
+        f"현재 `{app_name}` 앱이 이 workspace에서 노출한 도구에 `read_chunk`가 없으며",
+        "`chunk` 관련 도구가 반환되지 않았습니다",
+        "따라서 다음 단계인 정확히 한 번의 `git status --short --branch` 명령도 실행하지 않았습니다",
+        "* 명령 실행: **안 함**",
+        "* exit code: **미확인**",
+        "* command output: **없음**",
+    )
+    if (
+        not run_id
+        or not slug
+        or not project_root
+        or not app_name
+        or not any(candidate and candidate in folded for candidate in project_candidates)
+        or transport != "devspace"
+        or str(profile.get("model") or "").casefold() != "gpt-5.6"
+        or str(profile.get("model_strategy") or "") != "select"
+        or str(profile.get("thinking_time") or "") != "extra-high"
+        or state.get("terminal_harvested") is not True
+        or str(state.get("session_authority") or "") != "terminal"
+        or outcome != "blocked"
+        or len(marker_matches) != 1
+        or marker_matches[0].casefold() != outcome
+        or final_nonempty != "TASK_OUTCOME: BLOCKED"
+        or len(workspace_ids) != 1
+        or not all(needle in folded for needle in required_korean)
+    ):
+        return None
+    return {
+        "run_id": run_id,
+        "slug": slug,
+        "signature": TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE,
+        "transport": transport,
+        "task_outcome": outcome,
+        "app_name": app_name,
+        "workspace_id": workspace_ids[0],
+    }
+
+
+def terminal_devspace_read_route_refresh_mission_contract(mission_text: str) -> bool:
+    """Require the exact read-only qualification boundary before settlement."""
+    folded = str(mission_text or "").casefold()
+    return all(
+        needle in folded
+        for needle in (
+            "read_chunk",
+            "offsetbytes=0",
+            "eof=true",
+            "git status --short --branch",
+            "run exactly one command",
+            "run no other command",
+            "do not create, edit, delete, rename, stage, commit",
+            "if any required operation fails, report the concrete blocker and stop",
+        )
+    )
+
+
 def proven_recursive_self_observation_fresh_run_authority(
     state_path: Path,
 ) -> dict[str, Any] | None:
@@ -1901,10 +2115,11 @@ def proven_recursive_self_observation_fresh_run_authority(
         output_text = output_path.read_text(encoding="utf-8", errors="strict")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, OracleStateError, ValueError):
         return None
+    if not isinstance(receipt, dict):
+        return None
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
     if (
-        not isinstance(receipt, dict)
-        or receipt.get("schema") != RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA
+        receipt.get("schema") != RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA
         or receipt.get("confirmation")
         != USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION
         or not str(receipt.get("reason") or "").strip()
@@ -1924,6 +2139,186 @@ def proven_recursive_self_observation_fresh_run_authority(
     ):
         return None
     return {**receipt, "path": str(receipt_path), "sha256": hashlib.sha256(receipt_bytes).hexdigest()}
+
+
+def proven_terminal_devspace_nonexecution_fresh_run_authority(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Revalidate a task-bound, append-only terminal nonexecution authority."""
+    directory = state_path.parent.resolve(strict=True)
+    receipt_path = directory / "settlements" / "terminal-devspace-nonexecution-fresh-run.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        return None
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate settlement key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(
+            receipt_bytes.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        state = load_state(state_path)
+        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+        output_path = Path(str(artifacts.get("output") or directory / "output.md")).resolve(strict=True)
+        transcript_path = Path(
+            str(artifacts.get("transcript") or directory / "transcript.md")
+        ).resolve(strict=True)
+        stdout_path = Path(str(artifacts.get("stdout") or directory / "stdout.log")).resolve(strict=True)
+        stderr_path = Path(str(artifacts.get("stderr") or directory / "stderr.log")).resolve(strict=True)
+        mission_path = (directory / "mission.md").resolve(strict=True)
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, OracleStateError, ValueError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    exact_paths = {
+        "output": (output_path, directory / "output.md"),
+        "transcript": (transcript_path, directory / "transcript.md"),
+        "stdout": (stdout_path, directory / "stdout.log"),
+        "stderr": (stderr_path, directory / "stderr.log"),
+        "mission": (mission_path, directory / "mission.md"),
+    }
+    if any(
+        actual != expected.resolve() or expected.is_symlink() or not actual.is_file()
+        for actual, expected in exact_paths.values()
+    ) or state_path.is_symlink() or state_path.resolve(strict=True) != (directory / "state.json"):
+        return None
+    evidence = terminal_devspace_nonexecution_evidence(state, output_text)
+    authorized_thread = str(receipt.get("authorized_source_thread_id") or "").strip().casefold()
+    if (
+        receipt.get("schema") != TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA
+        or receipt.get("confirmation")
+        != USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION
+        or not str(receipt.get("reason") or "").strip()
+        or SOURCE_THREAD_ID_RE.fullmatch(authorized_thread) is None
+        or receipt.get("run_id") != state.get("run_id")
+        or receipt.get("project_root") != state.get("project_root")
+        or receipt.get("slug") != oracle.get("slug")
+        or receipt.get("transport") != state.get("transport")
+        or receipt.get("task_outcome") != state.get("task_outcome")
+        or receipt.get("signature") not in TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES
+        or receipt_path.resolve(strict=True).parent.parent != directory
+        or receipt.get("state_sha256") != sha256_file(state_path)
+        or receipt.get("output_sha256") != sha256_file(output_path)
+        or receipt.get("transcript_sha256") != sha256_file(transcript_path)
+        or receipt.get("stdout_sha256") != sha256_file(stdout_path)
+        or receipt.get("stderr_sha256") != sha256_file(stderr_path)
+        or receipt.get("mission_sha256") != sha256_file(mission_path)
+        or receipt.get("mission_sha256") != mission.get("sha256")
+        or evidence is None
+        or receipt.get("signature") != evidence.get("signature")
+        or receipt.get("auto_retry") is not False
+        or receipt.get("submission_action") != "none"
+    ):
+        return None
+    return {
+        **receipt,
+        "authorized_source_thread_id": authorized_thread,
+        "path": str(receipt_path),
+        "sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+    }
+
+
+def proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Revalidate one task-bound, append-only read-route refresh authority."""
+    directory = state_path.parent.resolve(strict=True)
+    receipt_path = directory / "settlements" / "terminal-devspace-read-route-refresh-fresh-run.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        return None
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate settlement key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(
+            receipt_bytes.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        state = load_state(state_path)
+        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+        output_path = Path(str(artifacts.get("output") or directory / "output.md")).resolve(strict=True)
+        transcript_path = Path(
+            str(artifacts.get("transcript") or directory / "transcript.md")
+        ).resolve(strict=True)
+        stdout_path = Path(str(artifacts.get("stdout") or directory / "stdout.log")).resolve(strict=True)
+        stderr_path = Path(str(artifacts.get("stderr") or directory / "stderr.log")).resolve(strict=True)
+        mission_path = (directory / "mission.md").resolve(strict=True)
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+        mission_text = mission_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, OracleStateError, ValueError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    exact_paths = {
+        "output": (output_path, directory / "output.md"),
+        "transcript": (transcript_path, directory / "transcript.md"),
+        "stdout": (stdout_path, directory / "stdout.log"),
+        "stderr": (stderr_path, directory / "stderr.log"),
+        "mission": (mission_path, directory / "mission.md"),
+    }
+    if any(
+        actual != expected.resolve() or expected.is_symlink() or not actual.is_file()
+        for actual, expected in exact_paths.values()
+    ) or state_path.is_symlink() or state_path.resolve(strict=True) != (directory / "state.json"):
+        return None
+    evidence = terminal_devspace_read_route_refresh_evidence(state, output_text)
+    authorized_thread = str(receipt.get("authorized_source_thread_id") or "").strip().casefold()
+    if (
+        receipt.get("schema") != TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_SCHEMA
+        or receipt.get("confirmation")
+        != USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH
+        or not str(receipt.get("reason") or "").strip()
+        or SOURCE_THREAD_ID_RE.fullmatch(authorized_thread) is None
+        or source_thread_id_from_state(state) != authorized_thread
+        or receipt.get("run_id") != state.get("run_id")
+        or receipt.get("project_root") != state.get("project_root")
+        or receipt.get("slug") != oracle.get("slug")
+        or receipt.get("transport") != state.get("transport")
+        or receipt.get("task_outcome") != state.get("task_outcome")
+        or receipt.get("app_name") != state.get("app_name")
+        or receipt.get("signature") != TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE
+        or receipt.get("retry_ordinal") != 1
+        or receipt_path.resolve(strict=True).parent.parent != directory
+        or receipt.get("state_sha256") != sha256_file(state_path)
+        or receipt.get("output_sha256") != sha256_file(output_path)
+        or receipt.get("transcript_sha256") != sha256_file(transcript_path)
+        or receipt.get("stdout_sha256") != sha256_file(stdout_path)
+        or receipt.get("stderr_sha256") != sha256_file(stderr_path)
+        or receipt.get("mission_sha256") != sha256_file(mission_path)
+        or receipt.get("mission_sha256") != mission.get("sha256")
+        or evidence is None
+        or receipt.get("signature") != evidence.get("signature")
+        or receipt.get("workspace_id") != evidence.get("workspace_id")
+        or not terminal_devspace_read_route_refresh_mission_contract(mission_text)
+        or receipt.get("auto_retry") is not False
+        or receipt.get("submission_action") != "none"
+    ):
+        return None
+    return {
+        **receipt,
+        "authorized_source_thread_id": authorized_thread,
+        "path": str(receipt_path),
+        "sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+    }
 
 
 def _state_has_conversation_url(state: dict[str, Any]) -> bool:

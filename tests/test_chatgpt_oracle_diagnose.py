@@ -92,6 +92,42 @@ def test_report_buckets_pre_submit_ui_and_host_causes_separately(tmp_path: Path)
     ]
 
 
+@pytest.mark.parametrize(
+    ("stderr", "signature"),
+    [
+        (
+            "Oracle launch/run failed: project submit mutex could not be acquired",
+            "project-submit-mutex-held",
+        ),
+        (
+            "PROJECT_SESSION_STILL_LIVE: an exact Oracle session still owns this project",
+            "same-task-project-session-still-live",
+        ),
+    ],
+)
+def test_pre_submit_ownership_conflicts_are_classified_but_never_retry_safe(
+    tmp_path: Path,
+    stderr: str,
+    signature: str,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_dir = write_run(
+        state_root,
+        "o" * 8,
+        status="failed",
+        session_authority="pre_submit",
+    )
+    (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+
+    report = module.diagnose(state_root)
+    run = report["unresolved_runs"][0]
+
+    assert run["bucket"] == "submission-ownership-conflict"
+    assert run["signature"] == signature
+    assert "submission-ownership-conflict" not in report["safe_for_fresh_run_buckets"]
+
+
 def test_pre_submit_signature_outranks_post_submit_interpretation(tmp_path: Path) -> None:
     module = load()
     state_root = tmp_path / "oracle-state"
@@ -848,6 +884,126 @@ def test_oauth_503_outranks_foreign_connector_search_evidence(tmp_path: Path) ->
     verdict = module.diagnose(state_root)["unresolved_runs"][0]
 
     assert verdict["signature"] == "registered-app-oauth-token-request-503"
+
+
+def test_terminal_devspace_checkout_502_nonexecution_has_a_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    run_dir = write_run(
+        state_root,
+        "x" * 12,
+        status="attention_required",
+        output=(
+            f"I opened the exact project root {project_root} in checkout mode.\n"
+            "The checkout failed with 502 Upstream or external service errors and no workspace ID.\n"
+            "I did not read the mission, did not run commands, and did not change files.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["transport"] = "pro-devspace"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == "terminal-devspace-checkout-502-no-execution"
+
+
+def test_terminal_devspace_app_tools_unavailable_has_its_own_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    run_dir = write_run(
+        state_root,
+        "y" * 12,
+        status="attention_required",
+        output=(
+            "이 세션에는 dev 앱이 제공하는 workspace 도구가 노출되어 있지 않아 "
+            f"지정한 {project_root}를 dev checkout 모드로 열 수 없습니다. "
+            "사용자가 금지한 다른 workspace 커넥터·셸·웹·Oracle 우회는 시도하지 않았으며, "
+            "따라서 미션 파일이나 AGENTS.md도 읽거나 수정하지 않았습니다.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({"transport": "devspace", "app_name": "dev"})
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == (
+        "terminal-devspace-app-tools-unavailable-no-execution"
+    )
+
+
+def test_terminal_devspace_read_chunk_exposure_failure_has_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    escaped_root = str(project_root).replace("\\", "\\\\")
+    output = (
+        "* 앱: `dev`\n"
+        "* Workspace ID: `ws_a0770e8338`\n"
+        f"* 정확한 루트: `{escaped_root}`\n"
+        "* 모드: `checkout`\n"
+        "* 적용 `AGENTS.md`: 전체 확인 완료\n"
+        "* 미션 파일: 전체 확인 완료\n"
+        "* 보고서 첫 Markdown heading: `# Example`\n"
+        "* 저장소 쓰기 작업: 없음\n"
+        "* 금지된 Oracle controller/run 관련 파일·상태·프로세스: 검사하거나 호출하지 않음\n"
+        "현재 `dev` 앱이 이 workspace에서 노출한 도구에 `read_chunk`가 없으며, "
+        "`chunk` 관련 도구가 반환되지 않았습니다.\n"
+        "따라서 다음 단계인 정확히 한 번의 `git status --short --branch` 명령도 실행하지 않았습니다.\n"
+        "* 명령 실행: **안 함**\n"
+        "* exit code: **미확인**\n"
+        "* command output: **없음**\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        state_root,
+        "r" * 12,
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "devspace",
+        "app_name": "dev",
+        "profile": {
+            "model": "gpt-5.6",
+            "model_strategy": "select",
+            "thinking_time": "extra-high",
+        },
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == (
+        "terminal-devspace-read-chunk-unavailable-after-read-only-probe"
+    )
 
 
 def test_recursive_self_observation_outranks_foreign_connector_search_evidence(
