@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -58,6 +59,74 @@ def test_plan_orders_the_complete_first_install_without_secrets(tmp_path: Path) 
     assert "--browser-manual-login" in dumped
     assert "DEVSPACE_OAUTH_SCOPES" in dumped
     assert plan["stages"][3]["environment"]["DEVSPACE_SUBAGENTS"] == "false"
+
+
+def test_tailscale_hostname_discovery_decodes_utf8_bytes_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "tailscale.exe")
+    payload = json.dumps(
+        {
+            "Self": {
+                "DNSName": "lasal-pc.tail46ec90.ts.net.",
+                "HostName": "라살-PC",
+            }
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    observed: dict[str, object] = {}
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr=b"")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module._discover_tailscale_hostname() == "lasal-pc.tail46ec90.ts.net"
+    assert observed["argv"] == ["tailscale.exe", "status", "--json"]
+    assert observed["kwargs"] == {"check": True, "capture_output": True, "timeout": 30}
+
+
+def test_tailscale_hostname_discovery_rejects_non_utf8_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "tailscale.exe")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout=b'{"Self":{"DNSName":"host.ts.net","HostName":"\x80"}}', stderr=b""
+        ),
+    )
+    with pytest.raises(module.OnboardingError, match="TAILSCALE_HOSTNAME_UNAVAILABLE"):
+        module._discover_tailscale_hostname()
+
+
+def test_start_uses_utf8_tailscale_auto_discovery_without_injected_hostname(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "프로젝트"
+    project.mkdir()
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "tailscale.exe")
+    payload = json.dumps(
+        {"Self": {"DNSName": "lasal-pc.tail46ec90.ts.net.", "HostName": "라살-PC"}},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout=payload, stderr=b""),
+    )
+
+    state = module.start_onboarding(
+        provider="tailscale",
+        roots=[str(project)],
+        codex_home=tmp_path / ".codex",
+        devspace_home=tmp_path / ".devspace",
+    )
+    assert state["registration_url"] == "https://lasal-pc.tail46ec90.ts.net/mcp"
+    assert state["allowed_roots"] == [str(project.resolve())]
 
 
 @pytest.mark.parametrize(

@@ -621,11 +621,10 @@ def _discover_tailscale_hostname() -> str:
             [executable, "status", "--json"],
             check=True,
             capture_output=True,
-            text=True,
             timeout=30,
         )
-        value = json.loads(completed.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        value = json.loads(completed.stdout.decode("utf-8-sig", errors="strict"))
+    except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError) as exc:
         raise OnboardingError("TAILSCALE_HOSTNAME_UNAVAILABLE") from exc
     hostname = str((value.get("Self") or {}).get("DNSName") or "").strip().casefold().rstrip(".")
     if not hostname.endswith(".ts.net"):
