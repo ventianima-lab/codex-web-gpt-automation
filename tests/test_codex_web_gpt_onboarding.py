@@ -895,7 +895,7 @@ def test_prepare_final_gate_writes_exact_host_state_manifest_and_commands(
     manifest_path = Path(result["manifest_path"])
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest_path.is_relative_to(Path(environment["codex_home"]))
-    assert hashlib.sha256(source_thread_id.encode("ascii")).hexdigest()[:16] in manifest_path.name
+    assert re.fullmatch(r"[0-9a-f]{32}\.json", manifest_path.name)
     assert payload == {
         "schema": "codex.chatgpt.oracle-run/v1",
         "project_root": str(Path(environment["project"]).resolve()),
@@ -928,6 +928,16 @@ def test_prepare_final_gate_writes_exact_host_state_manifest_and_commands(
     assert second["manifest_path"] != result["manifest_path"]
     assert Path(result["manifest_path"]).read_bytes() == first_manifest_bytes
 
+    same_bytes_different_path = mission.with_name("same-bytes-different-path.md")
+    same_bytes_different_path.write_bytes(mission.read_bytes())
+    third = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=same_bytes_different_path,
+        codex_home=environment["codex_home"],
+    )
+    assert third["mission_sha256"] == result["mission_sha256"]
+    assert third["manifest_path"] != result["manifest_path"]
+
 
 def test_prepare_final_gate_rejects_mission_outside_exact_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -948,6 +958,40 @@ def test_prepare_final_gate_rejects_mission_outside_exact_root(
         module.prepare_final_gate(
             root=str(environment["project"]),
             mission_path=outside,
+            codex_home=environment["codex_home"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (b"x" * (24 * 1024 + 1), "FINAL_GATE_MISSION_EXCEEDS_SINGLE_READ_CHUNK"),
+        (b"\xff\xfe", "FINAL_GATE_MISSION_MUST_BE_UTF8"),
+    ],
+)
+def test_prepare_final_gate_rejects_unreadable_single_chunk_mission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    error: str,
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    mission = Path(environment["project"]) / "missions" / "onboarding-final-gate.md"
+    mission.parent.mkdir(parents=True, exist_ok=True)
+    mission.write_bytes(payload)
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000123")
+
+    with pytest.raises(module.OnboardingError, match=error):
+        module.prepare_final_gate(
+            root=str(environment["project"]),
+            mission_path=mission,
             codex_home=environment["codex_home"],
         )
 

@@ -2071,8 +2071,11 @@ def test_registered_app_final_gate_prompt_binds_exact_generated_layout_run_id_an
     assert f"@codex This is a read-only registered-app final gate canary." in prompt
     assert f"open_workspace for exactly {config.project_root} in checkout mode with auditNonce={layout.run_id}" in prompt
     assert f"Use the exact same auditNonce={layout.run_id} on all three calls." in prompt
-    assert "With that same workspaceId, separately read exactly the mission file" in prompt
-    assert "read_chunk that same file from offsetBytes=0 through eof=true" in prompt
+    assert "With that same workspaceId, separately read exactly" in prompt
+    assert "both workspace tool path arguments must be the exact workspace-relative path" in prompt
+    mission_relative = config.mission_path.relative_to(config.project_root).as_posix()
+    assert f"read exactly {mission_relative}" in prompt
+    assert "read_chunk that same workspace-relative file from offsetBytes=0 through eof=true" in prompt
     assert "echo the exact app name codex" in prompt
     assert "exact mission-relative path mission.md" in prompt
     assert "Do not call any other workspace connector" in prompt

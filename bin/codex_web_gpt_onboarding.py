@@ -80,6 +80,7 @@ FINAL_GATE_RECEIPT_KEYS = frozenset(
     }
 )
 FINAL_GATE_RECEIPT_TOOLS = ("open_workspace", "read", "read_chunk")
+FINAL_GATE_MAX_READ_CHUNK_BYTES = 24 * 1024
 FINAL_GATE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 FINAL_GATE_RECEIPT_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -1742,13 +1743,23 @@ def prepare_final_gate(
         raise OnboardingError("FINAL_GATE_MISSION_UNREADABLE") from exc
     if not mission.is_file() or not _inside(root_path, mission):
         raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_INSIDE_EXACT_ROOT")
-    mission_sha256 = _sha256_file(mission)
-    root_hash = hashlib.sha256(os.path.normcase(str(root_path)).encode("utf-8")).hexdigest()[:16]
-    source_thread_hash = hashlib.sha256(source_thread_id.encode("ascii")).hexdigest()[:16]
+    try:
+        mission_bytes = mission.read_bytes()
+        mission_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_UTF8") from exc
+    if len(mission_bytes) > FINAL_GATE_MAX_READ_CHUNK_BYTES:
+        raise OnboardingError("FINAL_GATE_MISSION_EXCEEDS_SINGLE_READ_CHUNK")
+    mission_sha256 = hashlib.sha256(mission_bytes).hexdigest()
+    mission_relative = mission.relative_to(root_path).as_posix()
+    manifest_identity = "\0".join(
+        (source_thread_id, os.path.normcase(str(root_path)), mission_relative, mission_sha256)
+    )
+    manifest_identity_hash = hashlib.sha256(manifest_identity.encode("utf-8")).hexdigest()[:32]
     target = (
         _codex_home(codex_home)
         / FINAL_GATE_MANIFEST_RELATIVE
-        / f"{source_thread_hash}-{root_hash}-{mission_sha256[:16]}.json"
+        / f"{manifest_identity_hash}.json"
     )
     manifest = {
         "schema": FINAL_GATE_MANIFEST_SCHEMA,
@@ -1793,7 +1804,7 @@ def prepare_final_gate(
                 "--evidence",
                 "<VERIFIED_SUMMARY>",
                 "--listing",
-                mission.relative_to(root_path).as_posix(),
+                mission_relative,
             ]
         ),
         "submission_action": "none",
