@@ -1032,6 +1032,15 @@ def test_registered_final_gate_record_requires_live_matching_codex_task(
     )
     assert recorded["source_thread_id"] == owner
 
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    resumed = module.load_state(codex_home=environment["codex_home"])
+    assert (
+        module._final_gate_receipt(
+            environment["codex_home"], environment["devspace_home"], resumed
+        )
+        == resumed["stages"]["08_final_gate"]["evidence"]
+    )
+
 
 @pytest.mark.parametrize("provider", ["cloudflare", "ngrok", "custom"])
 def test_non_tailscale_instructions_never_route_through_tailscale_helper(

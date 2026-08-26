@@ -894,6 +894,7 @@ def _oracle_final_gate_binding(
     expected_root: str,
     expected_app_name: str,
     listing: Sequence[str],
+    require_current_task: bool = False,
 ) -> dict[str, Any]:
     try:
         directory = run_dir.expanduser().resolve(strict=True)
@@ -931,14 +932,12 @@ def _oracle_final_gate_binding(
     source_thread_id = str(ownership.get("source_thread_id") or "").strip()
     if registered_app_final_gate and SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
         raise OnboardingError("FINAL_GATE_SOURCE_TASK_BINDING_MISSING")
-    evaluated_from_thread = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
-    if registered_app_final_gate and SOURCE_THREAD_ID_RE.fullmatch(evaluated_from_thread) is None:
-        raise OnboardingError("FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED")
-    if (
-        registered_app_final_gate
-        and source_thread_id.casefold() != evaluated_from_thread.casefold()
-    ):
-        raise OnboardingError("FINAL_GATE_FOREIGN_TASK_RUN")
+    if registered_app_final_gate and require_current_task:
+        evaluated_from_thread = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+        if SOURCE_THREAD_ID_RE.fullmatch(evaluated_from_thread) is None:
+            raise OnboardingError("FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED")
+        if source_thread_id.casefold() != evaluated_from_thread.casefold():
+            raise OnboardingError("FINAL_GATE_FOREIGN_TASK_RUN")
     artifacts = run_state.get("artifacts") if isinstance(run_state.get("artifacts"), dict) else {}
     try:
         output_path = Path(str(artifacts.get("output") or "")).expanduser().resolve(strict=True)
@@ -1705,6 +1704,7 @@ def record_final_gate(
             expected_root=root,
             expected_app_name=state["app_name"],
             listing=entries,
+            require_current_task=True,
         )
     state["stages"]["08_final_gate"]["evidence"] = {
         "read_ok": bool(read_ok),
