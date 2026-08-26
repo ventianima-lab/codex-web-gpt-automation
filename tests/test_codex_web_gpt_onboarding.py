@@ -938,6 +938,15 @@ def test_prepare_final_gate_writes_exact_host_state_manifest_and_commands(
     assert third["mission_sha256"] == result["mission_sha256"]
     assert third["manifest_path"] != result["manifest_path"]
 
+    mission.write_bytes(b"z" * (24 * 1024))
+    exact_boundary = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=mission,
+        codex_home=environment["codex_home"],
+    )
+    assert exact_boundary["manifest_path"] != result["manifest_path"]
+    assert exact_boundary["mission_sha256"] != result["mission_sha256"]
+
 
 def test_prepare_final_gate_rejects_mission_outside_exact_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
