@@ -1,5 +1,13 @@
 # 기술 변경 기록
 
+## 1.20.8 - Decode Tailscale status as UTF-8 during onboarding
+
+- Windows 한국어 로케일에서도 `onboard.py start`가 `tailscale status --json`의
+  비 ASCII 장치 정보를 CP949로 오해하지 않도록 stdout bytes를 UTF-8 strict로
+  직접 디코딩합니다.
+- 잘못된 인코딩은 기존 `TAILSCALE_HOSTNAME_UNAVAILABLE` fail-closed 오류로 유지하고,
+  실제 UTF-8 비 ASCII 상태 응답과 손상된 응답을 모두 회귀 테스트합니다.
+
 ## 1.20.7 - Bind registered-app final gates to server receipts
 
 - 새 일반 비-Pro final canary만 `registered_app_final_gate`로 명시해 실제 생성된
