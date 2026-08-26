@@ -1,5 +1,15 @@
 # 기술 변경 기록
 
+## 1.20.6 - Explain frozen registered-app Action snapshots
+
+- 최종 canary에서 `open_workspace`와 `read`는 성공하지만 `read_chunk` 또는
+  서버 생성 Audit receipt ID가 없을 때, 로컬 DevSpace 장애로 오인하지 않고
+  ChatGPT의 등록 앱 Action 스냅샷 갱신이 필요한 상태로 명확히 분류합니다.
+- Enterprise/Edu의 `Action control > Refresh`와 Business/미지원 UI의 앱 재생성·게시,
+  수동 Action 검토, `post-register` 1회, 새 일반 비-Pro auditNonce canary 순서를
+  한영 설치 마법사와 문서에 안내합니다.
+- 세 도구와 세 서버 영수증의 fail-closed 최종 gate는 완화하지 않습니다.
+
 ## 1.20.5 - Harden managed DevSpace cold-start confirmation
 
 - Windows의 첫 `npx` DevSpace 1.0.8 기동이 20초를 넘는 경우에도 관리형

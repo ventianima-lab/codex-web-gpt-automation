@@ -16,6 +16,29 @@ from typing import Any, Callable
 QUALIFICATION_SCHEMA = "codex.chatgpt.devspace-root-qualification/v1"
 PRO_APP_READ_GATE_SCHEMA = "codex.chatgpt.pro-devspace-app-read-gate/v1"
 PRO_APP_READ_GATE_MAX_AGE_SECONDS = 24 * 60 * 60
+REGISTERED_APP_ACTION_SNAPSHOT_GATE_ERRORS = frozenset(
+    {
+        "FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE",
+        "FINAL_GATE_TOOL_READ_RECEIPT_AUDIT_NONCE_MISSING",
+        "FINAL_GATE_CONVERSATION_RECEIPT_CHALLENGE_MISSING",
+    }
+)
+
+
+REGISTERED_APP_ACTION_SNAPSHOT_GUIDANCE = {
+    "ko": [
+        "새 일반 비-Pro canary에서 read_chunk 또는 서버 생성 Audit receipt ID가 보이지 않으면, 서버가 아니라 ChatGPT의 등록 앱 Action 스냅샷이 오래된 상태로 취급합니다.",
+        "Enterprise/Edu 관리자는 ChatGPT의 Workspace settings > Apps에서 정확한 codex 앱의 더보기 메뉴를 열고 Action control > Refresh를 직접 실행한 뒤 새 Action을 검토·활성화합니다. 이 과정은 자동화하지 않습니다.",
+        "Business 또는 Refresh가 없는 UI에서는 같은 정확한 /mcp URL로 앱을 다시 만들고 게시한 뒤, 현재 서버가 노출한 Action을 검토·활성화하고 Owner 승인을 직접 완료합니다.",
+        "그 뒤 post-register를 한 번 실행하고, 새 일반 비-Pro auditNonce canary에서 open_workspace, read, read_chunk 및 세 서버 생성 receipt ID를 다시 증명합니다. open_workspace/read만으로는 통과하지 않습니다.",
+    ],
+    "en": [
+        "If a fresh regular non-Pro canary exposes no read_chunk or server-generated Audit receipt IDs, treat the registered ChatGPT app Action snapshot as stale rather than accepting the partial tool surface.",
+        "On Enterprise/Edu, an admin must open the exact codex app's overflow menu under Workspace settings > Apps, use Action control > Refresh, and review and enable the new Actions. Do not automate this ChatGPT setting.",
+        "On Business, or when Refresh is unavailable, recreate and publish the app with the same exact /mcp URL, review and enable the Actions currently exposed by the server, and complete Owner approval manually.",
+        "Then run post-register once and run a fresh regular non-Pro auditNonce canary proving open_workspace, read, read_chunk, and all three server-generated receipt IDs. open_workspace/read alone never passes.",
+    ],
+}
 
 
 class DevSpacePreflightError(RuntimeError):
@@ -82,6 +105,7 @@ def ensure_recent_registered_app_read_gate(
     )
 
     reason = "missing-or-invalid-final-gate"
+    final_gate_error = None
     recorded: dict[str, Any] | None = None
     state: dict[str, Any] | None = None
     try:
@@ -98,7 +122,20 @@ def ensure_recent_registered_app_read_gate(
         )
         if isinstance(candidate, dict):
             recorded = candidate
-    except Exception:
+    except Exception as exc:
+        # Preserve only a stable, non-secret verifier code.  This lets callers
+        # distinguish an absent final-gate proof from the common case where a
+        # registered app still exposes an old Action snapshot without relaxing
+        # the proof requirement.
+        candidate_code = str(getattr(exc, "code", "") or "").strip()
+        if not candidate_code:
+            candidate_code = str(exc).strip()
+        if (
+            candidate_code.startswith("FINAL_GATE_")
+            and candidate_code == candidate_code.upper()
+            and candidate_code.replace("_", "").isalnum()
+        ):
+            final_gate_error = candidate_code
         recorded = None
 
     if isinstance(state, dict) and recorded is not None:
@@ -144,22 +181,44 @@ def ensure_recent_registered_app_read_gate(
                 "receipt_count": len(recorded.get("tool_read_receipts") or []),
             }
 
+    manual_snapshot_action_required = (
+        final_gate_error in REGISTERED_APP_ACTION_SNAPSHOT_GATE_ERRORS
+    )
+    evidence = {
+        "project_root": str(root),
+        "app_name": expected_app,
+        "state_path": str(state_file),
+        "reason": reason,
+        "max_age_seconds": max_age_seconds,
+        "required_transport": "devspace",
+        "required_model": "gpt-5.6",
+        "required_thinking_time": "extra-high",
+        "required_tools": ["open_workspace", "read", "read_chunk"],
+        "next_action": "RUN_FRESH_REGULAR_NON_PRO_FINAL_GATE_CANARY",
+        "instructions": "Complete or refresh onboarding stage 08_final_gate, then rerun the same Pro dry-run.",
+        "final_gate_error": final_gate_error,
+        "manual_chatgpt_action_required": manual_snapshot_action_required,
+        # A failed canary is intentionally not persisted as successful final-gate
+        # evidence. Keep the generic error useful without inferring that a
+        # manual settings change is authorized: callers may show this branch
+        # only when their observed canary matches its explicit condition.
+        "conditional_registered_app_action_snapshot_guidance": REGISTERED_APP_ACTION_SNAPSHOT_GUIDANCE,
+    }
+    if manual_snapshot_action_required:
+        evidence.update(
+            {
+                "registered_app_action_snapshot_guidance": REGISTERED_APP_ACTION_SNAPSHOT_GUIDANCE,
+                "post_refresh_actions": [
+                    "RUN_POST_REGISTER_ONCE",
+                    "RUN_FRESH_REGULAR_NON_PRO_AUDIT_NONCE_CANARY",
+                ],
+            }
+        )
+
     raise DevSpacePreflightError(
         "PRO_DEVSPACE_APP_READ_GATE_REQUIRED",
         "read-only Pro is blocked until a fresh regular non-Pro registered-app canary proves open_workspace, read, and read_chunk",
-        {
-            "project_root": str(root),
-            "app_name": expected_app,
-            "state_path": str(state_file),
-            "reason": reason,
-            "max_age_seconds": max_age_seconds,
-            "required_transport": "devspace",
-            "required_model": "gpt-5.6",
-            "required_thinking_time": "extra-high",
-            "required_tools": ["open_workspace", "read", "read_chunk"],
-            "next_action": "RUN_FRESH_REGULAR_NON_PRO_FINAL_GATE_CANARY",
-            "instructions": "Complete or refresh onboarding stage 08_final_gate, then rerun the same Pro dry-run.",
-        },
+        evidence,
     )
 
 

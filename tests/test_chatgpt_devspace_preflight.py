@@ -26,10 +26,11 @@ def write_config(path: Path, roots: list[Path]) -> None:
 
 
 class FakeOnboarding:
-    def __init__(self, *, codex_home: Path, state: dict, gate: dict | None):
+    def __init__(self, *, codex_home: Path, state: dict, gate: dict | None, gate_error: Exception | None = None):
         self.codex_home = codex_home
         self.state = state
         self.gate = gate
+        self.gate_error = gate_error
 
     def load_state(self, *, codex_home=None):
         assert codex_home in {None, self.codex_home}
@@ -41,6 +42,8 @@ class FakeOnboarding:
     def _final_gate_receipt(self, codex_home, devspace_home, state):
         assert codex_home == self.codex_home.resolve()
         assert state is self.state
+        if self.gate_error is not None:
+            raise self.gate_error
         return self.gate
 
 
@@ -156,6 +159,100 @@ def test_pro_gate_rejects_receipt_for_different_allowed_root(tmp_path: Path) -> 
 
     assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
     assert exc.value.evidence["reason"] == "final-gate-root-mismatch"
+
+
+def test_pro_gate_keeps_partial_registered_app_surface_fail_closed_with_manual_refresh_guidance(tmp_path: Path) -> None:
+    module = load_module()
+    project = tmp_path / "Coin"
+    project.mkdir()
+    codex_home = tmp_path / ".codex"
+    state = {"app_name": "codex", "allowed_roots": [str(project)]}
+
+    fake = FakeOnboarding(
+        codex_home=codex_home,
+        state=state,
+        gate=None,
+        gate_error=ValueError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE"),
+    )
+    with pytest.raises(module.DevSpacePreflightError) as exc:
+        module.ensure_recent_registered_app_read_gate(
+            project,
+            "codex",
+            codex_home=codex_home,
+            onboarding_loader=lambda: fake,
+        )
+
+    evidence = exc.value.evidence
+    assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
+    assert evidence["final_gate_error"] == "FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE"
+    assert evidence["manual_chatgpt_action_required"] is True
+    assert evidence["post_refresh_actions"] == [
+        "RUN_POST_REGISTER_ONCE",
+        "RUN_FRESH_REGULAR_NON_PRO_AUDIT_NONCE_CANARY",
+    ]
+    assert "Action control > Refresh" in "\n".join(evidence["registered_app_action_snapshot_guidance"]["en"])
+    assert "Business" in "\n".join(evidence["registered_app_action_snapshot_guidance"]["en"])
+    assert "read_chunk" in "\n".join(evidence["registered_app_action_snapshot_guidance"]["ko"])
+
+
+def test_pro_gate_does_not_recommend_app_refresh_for_unrelated_or_unknown_failures(tmp_path: Path) -> None:
+    module = load_module()
+    project = tmp_path / "Coin"
+    project.mkdir()
+    codex_home = tmp_path / ".codex"
+    state = {"app_name": "codex", "allowed_roots": [str(project)]}
+
+    for gate_error, expected_code in [
+        (ValueError("FINAL_GATE_ORACLE_STATE_INVALID"), "FINAL_GATE_ORACLE_STATE_INVALID"),
+        (RuntimeError("sensitive arbitrary diagnostic"), None),
+    ]:
+        fake = FakeOnboarding(
+            codex_home=codex_home,
+            state=state,
+            gate=None,
+            gate_error=gate_error,
+        )
+        with pytest.raises(module.DevSpacePreflightError) as exc:
+            module.ensure_recent_registered_app_read_gate(
+                project,
+                "codex",
+                codex_home=codex_home,
+                onboarding_loader=lambda fake=fake: fake,
+            )
+
+        evidence = exc.value.evidence
+        assert evidence["final_gate_error"] == expected_code
+        assert evidence["manual_chatgpt_action_required"] is False
+        assert "registered_app_action_snapshot_guidance" not in evidence
+        assert "post_refresh_actions" not in evidence
+        conditional = evidence["conditional_registered_app_action_snapshot_guidance"]
+        assert "If a fresh regular non-Pro canary exposes no read_chunk" in conditional["en"][0]
+
+
+def test_pro_gate_without_recorded_final_gate_keeps_only_conditional_snapshot_guidance(tmp_path: Path) -> None:
+    module = load_module()
+    project = tmp_path / "Coin"
+    project.mkdir()
+    codex_home = tmp_path / ".codex"
+    state = {"app_name": "codex", "allowed_roots": [str(project)]}
+    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=None)
+
+    with pytest.raises(module.DevSpacePreflightError) as exc:
+        module.ensure_recent_registered_app_read_gate(
+            project,
+            "codex",
+            codex_home=codex_home,
+            onboarding_loader=lambda: fake,
+        )
+
+    evidence = exc.value.evidence
+    assert evidence["final_gate_error"] is None
+    assert evidence["manual_chatgpt_action_required"] is False
+    assert "registered_app_action_snapshot_guidance" not in evidence
+    assert "post_refresh_actions" not in evidence
+    conditional = evidence["conditional_registered_app_action_snapshot_guidance"]
+    assert "read_chunk" in "\n".join(conditional["ko"])
+    assert "Action control > Refresh" in "\n".join(conditional["en"])
 
 
 def test_first_exact_root_qualification_is_cached_until_config_changes(tmp_path: Path) -> None:
