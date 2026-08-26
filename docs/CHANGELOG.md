@@ -1,5 +1,15 @@
 # 기술 변경 기록
 
+## 1.20.5 - Harden managed DevSpace cold-start confirmation
+
+- Windows의 첫 `npx` DevSpace 1.0.8 기동이 20초를 넘는 경우에도 관리형
+  재시작 증명이 조기 실패하지 않도록, 정확한 post-patch listener 신원 확인의
+  bounded 대기를 120초로 늘렸습니다.
+- 단순 포트나 `/healthz` 응답으로 완화하지 않고, 기존의 패치 해시, 정확한
+  `dist/cli.js serve` 명령, 패치 이후 시작 시각 검증을 모두 유지합니다.
+- 60초 지연 listener와 old/foreign listener를 함께 재현하는 회귀 테스트를
+  추가해 marker가 정확한 새 서비스에서만 제거되는 것을 검증합니다.
+
 ## 1.20.4 - Validate DevSpace 1.0.8
 
 - DevSpace `1.0.8` is the explicit current runtime for new setup and managed
