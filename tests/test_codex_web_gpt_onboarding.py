@@ -1040,6 +1040,13 @@ def test_registered_final_gate_record_requires_live_matching_codex_task(
         )
         == resumed["stages"]["08_final_gate"]["evidence"]
     )
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000999")
+    assert (
+        module._final_gate_receipt(
+            environment["codex_home"], environment["devspace_home"], resumed
+        )
+        == resumed["stages"]["08_final_gate"]["evidence"]
+    )
 
 
 @pytest.mark.parametrize("provider", ["cloudflare", "ngrok", "custom"])
