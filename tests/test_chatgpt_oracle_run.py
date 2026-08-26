@@ -2042,6 +2042,128 @@ def test_historical_writable_pro_state_recovers_exact_slug_without_resubmit(tmp_
     assert "--no-recover" not in argv
 
 
+def test_registered_app_final_gate_prompt_binds_exact_generated_layout_run_id_and_connector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    source_thread_id = "00000000-0000-4000-8000-000000000123"
+    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
+    config = runner.STATE.load_manifest(manifest(
+        tmp_path,
+        app_name="codex",
+        registered_app_final_gate=True,
+        model="gpt-5.6",
+        thinking_time="extra-high",
+        task_outcome_contract="v1",
+        source_thread_id=source_thread_id,
+    ))
+    layout = runner.STATE.create_layout(config)
+
+    prompt = runner.STATE.composer_prompt(
+        config,
+        layout.run_dir / "mission.md",
+        run_id=layout.run_id,
+        slug=layout.slug,
+    )
+
+    assert config.registered_app_final_gate is True
+    assert config.requested_run_id is None
+    assert f"@codex This is a read-only registered-app final gate canary." in prompt
+    assert f"open_workspace for exactly {config.project_root} in checkout mode with auditNonce={layout.run_id}" in prompt
+    assert f"Use the exact same auditNonce={layout.run_id} on all three calls." in prompt
+    assert "With that same workspaceId, separately read exactly" in prompt
+    assert "both workspace tool path arguments must be the exact workspace-relative path" in prompt
+    mission_relative = config.mission_path.relative_to(config.project_root).as_posix()
+    assert f"read exactly {mission_relative}" in prompt
+    assert "read_chunk that same workspace-relative file from offsetBytes=0 through eof=true" in prompt
+    assert "echo the exact app name codex" in prompt
+    assert "exact mission-relative path mission.md" in prompt
+    assert "Do not call any other workspace connector" in prompt
+    assert "Do not retry any audit call" in prompt
+    assert "retry the same exact root once" not in prompt
+    assert f"run {layout.run_id}" in prompt
+    assert runner.STATE.state_payload(
+        config,
+        layout,
+        status="prepared",
+        resolved_version="0.18.0",
+    )["registered_app_final_gate"] is True
+    with pytest.raises(runner.STATE.OracleStateError) as invalid_nonce:
+        runner.STATE.composer_prompt(
+            config,
+            layout.run_dir / "mission.md",
+            run_id="too-short",
+            slug=layout.slug,
+        )
+    assert invalid_nonce.value.code == "REGISTERED_APP_FINAL_GATE_RUN_ID_REQUIRED"
+
+
+def test_registered_app_final_gate_rejects_pro_and_ordinary_prompts_remain_unchanged(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+
+    pro_root = tmp_path / "pro"
+    pro_root.mkdir()
+    with pytest.raises(runner.STATE.OracleStateError) as pro_error:
+        runner.STATE.load_manifest(pro_readonly_manifest(
+            pro_root,
+            registered_app_final_gate=True,
+        ))
+    assert pro_error.value.code == "REGISTERED_APP_FINAL_GATE_TRANSPORT_INVALID"
+
+    invalid_profile_root = tmp_path / "invalid-profile"
+    invalid_profile_root.mkdir()
+    with pytest.raises(runner.STATE.OracleStateError) as profile_error:
+        runner.STATE.load_manifest(manifest(
+            invalid_profile_root,
+            registered_app_final_gate=True,
+            model="gpt-5.6",
+            thinking_time="heavy",
+            task_outcome_contract="v1",
+        ))
+    assert profile_error.value.code == "REGISTERED_APP_FINAL_GATE_PROFILE_INVALID"
+
+    ordinary_root = tmp_path / "ordinary"
+    ordinary_root.mkdir()
+    ordinary = runner.STATE.load_manifest(manifest(ordinary_root, run_id="ordinary-run-001"))
+    ordinary_layout = runner.STATE.create_layout(ordinary, run_id=ordinary.requested_run_id)
+    ordinary_prompt = runner.STATE.composer_prompt(
+        ordinary,
+        ordinary_layout.run_dir / "mission.md",
+        run_id=ordinary_layout.run_id,
+        slug=ordinary_layout.slug,
+    )
+
+    assert ordinary.registered_app_final_gate is False
+    assert "auditNonce=" not in ordinary_prompt
+    assert "registered-app final gate canary" not in ordinary_prompt
+
+
+def test_registered_app_final_gate_requires_live_matching_source_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    source_thread_id = "00000000-0000-4000-8000-000000000123"
+    payload = dict(
+        app_name="codex",
+        registered_app_final_gate=True,
+        model="gpt-5.6",
+        thinking_time="extra-high",
+        task_outcome_contract="v1",
+        source_thread_id=source_thread_id,
+    )
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    with pytest.raises(runner.STATE.OracleStateError) as missing:
+        runner.STATE.load_manifest(manifest(tmp_path, **payload), bind_runtime_task=True)
+    assert missing.value.code == "REGISTERED_APP_FINAL_GATE_SOURCE_THREAD_REQUIRED"
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000999")
+    with pytest.raises(runner.STATE.OracleStateError) as mismatch:
+        runner.STATE.load_manifest(manifest(tmp_path, **payload), bind_runtime_task=True)
+    assert mismatch.value.code == "SOURCE_THREAD_ID_MISMATCH"
+
+
 def test_windows_launch_uses_no_window_and_waits(tmp_path: Path) -> None:
     runner = load_runner()
     captured, events = {}, []

@@ -279,6 +279,7 @@ APP_RE = re.compile(r"^[^\r\n]+$")
 MODEL_RE = re.compile(r"^[a-zA-Z0-9._ -]+$")
 PARENT_ID_RE = re.compile(r"^[a-f0-9]{32,64}$")
 RUN_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{7,95}$")
+AUDIT_NONCE_RE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
 SOURCE_THREAD_ID_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE)
 WEB_MULTI_CHILD_RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[a-f0-9]{12}$")
 CHATGPT_CONVERSATION_URL_RE = re.compile(r"https://chatgpt\.com/c/[A-Za-z0-9_-]+", re.IGNORECASE)
@@ -328,6 +329,7 @@ class OracleConfig:
     web_multi_child_provenance_path: Path | None
     web_multi_child_provenance_sha256: str | None
     source_thread_id: str | None
+    registered_app_final_gate: bool
 
 
 @dataclass(frozen=True)
@@ -511,6 +513,18 @@ def load_manifest(
             raise OracleStateError("PRO_ATTACHMENTS_DUPLICATE", "Pro attachment paths must be unique")
         if mission_path not in attachments:
             raise OracleStateError("PRO_MISSION_ATTACHMENT_REQUIRED", "mission_path must be one of the Pro attachments")
+    registered_app_final_gate = payload.get("registered_app_final_gate", False)
+    if not isinstance(registered_app_final_gate, bool):
+        raise OracleStateError(
+            "REGISTERED_APP_FINAL_GATE_INVALID",
+            "registered_app_final_gate must be a boolean",
+        )
+    if registered_app_final_gate and transport != "devspace":
+        raise OracleStateError(
+            "REGISTERED_APP_FINAL_GATE_TRANSPORT_INVALID",
+            "registered_app_final_gate requires the regular non-Pro devspace transport",
+            {"transport": transport},
+        )
     state_root = oracle_state_root()
     if is_within(project_root, state_root) or is_within(state_root, project_root):
         raise OracleStateError(
@@ -654,6 +668,18 @@ def load_manifest(
     requested_run_id = str(payload.get("run_id") or "").strip() or None
     if requested_run_id is not None and RUN_ID_RE.fullmatch(requested_run_id) is None:
         raise OracleStateError("RUN_ID_INVALID", "run_id must be a safe 8-96 character identifier")
+    if registered_app_final_gate:
+        if model.casefold() != "gpt-5.6" or thinking_time != "extra-high":
+            raise OracleStateError(
+                "REGISTERED_APP_FINAL_GATE_PROFILE_INVALID",
+                "registered_app_final_gate requires regular GPT-5.6 with extra-high reasoning",
+                {"model": model, "thinking_time": thinking_time},
+            )
+        if task_outcome_contract != "v1":
+            raise OracleStateError(
+                "REGISTERED_APP_FINAL_GATE_CONTRACT_INVALID",
+                "registered_app_final_gate requires task_outcome_contract=v1",
+            )
     provenance_raw = payload.get("web_multi_child_provenance_path")
     provenance_path = exact_regular_file(provenance_raw, label="web_multi_child_provenance_path") if provenance_raw else None
     provenance_sha256 = sha256_file(provenance_path) if provenance_path else None
@@ -663,6 +689,11 @@ def load_manifest(
         raise OracleStateError("SOURCE_THREAD_ID_INVALID", "source_thread_id must be one Codex task UUID")
     if environment_thread_id and SOURCE_THREAD_ID_RE.fullmatch(environment_thread_id) is None:
         raise OracleStateError("SOURCE_THREAD_ID_INVALID", "CODEX_THREAD_ID must be one Codex task UUID when set")
+    if registered_app_final_gate and (not explicit_thread_id or not environment_thread_id):
+        raise OracleStateError(
+            "REGISTERED_APP_FINAL_GATE_SOURCE_THREAD_REQUIRED",
+            "registered_app_final_gate requires the same explicit manifest source_thread_id and live CODEX_THREAD_ID",
+        )
     if (
         bind_runtime_task
         and explicit_thread_id
@@ -712,6 +743,7 @@ def load_manifest(
         provenance_path,
         provenance_sha256,
         source_thread_id,
+        registered_app_final_gate,
     )
 
 
@@ -802,6 +834,34 @@ def composer_prompt(
             + connector_identity_guard(config.app_name)
             + self_observation_guard(run_id, slug)
         )
+    if config.registered_app_final_gate:
+        if AUDIT_NONCE_RE.fullmatch(run_id) is None:
+            raise OracleStateError(
+                "REGISTERED_APP_FINAL_GATE_RUN_ID_REQUIRED",
+                "registered_app_final_gate requires the exact current run_id to satisfy the auditNonce grammar",
+                {"run_id": run_id},
+            )
+        mission_relative = config.mission_path.relative_to(config.project_root).as_posix()
+        return (
+            f"@{config.app_name} This is a read-only registered-app final gate canary. "
+            f"Your first workspace, process, or mutation call must be this exact {config.app_name} app's "
+            f"open_workspace for exactly {config.project_root} in checkout mode with auditNonce={run_id}. "
+            "Do not call any other workspace connector or any process or mutation tool. "
+            f"The host-bound mission identity is {config.mission_path}, but both workspace tool path arguments "
+            f"must be the exact workspace-relative path {mission_relative}. Preserve the returned workspaceId. "
+            f"With that same workspaceId, separately read exactly {mission_relative}, then read_chunk that same "
+            "workspace-relative file from offsetBytes=0 through eof=true. "
+            f"Use the exact same auditNonce={run_id} on all three calls. "
+            "Echo the three server-generated Audit receipt IDs exactly in the final answer. "
+            f"Also echo the exact app name {config.app_name} and exact mission-relative path "
+            f"{mission_relative} so the host can bind the returned evidence. "
+            "Do not retry any audit call: a retry after a receipt exists would make the three-step chain ambiguous. "
+            "Perform read-only work only; do not modify files, settings, accounts, or external state. "
+            "If any required audit call fails, report that concrete blocker and stop. "
+            "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
+            "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
+            + self_observation_guard(run_id, slug)
+        )
     # Keep the Windows npx.cmd prompt in one argument line. A literal newline
     # truncates the prompt after the app mention before Oracle receives it.
     return (
@@ -855,6 +915,7 @@ def state_payload(
     return {
         "schema": STATE_SCHEMA, "run_id": layout.run_id, "project_root": str(config.project_root),
         "mode": config.mode, "transport": config.transport, "app_name": config.app_name,
+        "registered_app_final_gate": config.registered_app_final_gate,
         "profile": {
             "model": config.model,
             "model_strategy": config.model_strategy,

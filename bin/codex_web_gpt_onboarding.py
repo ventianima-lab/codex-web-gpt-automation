@@ -80,10 +80,18 @@ FINAL_GATE_RECEIPT_KEYS = frozenset(
     }
 )
 FINAL_GATE_RECEIPT_TOOLS = ("open_workspace", "read", "read_chunk")
+FINAL_GATE_MAX_READ_CHUNK_BYTES = 24 * 1024
 FINAL_GATE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 FINAL_GATE_RECEIPT_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
+)
+FINAL_GATE_MANIFEST_SCHEMA = "codex.chatgpt.oracle-run/v1"
+FINAL_GATE_MANIFEST_RELATIVE = (
+    Path("state") / "codex-web-gpt-automation" / "onboarding" / "final-gate-manifests"
+)
+SOURCE_THREAD_ID_RE = re.compile(
+    r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE
 )
 COMPLETION_STATES_BY_LANGUAGE = {
     "ko": {
@@ -499,6 +507,22 @@ def _write_state(state: dict[str, Any], *, codex_home: Path | None = None) -> Pa
     return target
 
 
+def _write_json_atomic(target: Path, value: Mapping[str, Any]) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(dict(value), ensure_ascii=False, indent=2) + "\n"
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+    return target
+
+
 def load_state(*, codex_home: Path | None = None) -> dict[str, Any]:
     value = _load_json(state_path(codex_home=codex_home))
     if not value:
@@ -871,6 +895,7 @@ def _oracle_final_gate_binding(
     expected_root: str,
     expected_app_name: str,
     listing: Sequence[str],
+    require_current_task: bool = False,
 ) -> dict[str, Any]:
     try:
         directory = run_dir.expanduser().resolve(strict=True)
@@ -903,6 +928,17 @@ def _oracle_final_gate_binding(
     )
     if not terminal:
         raise OnboardingError("FINAL_GATE_REGULAR_NON_PRO_ORACLE_NOT_TERMINAL_EXECUTED")
+    registered_app_final_gate = run_state.get("registered_app_final_gate") is True
+    ownership = run_state.get("ownership") if isinstance(run_state.get("ownership"), dict) else {}
+    source_thread_id = str(ownership.get("source_thread_id") or "").strip()
+    if registered_app_final_gate and SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
+        raise OnboardingError("FINAL_GATE_SOURCE_TASK_BINDING_MISSING")
+    if registered_app_final_gate and require_current_task:
+        evaluated_from_thread = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+        if SOURCE_THREAD_ID_RE.fullmatch(evaluated_from_thread) is None:
+            raise OnboardingError("FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED")
+        if source_thread_id.casefold() != evaluated_from_thread.casefold():
+            raise OnboardingError("FINAL_GATE_FOREIGN_TASK_RUN")
     artifacts = run_state.get("artifacts") if isinstance(run_state.get("artifacts"), dict) else {}
     try:
         output_path = Path(str(artifacts.get("output") or "")).expanduser().resolve(strict=True)
@@ -976,6 +1012,14 @@ def _oracle_final_gate_binding(
         "read_file_path": str(mission_path),
         "read_file_sha256": mission_sha256,
         "cryptographic_read_verified": True,
+        **(
+            {
+                "registered_app_final_gate": True,
+                "source_thread_id": source_thread_id,
+            }
+            if registered_app_final_gate
+            else {}
+        ),
         "transport": "regular-non-pro-oracle",
     }
 
@@ -1346,6 +1390,7 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
         "08_final_gate": [
             "마지막으로 실제 프로젝트를 읽을 수 있는지 확인합니다.",
             (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
+            "프로젝트 안의 짧은 읽기 전용 canary 미션을 준비한 뒤 다음 명령으로 정확한 manifest와 dry-run/live 명령을 생성합니다: python onboard.py prepare-final-gate --root <루트> --mission-path <루트>\\missions\\onboarding-final-gate.md",
             f"새 일반 비-Pro Oracle 실행에서 @{state['app_name']} 로 exact root 를 열고 반환된 workspaceId를 보존합니다.",
             "Oracle run_id를 세 호출의 auditNonce로 쓰고 open_workspace를 그 대화의 첫 workspace/process/mutation 호출로 실행합니다. 같은 workspaceId로 미션 파일을 별도 read 호출한 뒤 같은 파일 전체를 offset 0의 read_chunk로 읽습니다.",
             "각 도구 결과가 돌려준 서버 생성 Audit receipt ID 3개를 최종 답변에 정확히 다시 적습니다. 이 challenge-response와 ~/.devspace/state/tool-read-receipts의 open_workspace → read → read_chunk 영수증을 함께 검증하며, 임의 ID/SHA 자기진술만으로는 통과하지 않습니다.",
@@ -1423,6 +1468,7 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
         "08_final_gate": [
             "Finally confirm the real project root is readable.",
             (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
+            "Prepare a short read-only canary mission inside the project, then generate the exact manifest and dry-run/live commands with: python onboard.py prepare-final-gate --root <root> --mission-path <root>\\missions\\onboarding-final-gate.md",
             f"In a fresh regular non-Pro Oracle run, open the exact root with @{state['app_name']} and preserve the returned workspaceId.",
             "Use the Oracle run_id as auditNonce for all three calls and make open_workspace the conversation's first workspace/process/mutation call. With that same workspaceId, separately read the mission and then read_chunk the complete same file from offset zero.",
             "Echo the three server-generated Audit receipt IDs returned by the tool calls exactly in the final answer. The gate verifies that challenge-response together with DevSpace's ~/.devspace/state/tool-read-receipts open_workspace → read → read_chunk chain; arbitrary output ID/SHA claims alone never pass.",
@@ -1659,6 +1705,7 @@ def record_final_gate(
             expected_root=root,
             expected_app_name=state["app_name"],
             listing=entries,
+            require_current_task=True,
         )
     state["stages"]["08_final_gate"]["evidence"] = {
         "read_ok": bool(read_ok),
@@ -1673,6 +1720,95 @@ def record_final_gate(
     _secret_free(state)
     _write_state(state, codex_home=codex_home)
     return state["stages"]["08_final_gate"]["evidence"]
+
+
+def prepare_final_gate(
+    *,
+    root: str,
+    mission_path: Path,
+    codex_home: Path | None = None,
+    python_executable: str = "python",
+) -> dict[str, Any]:
+    """Create the exact host-state manifest and commands for the registered-app final gate."""
+    state = load_state(codex_home=codex_home)
+    source_thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip().casefold()
+    if SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
+        raise OnboardingError("FINAL_GATE_CODEX_TASK_REQUIRED")
+    root_path = Path(root).expanduser().resolve(strict=True)
+    if os.path.normcase(str(root_path)) not in _root_identities(state["allowed_roots"]):
+        raise OnboardingError("FINAL_GATE_ROOT_NOT_IN_ALLOWED_ROOTS")
+    try:
+        mission = mission_path.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise OnboardingError("FINAL_GATE_MISSION_UNREADABLE") from exc
+    if not mission.is_file() or not _inside(root_path, mission):
+        raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_INSIDE_EXACT_ROOT")
+    try:
+        mission_bytes = mission.read_bytes()
+        mission_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_UTF8") from exc
+    if len(mission_bytes) > FINAL_GATE_MAX_READ_CHUNK_BYTES:
+        raise OnboardingError("FINAL_GATE_MISSION_EXCEEDS_SINGLE_READ_CHUNK")
+    mission_sha256 = hashlib.sha256(mission_bytes).hexdigest()
+    mission_relative = mission.relative_to(root_path).as_posix()
+    manifest_identity = "\0".join(
+        (source_thread_id, os.path.normcase(str(root_path)), mission_relative, mission_sha256)
+    )
+    manifest_identity_hash = hashlib.sha256(manifest_identity.encode("utf-8")).hexdigest()[:32]
+    target = (
+        _codex_home(codex_home)
+        / FINAL_GATE_MANIFEST_RELATIVE
+        / f"{manifest_identity_hash}.json"
+    )
+    manifest = {
+        "schema": FINAL_GATE_MANIFEST_SCHEMA,
+        "project_root": str(root_path),
+        "mission_path": str(mission),
+        "app_name": state["app_name"],
+        "mode": "browser",
+        "transport": "devspace",
+        "model": "gpt-5.6",
+        "model_strategy": "select",
+        "thinking_time": "extra-high",
+        "research": "off",
+        "task_outcome_contract": "v1",
+        "archive": "never",
+        "registered_app_final_gate": True,
+        "source_thread_id": source_thread_id,
+    }
+    _write_json_atomic(target, manifest)
+    runner = _codex_home(codex_home) / "bin" / "chatgpt_oracle_run.py"
+    base = [python_executable, str(runner), "run", "--manifest", str(target)]
+    return {
+        "ok": True,
+        "schema": "codex-web-gpt.onboarding-final-gate-plan/v1",
+        "root": str(root_path),
+        "mission_path": str(mission),
+        "mission_sha256": mission_sha256,
+        "app_name": state["app_name"],
+        "source_thread_id": source_thread_id,
+        "manifest_path": str(target),
+        "manifest_sha256": _sha256_file(target),
+        "dry_run_command": _quoted_command([*base, "--dry-run"]),
+        "run_command": _quoted_command(base),
+        "record_command_template": _quoted_command(
+            [
+                python_executable,
+                "onboard.py",
+                "record-final-gate",
+                "--run-dir",
+                "<EXACT_ORACLE_RUN_DIR>",
+                "--root",
+                str(root_path),
+                "--evidence",
+                "<VERIFIED_SUMMARY>",
+                "--listing",
+                mission_relative,
+            ]
+        ),
+        "submission_action": "none",
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1714,6 +1850,10 @@ def _parser() -> argparse.ArgumentParser:
     gate.add_argument("--devspace-home", type=Path)
     gate.add_argument("--listing", action="append", default=[], help="One observed directory entry; repeatable")
     gate.add_argument("--failed", action="store_true")
+    prepare = commands.add_parser("prepare-final-gate")
+    prepare.add_argument("--root", required=True)
+    prepare.add_argument("--mission-path", type=Path, required=True)
+    prepare.add_argument("--codex-home", type=Path)
     return parser
 
 
@@ -1803,6 +1943,12 @@ def main(argv: list[str] | None = None) -> int:
                 run_dir=args.run_dir,
                 devspace_home=args.devspace_home,
                 listing=args.listing,
+            )
+        elif args.command == "prepare-final-gate":
+            result = prepare_final_gate(
+                root=args.root,
+                mission_path=args.mission_path,
+                codex_home=args.codex_home,
             )
         else:
             path = configure_app_name(codex_home=args.codex_home, app_name=args.app_name)

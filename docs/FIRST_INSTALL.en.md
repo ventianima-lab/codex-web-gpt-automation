@@ -77,6 +77,19 @@ gate uses a fresh regular non-Pro `GPT-5.6` extra-high Oracle read of the exact
 project root through the registered app. It does not accept the built-in Codex
 Desktop connector, Pro, arbitrary prose, or an unbound directory listing.
 
+First place a short read-only canary mission inside the exact project root and
+generate the manifest plus dry-run/live commands from the current Codex task:
+
+```powershell
+python onboard.py prepare-final-gate `
+  --root <project-folder> `
+  --mission-path <project-folder>\missions\onboarding-final-gate.md
+```
+
+Run the emitted `dry_run_command` first and verify `submission_action=none`,
+then run the emitted `run_command` exactly once from the same Codex task. An
+ordinary terminal or a different Codex task fails closed on task ownership.
+
 ```powershell
 python onboard.py record-final-gate `
   --run-dir <Oracle-run-directory> `

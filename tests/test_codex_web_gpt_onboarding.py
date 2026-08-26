@@ -20,6 +20,18 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
+@pytest.fixture(autouse=True)
+def isolate_host_devspace_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests must never inherit the maintainer host's mutable allowedRoots."""
+    original = module._persisted_allowed_roots
+    host_default = (Path.home() / ".devspace").resolve()
+
+    def persisted(path: Path) -> tuple[str, ...]:
+        return () if path.expanduser().resolve() == host_default else original(path)
+
+    monkeypatch.setattr(module, "_persisted_allowed_roots", persisted)
+
+
 def test_plan_orders_the_complete_first_install_without_secrets(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -282,6 +294,9 @@ def _confirm_ready_manual_stages(
 def _bound_final_gate_run(
     environment: dict[str, object],
     listing: list[str],
+    *,
+    registered_app_final_gate: bool = False,
+    source_thread_id: str | None = None,
 ) -> Path:
     codex_home = Path(environment["codex_home"])
     project = Path(environment["project"])
@@ -320,6 +335,17 @@ def _bound_final_gate_run(
             "conversation_url": "https://chatgpt.com/c/onboarding-final-test",
         },
         "artifacts": {"output": str(output.resolve())},
+        **({"registered_app_final_gate": True} if registered_app_final_gate else {}),
+        **(
+            {
+                "ownership": {
+                    "schema": "codex.chatgpt.oracle-ownership/v1",
+                    "source_thread_id": source_thread_id,
+                }
+            }
+            if source_thread_id
+            else {}
+        ),
     }
     (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
     receipt_root = Path(environment["devspace_home"]) / "state" / "tool-read-receipts"
@@ -829,6 +855,7 @@ def test_final_gate_instructions_require_manual_registered_app_action_refresh_be
         registration_url="https://mcp.example.com/mcp",
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
     instructions = "\n".join(module.stage_instructions("08_final_gate", state, language))
 
@@ -838,6 +865,241 @@ def test_final_gate_instructions_require_manual_registered_app_action_refresh_be
     assert "read_chunk" in instructions
     assert "post-register" in instructions
     assert "open_workspace/read" in instructions
+    assert "prepare-final-gate" in instructions
+
+
+def test_prepare_final_gate_writes_exact_host_state_manifest_and_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        app_name="codex",
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    mission = Path(environment["project"]) / "missions" / "onboarding-final-gate.md"
+    mission.parent.mkdir(parents=True, exist_ok=True)
+    mission.write_text("Read this exact file without mutation.\n", encoding="utf-8")
+    source_thread_id = "00000000-0000-4000-8000-000000000123"
+    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
+
+    result = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=mission,
+        codex_home=environment["codex_home"],
+    )
+
+    manifest_path = Path(result["manifest_path"])
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest_path.is_relative_to(Path(environment["codex_home"]))
+    assert re.fullmatch(r"[0-9a-f]{32}\.json", manifest_path.name)
+    assert payload == {
+        "schema": "codex.chatgpt.oracle-run/v1",
+        "project_root": str(Path(environment["project"]).resolve()),
+        "mission_path": str(mission.resolve()),
+        "app_name": "codex",
+        "mode": "browser",
+        "transport": "devspace",
+        "model": "gpt-5.6",
+        "model_strategy": "select",
+        "thinking_time": "extra-high",
+        "research": "off",
+        "task_outcome_contract": "v1",
+        "archive": "never",
+        "registered_app_final_gate": True,
+        "source_thread_id": source_thread_id,
+    }
+    assert result["submission_action"] == "none"
+    assert result["dry_run_command"].endswith(" --dry-run")
+    assert "chatgpt_oracle_run.py run --manifest" in result["run_command"]
+    assert "missions/onboarding-final-gate.md" in result["record_command_template"]
+    first_manifest_bytes = manifest_path.read_bytes()
+
+    second_thread_id = "00000000-0000-4000-8000-000000000456"
+    monkeypatch.setenv("CODEX_THREAD_ID", second_thread_id)
+    second = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=mission,
+        codex_home=environment["codex_home"],
+    )
+    assert second["manifest_path"] != result["manifest_path"]
+    assert Path(result["manifest_path"]).read_bytes() == first_manifest_bytes
+
+    same_bytes_different_path = mission.with_name("same-bytes-different-path.md")
+    same_bytes_different_path.write_bytes(mission.read_bytes())
+    third = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=same_bytes_different_path,
+        codex_home=environment["codex_home"],
+    )
+    assert third["mission_sha256"] == result["mission_sha256"]
+    assert third["manifest_path"] != result["manifest_path"]
+
+    mission.write_bytes(b"z" * (24 * 1024))
+    exact_boundary = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=mission,
+        codex_home=environment["codex_home"],
+    )
+    assert exact_boundary["manifest_path"] != result["manifest_path"]
+    assert exact_boundary["mission_sha256"] != result["mission_sha256"]
+
+
+def test_prepare_final_gate_rejects_mission_outside_exact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    outside = tmp_path / "outside.md"
+    outside.write_text("not project-bound", encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000123")
+
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_MISSION_MUST_BE_INSIDE_EXACT_ROOT"):
+        module.prepare_final_gate(
+            root=str(environment["project"]),
+            mission_path=outside,
+            codex_home=environment["codex_home"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (b"x" * (24 * 1024 + 1), "FINAL_GATE_MISSION_EXCEEDS_SINGLE_READ_CHUNK"),
+        (b"\xff\xfe", "FINAL_GATE_MISSION_MUST_BE_UTF8"),
+    ],
+)
+def test_prepare_final_gate_rejects_unreadable_single_chunk_mission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    error: str,
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    mission = Path(environment["project"]) / "missions" / "onboarding-final-gate.md"
+    mission.parent.mkdir(parents=True, exist_ok=True)
+    mission.write_bytes(payload)
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000123")
+
+    with pytest.raises(module.OnboardingError, match=error):
+        module.prepare_final_gate(
+            root=str(environment["project"]),
+            mission_path=mission,
+            codex_home=environment["codex_home"],
+        )
+
+
+def test_prepare_final_gate_requires_current_codex_task_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    mission = Path(environment["project"]) / "missions" / "onboarding-final-gate.md"
+    mission.parent.mkdir(parents=True, exist_ok=True)
+    mission.write_text("read-only canary", encoding="utf-8")
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_CODEX_TASK_REQUIRED"):
+        module.prepare_final_gate(
+            root=str(environment["project"]),
+            mission_path=mission,
+            codex_home=environment["codex_home"],
+        )
+
+
+def test_registered_final_gate_record_requires_live_matching_codex_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        app_name="codex",
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    owner = "00000000-0000-4000-8000-000000000123"
+    run_dir = _bound_final_gate_run(
+        environment,
+        ["missions/onboarding-final-gate.md"],
+        registered_app_final_gate=True,
+        source_thread_id=owner,
+    )
+
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="The exact registered-app final gate was independently verified.",
+            listing=["missions/onboarding-final-gate.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000999")
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_FOREIGN_TASK_RUN"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="The exact registered-app final gate was independently verified.",
+            listing=["missions/onboarding-final-gate.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    recorded = module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="The exact registered-app final gate was independently verified.",
+        listing=["missions/onboarding-final-gate.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    assert recorded["source_thread_id"] == owner
+
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    resumed = module.load_state(codex_home=environment["codex_home"])
+    assert (
+        module._final_gate_receipt(
+            environment["codex_home"], environment["devspace_home"], resumed
+        )
+        == resumed["stages"]["08_final_gate"]["evidence"]
+    )
+    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000999")
+    assert (
+        module._final_gate_receipt(
+            environment["codex_home"], environment["devspace_home"], resumed
+        )
+        == resumed["stages"]["08_final_gate"]["evidence"]
+    )
 
 
 @pytest.mark.parametrize("provider", ["cloudflare", "ngrok", "custom"])
@@ -1396,6 +1658,35 @@ def test_final_gate_receipt_distinguishes_honest_and_tampered_evidence(tmp_path:
         environment["project"], listing_sample=[]
     )
     assert module._final_gate_receipt(environment["codex_home"], environment["devspace_home"], honest) is None
+
+
+def test_legacy_final_gate_record_revalidates_without_new_binding_keys(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    _confirm_ready_manual_stages(environment)
+    run_dir = _bound_final_gate_run(environment, ["README.md"])
+    recorded = module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="Legacy final gate remains valid after the opt-in extension.",
+        listing=["README.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+
+    assert "registered_app_final_gate" not in recorded
+    assert "source_thread_id" not in recorded
+    state = module.load_state(codex_home=environment["codex_home"])
+    assert module._final_gate_receipt(
+        environment["codex_home"], environment["devspace_home"], state
+    ) == recorded
 
 
 def test_final_gate_hash_binding_rejects_output_tamper_after_recording(tmp_path: Path) -> None:
