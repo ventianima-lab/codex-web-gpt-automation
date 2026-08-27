@@ -1,0 +1,54 @@
+diff --git a/dist/server.js b/dist/server.js
+index 4559b97..0c95162 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -1012,6 +1012,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             agents: z.array(workspaceLocalAgentOutputSchema).optional(),
+             skillDiagnostics: z.array(z.unknown()).optional(),
+             instruction: z.string(),
++            auditReceiptId: z.string().uuid().optional(),
+         },
+         ...toolWidgetDescriptorMeta(config, "workspace"),
+         annotations: { readOnlyHint: true },
+@@ -1152,6 +1153,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+                     }
+                     : {}),
+                 instruction,
++                ...(auditReceiptResult ? { auditReceiptId: auditReceiptResult.receiptId } : {}),
+             },
+         };
+     });
+@@ -1189,7 +1191,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+                 .describe("Maximum number of lines to read."),
+             auditNonce: z.string().regex(AUDIT_NONCE_PATTERN).optional().describe("Optional 16-128 character audit nonce for a local immutable tool-read receipt."),
+         },
+-        outputSchema: resultOutputSchema(),
++        outputSchema: resultOutputSchema({ auditReceiptId: z.string().uuid().optional() }),
+         ...toolWidgetDescriptorMeta(config, "read"),
+         annotations: { readOnlyHint: true },
+     }, async ({ workspaceId, auditNonce, ...input }, { _meta }) => {
+@@ -1238,6 +1240,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             },
+             structuredContent: {
+                 result: contentText(response.content),
++                ...(auditReceiptResult ? { auditReceiptId: auditReceiptResult.receiptId } : {}),
+             },
+         };
+     });
+@@ -1259,6 +1262,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             totalBytes: z.number().int().nonnegative(),
+             eof: z.boolean(),
+             sha256: z.string().regex(/^[0-9a-f]{64}$/),
++            auditReceiptId: z.string().uuid().optional(),
+         },
+         ...toolWidgetDescriptorMeta(config, "read"),
+         annotations: { readOnlyHint: true },
+@@ -1273,7 +1277,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+             const auditReceiptResult = await writeToolReadReceipt({ auditNonce, auditStep: auditReceipt.auditStep, tool: toolNames.readChunk, workspaceId, canonicalRoot: await realpath(workspace.root), requestedRelativePath: requestedReceiptPath(path), readChunkSha256: result.eof ? result.sha256 : null, readChunkOffsetBytes: result.offsetBytes, readChunkBytesReturned: result.bytesReturned, readChunkTotalBytes: result.totalBytes, readChunkEof: result.eof, conversationScopeId: auditReceipt.conversationScopeId });
+             logToolCall(config, { tool: toolNames.readChunk, workspaceId, path, success: true, durationMs: Math.round(performance.now() - startedAt) });
+             return {
+-                content: [textBlock(result.content), ...(auditReceiptResult ? [textBlock(`Audit receipt ID: ${auditReceiptResult.receiptId}`)] : [])], structuredContent: result,
++                content: [textBlock(result.content), ...(auditReceiptResult ? [textBlock(`Audit receipt ID: ${auditReceiptResult.receiptId}`)] : [])], structuredContent: { ...result, ...(auditReceiptResult ? { auditReceiptId: auditReceiptResult.receiptId } : {}) },
+                 _meta: { tool: toolNames.readChunk, card: { workspaceId, path, summary: { offsetBytes: result.offsetBytes, bytesReturned: result.bytesReturned, totalBytes: result.totalBytes, eof: result.eof, sha256: result.sha256 } } },
+             };
+         }

@@ -397,6 +397,9 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
         assert compat.sha256_file(target) == contract["patched"]
         syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
         assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
+    chrome_lifecycle = package / "dist/src/browser/chromeLifecycle.js"
+    chrome_lifecycle_text = chrome_lifecycle.read_text(encoding="utf-8")
+    assert chrome_lifecycle_text.count('"--disable-session-crashed-bubble"') == 1
 
 
 def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_path: Path) -> None:
@@ -420,7 +423,7 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
 
     result = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
     touched = set(result["changed"]) | set(result["already_patched"])
-    assert set(compat.PATCHES) <= touched
+    assert set(compat.LKG_PATCHES) <= touched
     node = shutil.which("node")
     assert node is not None, "Node.js is required to validate the patched Oracle source"
     followup = package / "dist/src/cli/followup.js"

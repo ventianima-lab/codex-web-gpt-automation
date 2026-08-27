@@ -10,6 +10,8 @@ import argparse
 import datetime as dt
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -92,22 +94,54 @@ def browser_profile_loopback_allowed(profile_dir: Path) -> bool:
     split preference has been created; this avoids treating a partially migrated
     profile as ready.
     """
+    return browser_profile_network_status(profile_dir)["loopback_network"] is True
+
+
+def browser_profile_network_status(profile_dir: Path) -> dict[str, Any]:
+    preferences_path = profile_dir.expanduser().resolve() / "Default" / "Preferences"
     try:
-        preferences = json.loads((profile_dir / "Default" / "Preferences").read_text(encoding="utf-8"))
+        preferences = json.loads(preferences_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
-    if not isinstance(preferences, dict):
-        return False
-    exceptions = preferences.get("profile", {}).get("content_settings", {}).get("exceptions", {})
+        return {
+            "profile_dir": str(profile_dir.expanduser().resolve()),
+            "preferences_path": str(preferences_path),
+            "initialized": False,
+            "local_network": False,
+            "loopback_network": False,
+            "exit_type": None,
+            "exited_cleanly": False,
+            "crash_restore_ready": False,
+        }
+    profile_value = preferences.get("profile", {}) if isinstance(preferences, dict) else {}
+    if not isinstance(profile_value, dict):
+        profile_value = {}
+    exceptions = (
+        preferences.get("profile", {}).get("content_settings", {}).get("exceptions", {})
+        if isinstance(preferences, dict)
+        else {}
+    )
     if not isinstance(exceptions, dict):
-        return False
+        exceptions = {}
     split_present = any(key in exceptions for key in _PROFILE_SPLIT_KEYS)
+    legacy_setting = _profile_setting(exceptions.get(_PROFILE_LEGACY_KEY))
+    local_setting = _profile_setting(exceptions.get("local_network"))
     loopback_setting = _profile_setting(exceptions.get("loopback_network"))
-    if loopback_setting is not None:
-        return loopback_setting == 1
-    if split_present:
-        return False
-    return _profile_setting(exceptions.get(_PROFILE_LEGACY_KEY)) == 1
+    if not split_present:
+        local_setting = local_setting if local_setting is not None else legacy_setting
+        loopback_setting = loopback_setting if loopback_setting is not None else legacy_setting
+    return {
+        "profile_dir": str(profile_dir.expanduser().resolve()),
+        "preferences_path": str(preferences_path),
+        "initialized": True,
+        "local_network": local_setting == 1,
+        "loopback_network": loopback_setting == 1,
+        "exit_type": profile_value.get("exit_type"),
+        "exited_cleanly": profile_value.get("exited_cleanly") is True,
+        "crash_restore_ready": (
+            profile_value.get("exit_type") == "Normal"
+            and profile_value.get("exited_cleanly") is True
+        ),
+    }
 
 
 def next_policy_value_name(values: Mapping[str, object]) -> str:
@@ -192,6 +226,182 @@ def _write_json_atomic(path: Path, value: object) -> None:
             os.unlink(temporary)
 
 
+def _write_profile_json_atomic(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _chrome_timestamp() -> str:
+    chrome_epoch = dt.datetime(1601, 1, 1, tzinfo=dt.timezone.utc)
+    return str(int((dt.datetime.now(dt.timezone.utc) - chrome_epoch).total_seconds() * 1_000_000))
+
+
+def _profile_in_use(profile_dir: Path) -> bool:
+    if sys.platform != "win32":
+        return False
+    env = os.environ.copy()
+    env["CODEX_ORACLE_PROFILE_TARGET"] = str(profile_dir.expanduser().resolve())
+    script = (
+        "$target=[Environment]::GetEnvironmentVariable('CODEX_ORACLE_PROFILE_TARGET');"
+        "$count=@(Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" -ErrorAction Stop | "
+        "Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($target, "
+        "[StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count; Write-Output $count"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            env=env,
+            creationflags=0x08000000,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("ORACLE_CHROME_PROFILE_PROCESS_CHECK_FAILED") from exc
+    if completed.returncode != 0 or not completed.stdout.strip().isdigit():
+        raise RuntimeError("ORACLE_CHROME_PROFILE_PROCESS_CHECK_FAILED")
+    return int(completed.stdout.strip()) > 0
+
+
+def enable_profile_permission(
+    *,
+    profile_dir: Path,
+    codex_home: Path | None = None,
+) -> dict[str, Any]:
+    profile = profile_dir.expanduser().resolve()
+    preferences_path = profile / "Default" / "Preferences"
+    if _profile_in_use(profile):
+        raise RuntimeError("ORACLE_CHROME_PROFILE_IN_USE")
+    try:
+        preferences = json.loads(preferences_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("ORACLE_CHROME_PROFILE_PREFERENCES_UNREADABLE") from exc
+    if not isinstance(preferences, dict):
+        raise RuntimeError("ORACLE_CHROME_PROFILE_PREFERENCES_INVALID")
+    root = (codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))).resolve()
+    before_sha256 = _sha256(preferences_path)
+    before_status = browser_profile_network_status(profile)
+    changed = not (
+        before_status["local_network"]
+        and before_status["loopback_network"]
+        and before_status["crash_restore_ready"]
+    )
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S%f")
+    backup_path: Path | None = None
+    if changed:
+        backup_path = root / "backups" / "chrome-local-network" / stamp / "Preferences"
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(preferences_path, backup_path)
+        profile_value = preferences.setdefault("profile", {})
+        if not isinstance(profile_value, dict):
+            raise RuntimeError("ORACLE_CHROME_PROFILE_SECTION_INVALID")
+        # This seed is copied into isolated Oracle Chrome profiles. Mark only
+        # the seed as clean; never change the user's ordinary Chrome profile.
+        profile_value["exit_type"] = "Normal"
+        profile_value["exited_cleanly"] = True
+        content_settings = profile_value.setdefault("content_settings", {})
+        if not isinstance(content_settings, dict):
+            raise RuntimeError("ORACLE_CHROME_CONTENT_SETTINGS_INVALID")
+        exceptions = content_settings.setdefault("exceptions", {})
+        if not isinstance(exceptions, dict):
+            raise RuntimeError("ORACLE_CHROME_CONTENT_EXCEPTIONS_INVALID")
+        modified = _chrome_timestamp()
+        pattern = "https://chatgpt.com:443,*"
+        for permission in _PROFILE_SPLIT_KEYS:
+            entries = exceptions.setdefault(permission, {})
+            if not isinstance(entries, dict):
+                raise RuntimeError("ORACLE_CHROME_NETWORK_PERMISSION_INVALID")
+            existing = entries.get(pattern)
+            entry = dict(existing) if isinstance(existing, dict) else {}
+            entry.update({"last_modified": modified, "setting": 1})
+            entries[pattern] = entry
+        _write_profile_json_atomic(preferences_path, preferences)
+    after_status = browser_profile_network_status(profile)
+    if not (
+        after_status["local_network"]
+        and after_status["loopback_network"]
+        and after_status["crash_restore_ready"]
+    ):
+        raise RuntimeError("ORACLE_CHROME_LOCAL_NETWORK_PERMISSION_NOT_DURABLE")
+    receipt = root / "receipts" / f"chatgpt-local-network-profile-{stamp}.json"
+    payload = {
+        "schema": "codex-web-gpt.chrome-local-network-profile-receipt/v2",
+        "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "origin": CHATGPT_ORIGIN,
+        "profile_dir": str(profile),
+        "preferences_path": str(preferences_path),
+        "changed": changed,
+        "backup_path": str(backup_path) if backup_path else None,
+        "before_sha256": before_sha256,
+        "after_sha256": _sha256(preferences_path),
+        "local_network": True,
+        "loopback_network": True,
+        "exit_type": "Normal",
+        "exited_cleanly": True,
+        "crash_restore_ready": True,
+    }
+    _write_json_atomic(receipt, payload)
+    return {**after_status, "enabled": True, "mode": "oracle-seed-profile", "changed": changed, "receipt": str(receipt)}
+
+
+def durable_status(*, profile_dir: Path) -> dict[str, Any]:
+    policy = policy_status()
+    profile = browser_profile_network_status(profile_dir)
+    profile_enabled = bool(profile["local_network"] and profile["loopback_network"])
+    policy_blocked = policy.get("effective_policy") == "blocked"
+    return {
+        **policy,
+        "enabled": False if policy_blocked else bool(policy.get("enabled")) or profile_enabled,
+        "mode": (
+            "blocked-by-chrome-policy"
+            if policy_blocked
+            else "chrome-policy"
+            if policy.get("enabled")
+            else "oracle-seed-profile"
+            if profile_enabled
+            else "unset"
+        ),
+        "oracle_profile": profile,
+    }
+
+
+def enable_durable_permission(*, profile_dir: Path, codex_home: Path | None = None) -> dict[str, Any]:
+    try:
+        policy = enable_policy(codex_home=codex_home)
+    except PermissionError:
+        policy = policy_status()
+        if policy.get("effective_policy") == "blocked":
+            raise RuntimeError("CHATGPT_LOCAL_NETWORK_POLICY_BLOCKED")
+        return enable_profile_permission(profile_dir=profile_dir, codex_home=codex_home)
+    if policy.get("enabled"):
+        profile = enable_profile_permission(profile_dir=profile_dir, codex_home=codex_home)
+        return {
+            **durable_status(profile_dir=profile_dir),
+            "changed": bool(policy.get("changed")) or bool(profile.get("changed")),
+            "receipt": profile.get("receipt"),
+            "policy_receipt": policy.get("receipt"),
+        }
+    if policy.get("effective_policy") == "blocked":
+        raise RuntimeError("CHATGPT_LOCAL_NETWORK_POLICY_BLOCKED")
+    return enable_profile_permission(profile_dir=profile_dir, codex_home=codex_home)
+
+
 def enable_policy(*, codex_home: Path | None = None) -> dict[str, Any]:
     if sys.platform != "win32":
         raise RuntimeError("WINDOWS_CHROME_POLICY_ONLY")
@@ -233,13 +443,18 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage exact chatgpt.com Chrome Local Network Access")
     parser.add_argument("command", choices=("status", "enable"))
     parser.add_argument("--codex-home", type=Path)
+    parser.add_argument("--profile-dir", type=Path, default=Path.home() / ".oracle" / "browser-profile")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        result = policy_status() if args.command == "status" else enable_policy(codex_home=args.codex_home)
+        result = (
+            durable_status(profile_dir=args.profile_dir)
+            if args.command == "status"
+            else enable_durable_permission(profile_dir=args.profile_dir, codex_home=args.codex_home)
+        )
     except PermissionError:
         print(
             json.dumps(
@@ -247,8 +462,7 @@ def main(argv: list[str] | None = None) -> int:
                     "ok": False,
                     "error": "CHROME_POLICY_WRITE_DENIED",
                     "next_action": (
-                        "Grant Local network once in the dedicated Oracle browser profile, "
-                        "then fully exit Chrome."
+                        "Close the dedicated Oracle browser profile and rerun this command."
                     ),
                 },
                 ensure_ascii=False,

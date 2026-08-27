@@ -722,10 +722,11 @@ def test_108_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     assert compat.PATCHES["dist/server.js"] == {
         "patch": "workspace-write-and-read-bridge.patch",
         "pristine": "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263",
-        "patched": "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985",
+        "patched": "d35a4cd7b5678b4fa16c05ba8ca1d8cc0937d9f4c2bdd48e454a46ffa28da598",
         "upgrades": {
             "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": "tool-read-receipts.patch",
             "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c": "widget-domain.patch",
+            "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985": "receipt-structured-output.patch",
         },
     }
     assert 'delete: "delete_file"' in patch
@@ -885,6 +886,49 @@ def test_108_artifact_write_is_bound_to_audit_readonly_scope() -> None:
     assert "beforeMutation(input, _meta);" in artifact_patch
     assert 'assertAuditReadonly(_meta, "download_artifact")' in server_patch
     assert server_patch.index('assertAuditReadonly(_meta, "download_artifact")') < server_patch.index("return server;")
+
+
+def test_108_audit_receipt_ids_are_exposed_in_structured_tool_outputs() -> None:
+    compat = load_compat()
+    patch = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "receipt-structured-output.patch"
+    ).read_text(encoding="utf-8")
+
+    assert patch.count("auditReceiptId: z.string().uuid().optional()") == 3
+    assert patch.count("auditReceiptId: auditReceiptResult.receiptId") == 3
+    assert 'structuredContent: { ...result, ...(auditReceiptResult ? { auditReceiptId:' in patch
+    assert compat.PATCHES["dist/server.js"]["upgrades"][
+        "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985"
+    ] == "receipt-structured-output.patch"
+
+
+def test_108_structured_receipt_upgrade_is_hash_gated(tmp_path: Path) -> None:
+    compat = load_compat()
+    try:
+        source_root = compat.resolve_package_roots()[0]
+    except compat.DevSpaceCompatError as exc:
+        pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
+    source = source_root / "dist" / "server.js"
+    prior_hash = "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985"
+    if compat.sha256_file(source) != prior_hash:
+        pytest.skip("installed DevSpace server is not the prior structured-receipt payload")
+    package = tmp_path / "devspace"
+    (package / "dist").mkdir(parents=True)
+    shutil.copy2(source, package / "dist" / "server.js")
+    compat._apply_patch(
+        package,
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "receipt-structured-output.patch",
+    )
+    server = (package / "dist" / "server.js").read_text(encoding="utf-8")
+    assert compat.sha256_file(package / "dist" / "server.js") == compat.PATCHES["dist/server.js"]["patched"]
+    assert server.count("auditReceiptId: z.string().uuid().optional()") == 3
+    assert server.count("auditReceiptId: auditReceiptResult.receiptId") == 3
 
 
 def test_108_tool_read_receipt_upgrade_is_immutable_and_records_only_successes(

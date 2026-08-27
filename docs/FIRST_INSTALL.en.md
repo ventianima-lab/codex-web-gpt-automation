@@ -53,6 +53,17 @@ python onboard.py consent 06b_local_network_access
 The change is scoped to `https://chatgpt.com`; unrelated Chrome policy entries
 and the everyday Chrome profile remain untouched.
 
+If Windows policy ACLs deny the write, the helper does not elevate or reset
+Chrome. It preserves logins, cookies, and unrelated site permissions while
+atomically adding only the exact `https://chatgpt.com` origin to the closed
+Oracle seed profile's `local_network` and `loopback_network` settings. A backup
+and SHA-bound receipt make the grant durable across disposable run profiles and
+future upgrades without app re-registration. The same Oracle-only update marks
+the seed profile as cleanly exited, while the hash-gated Oracle launcher adds
+Chrome's crash-bubble suppression flag. This removes repeated Restore pages
+prompts without changing the everyday Chrome profile, its open tabs, or its
+session-restore behavior.
+
 Register the app as `codex` with the exact stable `/mcp` URL. Depending on the
 account UI, check either Settings > Apps > Advanced settings > Developer mode,
 or Settings > Plugins > Developer mode. A missing Create button is first a UI,

@@ -1395,7 +1395,7 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
                     "동의가 기록되었습니다. chatgpt.com 의 Local network 권한만 영속 등록합니다.",
                     "python bin/chatgpt_chrome_local_network.py enable",
                     "python bin/chatgpt_chrome_local_network.py status",
-                    "Windows 정책 쓰기가 거부되면 전용 Oracle 프로필에서 직접 한 번 허용합니다.",
+                    "Windows 정책 쓰기가 거부되면 helper가 닫힌 전용 Oracle seed 프로필에 정확한 chatgpt.com local/loopback 권한만 백업·영수증과 함께 저장합니다.",
                 ]
             ),
         ],
@@ -1473,7 +1473,7 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
                     "Consent is recorded. Persist the Local Network grant for chatgpt.com only.",
                     "python bin/chatgpt_chrome_local_network.py enable",
                     "python bin/chatgpt_chrome_local_network.py status",
-                    "If the Windows policy write is denied, grant it once in the dedicated Oracle profile.",
+                    "If the Windows policy write is denied, the helper backs up the closed Oracle seed profile and persists only the exact chatgpt.com local/loopback permissions with a receipt.",
                 ]
             ),
         ],
