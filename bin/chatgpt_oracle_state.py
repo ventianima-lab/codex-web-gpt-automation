@@ -3509,17 +3509,17 @@ def _standalone_pro_no_submission_evidence(
     }
 
 
-def bounded_task_owned_prompt_timeout_harvest_evidence(
+def _bounded_task_owned_prompt_timeout_evidence(
     state_path: Path,
+    *,
+    allow_recovery_evidence: bool,
 ) -> dict[str, Any] | None:
-    """Authorize one prompt-free harvest when browser binding never completed.
+    """Validate the exact zero-turn timeout tuple before/after its one harvest.
 
-    A task-bound run normally needs the immutable browser identity receipt before
-    any recovery.  Oracle can fail while committing the prompt, however, before
-    a conversation URL exists and therefore before that receipt can be sealed.
-    This predicate breaks only that evidence deadlock: it validates the exact
-    task/run ownership receipt and Oracle's completed, zero-turn commit probe.
-    It never settles ownership and is used only to permit ``session --harvest``.
+    Before recovery this admits only zero recovery records; after the exact
+    harvest it admits the same direct evidence so the pre-harvest proof can be
+    persisted and revalidated for settlement. Callers choose the phase rather
+    than weakening the public harvest predicate.
     """
     followup = _followup_no_submission_evidence(state_path, require_recovery_evidence=False)
     if (
@@ -3527,31 +3527,55 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         and followup.get("failure_kind") != "archived-parent-unarchive-menu-absent"
     ):
         return followup
-    direct_model_option = _direct_devspace_no_submission_evidence(
+    direct_evidence = _direct_devspace_no_submission_evidence(
         state_path,
         require_persisted_recovery=False,
         require_recovery_evidence=False,
     )
     if (
-        direct_model_option is not None
-        and direct_model_option.get("pre_submit_marker")
+        direct_evidence is not None
+        and direct_evidence.get("pre_submit_marker")
         == "oracle-model-option-missing/v1"
-        and direct_model_option.get("recovery_evidence") == []
+        and direct_evidence.get("recovery_evidence") == []
     ):
         return {
-            **direct_model_option,
+            **direct_evidence,
             "schema": "codex.chatgpt.oracle-bounded-model-option-harvest/v1",
             "_bounded_harvest_kind": "direct-devspace-model-option-missing",
         }
-    evidence = _standalone_pro_no_submission_evidence(
-        state_path,
-        require_recovery_evidence=False,
+    # The ordinary DevSpace predicate already verifies the exact state/log/mission
+    # tuple. It needs recovery evidence for settlement, but the separate zero-turn
+    # Oracle ledger proof below permits one exact harvest to create that evidence.
+    direct_recovery_evidence = (
+        direct_evidence.get("recovery_evidence") if direct_evidence is not None else None
     )
     if (
-        evidence is None
-        or evidence.get("_pre_submit_failure_kind") != "prompt-not-observed"
-        or evidence.get("recovery_evidence") != []
+        direct_evidence is not None
+        and isinstance(direct_recovery_evidence, list)
+        and (allow_recovery_evidence or direct_recovery_evidence == [])
     ):
+        evidence = direct_evidence
+    else:
+        evidence = _standalone_pro_no_submission_evidence(
+            state_path,
+            require_recovery_evidence=False,
+        )
+    if (
+        evidence is None
+        or (
+            evidence.get("recovery_evidence") != []
+            and not (
+                allow_recovery_evidence
+                and evidence.get("settlement_eligibility") == "oracle-direct-devspace/v1"
+                and bool(evidence.get("recovery_evidence"))
+            )
+        )
+    ):
+        return None
+    if evidence.get("settlement_eligibility") == "oracle-standalone-qualified-pro/v1":
+        if evidence.get("_pre_submit_failure_kind") != "prompt-not-observed":
+            return None
+    elif evidence.get("settlement_eligibility") != "oracle-direct-devspace/v1":
         return None
     state = load_state(state_path)
     run_dir = state_path.parent.resolve()
@@ -3601,6 +3625,11 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
     )
     profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    model_id = str(profile.get("model") or "")
+    expected_model_label = {
+        "gpt-5.6": "GPT-5.6 Sol",
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+    }.get(model_id)
     artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
     try:
         chrome_pid = int(runtime.get("chromePid"))
@@ -3629,9 +3658,10 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         "inConversation",
     )
     if (
-        meta.get("id") != locator
+        expected_model_label is None
+        or meta.get("id") != locator
         or meta.get("status") != "error"
-        or meta.get("model") != "gpt-5.6-sol"
+        or meta.get("model") != model_id
         or meta.get("mode") != "browser"
         or not str(meta.get("completedAt") or "").strip()
         or meta_cwd != Path(str(state.get("project_root") or "")).resolve()
@@ -3651,14 +3681,14 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         or not str(profile.get("copy_profile") or "").strip()
         or config_profile != state_profile
         or option_profile != state_profile
-        or config.get("desiredModel") != "GPT-5.6 Sol"
-        or config.get("modelStrategy") != "select"
-        or config.get("thinkingTime") != "heavy"
-        or options.get("model") != "gpt-5.6-sol"
+        or config.get("desiredModel") != expected_model_label
+        or config.get("modelStrategy") != profile.get("model_strategy")
+        or config.get("thinkingTime") != profile.get("thinking_time")
+        or options.get("model") != model_id
         or options.get("slug") != locator
-        or option_browser.get("desiredModel") != "GPT-5.6 Sol"
-        or option_browser.get("modelStrategy") != "select"
-        or option_browser.get("thinkingTime") != "heavy"
+        or option_browser.get("desiredModel") != expected_model_label
+        or option_browser.get("modelStrategy") != profile.get("model_strategy")
+        or option_browser.get("thinkingTime") != profile.get("thinking_time")
         or runtime.get("promptSubmitted") is not True
         or runtime.get("tabUrl") != "https://chatgpt.com/"
         or runtime.get("conversationId") not in {None, ""}
@@ -3677,7 +3707,17 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
     ):
         return None
     return {
-        "schema": "codex.chatgpt.oracle-bounded-prompt-timeout-harvest/v1",
+        # Retain the ordinary direct-DevSpace settlement fields so the bridge
+        # remains a refinement of that exact predicate, not a parallel weaker
+        # eligibility class.  Its schema is deliberately not named ``schema``:
+        # this evidence is embedded in a user-settlement artifact with its own
+        # outer schema.
+        **{
+            key: value
+            for key, value in evidence.items()
+            if not key.startswith("_") and key != "schema"
+        },
+        "evidence_schema": "codex.chatgpt.oracle-bounded-prompt-timeout-harvest/v1",
         "source_thread_id": source_thread_id,
         "run_id": state.get("run_id"),
         "slug": locator,
@@ -3688,11 +3728,59 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         "expected_cdp_port": cdp_port,
         "browser_profile": str(runtime_profile),
         "browser_target_id": str(runtime.get("chromeTargetId")),
+        "transport": str(state.get("transport") or ""),
+        "profile": {
+            key: profile.get(key)
+            for key in ("model", "model_strategy", "thinking_time", "research")
+        },
+        "profile_sha256": hashlib.sha256(
+            json.dumps(
+                {
+                    key: profile.get(key)
+                    for key in ("model", "model_strategy", "thinking_time", "research")
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "browser_config": {
+            "desired_model": expected_model_label,
+            "model_strategy": profile.get("model_strategy"),
+            "thinking_time": profile.get("thinking_time"),
+        },
+        "browser_config_sha256": hashlib.sha256(
+            json.dumps(
+                {
+                    "desired_model": expected_model_label,
+                    "model_strategy": profile.get("model_strategy"),
+                    "thinking_time": profile.get("thinking_time"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "recovery_evidence": evidence.get("recovery_evidence"),
         "prompt_submitted_claim": True,
         "commit_probe_turns": 0,
         "conversation_url_absent": True,
         "output_absent": True,
     }
+
+
+def bounded_task_owned_prompt_timeout_harvest_evidence(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Authorize one prompt-free harvest when browser binding never completed.
+
+    A task-bound run normally needs the immutable browser identity receipt before
+    any recovery. Oracle can fail while committing the prompt, however, before
+    a conversation URL exists and therefore before that receipt can be sealed.
+    This predicate never persists, settles, or permits live recovery.
+    """
+    return _bounded_task_owned_prompt_timeout_evidence(
+        state_path,
+        allow_recovery_evidence=False,
+    )
 
 
 def followup_archived_parent_settle_without_harvest_evidence(
@@ -4561,6 +4649,16 @@ def _direct_devspace_no_submission_evidence(
 
 def persist_direct_devspace_prompt_not_observed_recovery(state_path: Path) -> dict[str, Any] | None:
     """Persist a hash-bound exact recovery receipt without releasing ownership."""
+    bounded = persist_bounded_task_owned_prompt_timeout_harvest(state_path)
+    if bounded is not None:
+        return bounded
+    # Once the exact zero-turn bridge has been recorded, settlement must
+    # continue to prove that stronger receipt.  In particular, do not let a
+    # subsequently malformed/tampered bridge silently fall back to the older
+    # generic direct-DevSpace recovery proof.
+    payload = load_state(state_path)
+    if payload.get("bounded_prompt_timeout_harvest") is not None:
+        return None
     evidence = _direct_devspace_no_submission_evidence(
         state_path, require_persisted_recovery=False
     )
@@ -4568,7 +4666,6 @@ def persist_direct_devspace_prompt_not_observed_recovery(state_path: Path) -> di
         return None
     if _direct_devspace_no_submission_evidence(state_path, require_persisted_recovery=True) is not None:
         return evidence
-    payload = load_state(state_path)
     if payload.get("prompt_not_observed_recovery") is not None:
         return None
     receipt_path = state_path.parent / "prompt-not-observed-recovery.json"
@@ -4591,6 +4688,87 @@ def persist_direct_devspace_prompt_not_observed_recovery(state_path: Path) -> di
     )
 
 
+def proven_bounded_task_owned_prompt_timeout_harvest(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Revalidate the append-only zero-turn proof recorded by exact harvest."""
+    evidence = _bounded_task_owned_prompt_timeout_evidence(
+        state_path,
+        allow_recovery_evidence=True,
+    )
+    if evidence is None or evidence.get("transport") != "devspace":
+        return None
+    state = load_state(state_path)
+    run_dir = state_path.parent
+    reference = state.get("bounded_prompt_timeout_harvest")
+    receipt_path = run_dir / "bounded-prompt-timeout-harvest.json"
+    if (
+        not isinstance(reference, dict)
+        or reference.get("schema")
+        != "codex.chatgpt.oracle-bounded-prompt-timeout-harvest-reference/v1"
+        or Path(str(reference.get("path") or "")).resolve() != receipt_path.resolve()
+        or receipt_path.is_symlink()
+    ):
+        return None
+    try:
+        raw = receipt_path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != str(reference.get("sha256") or ""):
+            return None
+        recorded = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    expected = {
+        "schema": "codex.chatgpt.oracle-bounded-prompt-timeout-harvest/v1",
+        "code": "ORACLE_ZERO_TURN_PROMPT_TIMEOUT_HARVEST",
+        **{key: value for key, value in evidence.items() if not key.startswith("_")},
+    }
+    if recorded != expected:
+        return None
+    return {
+        **evidence,
+        "bounded_prompt_timeout_harvest": {
+            "schema": reference["schema"],
+            "path": str(receipt_path),
+            "sha256": str(reference["sha256"]),
+        },
+    }
+
+
+def persist_bounded_task_owned_prompt_timeout_harvest(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Seal the pre-harvest zero-turn proof after its exact harvest completes."""
+    evidence = _bounded_task_owned_prompt_timeout_evidence(
+        state_path,
+        allow_recovery_evidence=True,
+    )
+    if evidence is None or evidence.get("transport") != "devspace":
+        return None
+    if not evidence.get("recovery_evidence"):
+        return None
+    if proven_bounded_task_owned_prompt_timeout_harvest(state_path) is not None:
+        return proven_bounded_task_owned_prompt_timeout_harvest(state_path)
+    payload = load_state(state_path)
+    if payload.get("bounded_prompt_timeout_harvest") is not None:
+        return None
+    receipt_path = state_path.parent / "bounded-prompt-timeout-harvest.json"
+    if receipt_path.exists() or receipt_path.is_symlink():
+        return None
+    recorded = {
+        "schema": "codex.chatgpt.oracle-bounded-prompt-timeout-harvest/v1",
+        "code": "ORACLE_ZERO_TURN_PROMPT_TIMEOUT_HARVEST",
+        **{key: value for key, value in evidence.items() if not key.startswith("_")},
+    }
+    write_json_atomic(receipt_path, recorded)
+    payload["bounded_prompt_timeout_harvest"] = {
+        "schema": "codex.chatgpt.oracle-bounded-prompt-timeout-harvest-reference/v1",
+        "path": str(receipt_path),
+        "sha256": sha256_file(receipt_path),
+    }
+    write_json_atomic(state_path, payload)
+    return proven_bounded_task_owned_prompt_timeout_harvest(state_path)
+
+
 def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
     """Return exact evidence for supported user-adjudicable Oracle runs."""
     # A follow-up session necessarily stores its already-existing parent URL in
@@ -4610,6 +4788,13 @@ def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any]
     browser_session_absent = _browser_session_absent_no_submission_evidence(state_path)
     if browser_session_absent is not None:
         return browser_session_absent
+    state = load_state(state_path)
+    if state.get("bounded_prompt_timeout_harvest") is not None:
+        # A run that entered the bounded zero-turn harvest path must keep that
+        # stronger append-only proof through settlement. Never fall back to the
+        # generic direct DevSpace predicate if its bound receipt is malformed,
+        # tampered, or no longer matches the Oracle/ownership tuple.
+        return proven_bounded_task_owned_prompt_timeout_harvest(state_path)
     direct_devspace = _direct_devspace_no_submission_evidence(
         state_path, require_persisted_recovery=True
     )
@@ -4707,6 +4892,14 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             "source_mission_sha256", "transport_mission_path", "transport_mission_sha256",
             "oracle_version",
         )
+        if current.get("bounded_prompt_timeout_harvest") is not None:
+            required += (
+                "bounded_prompt_timeout_harvest", "source_thread_id",
+                "ownership_receipt_sha256", "oracle_meta_path", "oracle_meta_sha256",
+                "expected_cdp_port", "browser_profile", "browser_target_id",
+                "profile_sha256", "browser_config", "browser_config_sha256",
+                "recovery_evidence", "prompt_submitted_claim", "commit_probe_turns",
+            )
         if current.get("pre_submit_marker") == "oracle-model-option-missing/v1":
             required += (
                 "pre_submit_marker", "desired_model", "oracle_meta_path",
@@ -4834,11 +5027,13 @@ def settle_user_confirmed_no_submission(
             "run lacks the exact pre-submit UI and recovery-binding evidence required for user adjudication",
         )
     recorded = {
+        **{key: value for key, value in evidence.items() if not key.startswith("_")},
+        # The eligibility proof may carry its own schema.  Keep the outer
+        # settlement artifact unambiguous so it can be proven on a later pass.
         "schema": "codex.chatgpt.oracle-user-confirmed-no-submission/v1",
         "code": "ORACLE_USER_CONFIRMED_NO_SUBMISSION",
         "confirmation": USER_CONFIRMED_NO_SUBMISSION,
         "reason": normalized_reason,
-        **{key: value for key, value in evidence.items() if not key.startswith("_")},
     }
     settlement_path = state_path.parent / "user-confirmed-no-submission.json"
     write_json_atomic(settlement_path, recorded)
