@@ -26,6 +26,113 @@ def load_state():
     return module
 
 
+def _run_process_state(run_dir: Path) -> dict[str, object]:
+    return {
+        "oracle": {"slug": "oracle-demo-abc123"},
+        "artifacts": {
+            "browser_temp": str(run_dir / "browser-temp"),
+            "output": str(run_dir / "output.md"),
+        },
+    }
+
+
+def test_exact_run_process_identity_rejects_reused_unrelated_pid(tmp_path: Path) -> None:
+    state = load_state()
+    run_dir = tmp_path / "runs" / "abc123"
+    snapshot = {
+        "ProcessId": 4242,
+        "Name": "csrss.exe",
+        "ExecutablePath": r"C:\Windows\System32\csrss.exe",
+        "CommandLine": "",
+    }
+
+    assert state.exact_run_process_may_be_alive(
+        run_dir,
+        _run_process_state(run_dir),
+        4242,
+        process_probe=lambda _pid: True,
+        windows_snapshot=lambda _pid: snapshot,
+        platform_name="nt",
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "command_line",
+    [
+        r'node.exe oracle --slug oracle-demo-abc123 --write-output C:\result.md',
+        r'chrome.exe --user-data-dir="{browser_temp}" --remote-debugging-port=61234',
+    ],
+)
+def test_exact_run_process_identity_keeps_bound_controller_or_chrome_active(
+    tmp_path: Path,
+    command_line: str,
+) -> None:
+    state = load_state()
+    run_dir = tmp_path / "runs" / "abc123"
+    rendered = command_line.format(browser_temp=run_dir / "browser-temp")
+
+    assert state.exact_run_process_may_be_alive(
+        run_dir,
+        _run_process_state(run_dir),
+        4242,
+        process_probe=lambda _pid: True,
+        windows_snapshot=lambda _pid: {
+            "ProcessId": 4242,
+            "Name": "node.exe" if rendered.startswith("node") else "chrome.exe",
+            "CommandLine": rendered,
+        },
+        platform_name="nt",
+    ) is True
+
+
+def test_exact_run_process_identity_rejects_live_foreign_runtime(tmp_path: Path) -> None:
+    state = load_state()
+    run_dir = tmp_path / "runs" / "abc123"
+
+    assert state.exact_run_process_may_be_alive(
+        run_dir,
+        _run_process_state(run_dir),
+        4242,
+        process_probe=lambda _pid: True,
+        windows_snapshot=lambda _pid: {
+            "ProcessId": 4242,
+            "Name": "node.exe",
+            "CommandLine": "node.exe unrelated-server.mjs --port 8080",
+        },
+        platform_name="nt",
+    ) is False
+
+
+def test_exact_run_process_identity_keeps_ambiguous_live_pid_blocking(tmp_path: Path) -> None:
+    state = load_state()
+    run_dir = tmp_path / "runs" / "abc123"
+
+    def denied(_pid: int):
+        raise OSError("access denied")
+
+    assert state.exact_run_process_may_be_alive(
+        run_dir,
+        _run_process_state(run_dir),
+        4242,
+        process_probe=lambda _pid: True,
+        windows_snapshot=denied,
+        platform_name="nt",
+    ) is True
+
+    assert state.exact_run_process_may_be_alive(
+        run_dir,
+        _run_process_state(run_dir),
+        4242,
+        process_probe=lambda _pid: True,
+        windows_snapshot=lambda _pid: {
+            "ProcessId": 4242,
+            "Name": "node.exe",
+            "CommandLine": "",
+        },
+        platform_name="nt",
+    ) is True
+
+
 @pytest.mark.parametrize("winerror", [5, 32])
 def test_write_json_atomic_retries_bounded_windows_replace_race(
     tmp_path: Path,

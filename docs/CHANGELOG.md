@@ -15,6 +15,9 @@
 - DevSpace 1.0.8의 `open_workspace`, `read`, `read_chunk`가 서버 생성 Audit receipt ID를
   텍스트뿐 아니라 각 도구의 `structuredContent`와 output schema에도 노출해, ChatGPT 앱
   렌더러가 보조 text block을 생략하더라도 final canary challenge-response를 완결합니다.
+- Oracle 실행 종료 뒤 Windows가 PID를 재사용하더라도 PID 존재만으로 과거 실행을
+  살아 있다고 오판하지 않습니다. 현재 프로세스의 exact slug·run 디렉터리·격리
+  브라우저 프로필 결속을 확인하며, 읽을 수 없거나 모호한 신원은 계속 fail-closed 합니다.
 
 ## 1.20.9 - Preserve registered apps across DevSpace updates
 
