@@ -4961,8 +4961,40 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
     elif current.get("settlement_eligibility") == "oracle-pre-submit-host/v1":
         required = (
             "settlement_eligibility", "transport", "transport_mission_path",
-            "transport_mission_sha256", "transcript_sha256", "host_failure",
+            "transport_mission_sha256", "transcript_sha256",
         )
+        recorded_host_failure = recorded.get("host_failure")
+        current_host_failure = current.get("host_failure")
+        if recorded_host_failure != current_host_failure:
+            # v1.20.12 briefly emitted the exact metadata-rename settlement
+            # before the task-bound proof added ``source_thread_id`` to the
+            # re-derived host failure.  Preserve only that append-only receipt:
+            # every earlier field, including the ownership-receipt hash, must
+            # still match byte-for-byte, and the current predicate must have
+            # independently re-proven the bound task from state + receipt.
+            historical_metadata_task_binding_upgrade = (
+                isinstance(recorded_host_failure, dict)
+                and isinstance(current_host_failure, dict)
+                and recorded_host_failure.get("code")
+                == "ORACLE_SESSION_METADATA_RENAME_PRELAUNCH_FAILED"
+                and current_host_failure.get("code")
+                == "ORACLE_SESSION_METADATA_RENAME_PRELAUNCH_FAILED"
+                and "source_thread_id" not in recorded_host_failure
+                and isinstance(current_host_failure.get("source_thread_id"), str)
+                and bool(
+                    SOURCE_THREAD_ID_RE.fullmatch(
+                        current_host_failure["source_thread_id"]
+                    )
+                )
+                and recorded_host_failure
+                == {
+                    key: value
+                    for key, value in current_host_failure.items()
+                    if key != "source_thread_id"
+                }
+            )
+            if not historical_metadata_task_binding_upgrade:
+                return None
     elif current.get("settlement_eligibility") == "oracle-web-multi-child/v1":
         required = (
             "settlement_eligibility", "parallel_parent_id", "source_mission_path",

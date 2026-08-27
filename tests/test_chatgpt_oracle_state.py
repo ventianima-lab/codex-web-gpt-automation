@@ -442,6 +442,79 @@ def test_oracle_metadata_rename_prelaunch_failure_is_exactly_settleable(
     assert state.proven_user_confirmed_no_submission(state_path) is not None
 
 
+def test_oracle_metadata_rename_settlement_revalidates_pre_task_field_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    source_thread_id = "019ff05c-bad3-7770-a902-6b1b62588a7d"
+    state_path, _ = _oracle_metadata_rename_fixture(
+        tmp_path, state, source_thread_id=source_thread_id
+    )
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(tmp_path / "oracle-sessions"))
+    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="exact Oracle metadata replacement exhausted before browser launch",
+    )
+    run_dir = state_path.parent
+    artifact_path = run_dir / "user-confirmed-no-submission.json"
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    del artifact["host_failure"]["source_thread_id"]
+    artifact_bytes = json.dumps(artifact, ensure_ascii=False, indent=2).encode("utf-8")
+    artifact_path.write_bytes(artifact_bytes)
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["user_confirmed_no_submission"]["sha256"] = hashlib.sha256(
+        artifact_bytes
+    ).hexdigest()
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    proven = state.proven_user_confirmed_no_submission(state_path)
+    assert proven is not None
+    assert proven["host_failure"]["ownership_receipt_sha256"]
+    assert state.unresolved_project_sessions(
+        run_dir.parent,
+        Path(payload["project_root"]),
+        source_thread_id=source_thread_id,
+    ) == []
+
+
+def test_oracle_metadata_rename_legacy_settlement_rejects_other_field_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    source_thread_id = "019ff05c-bad3-7770-a902-6b1b62588a7d"
+    state_path, _ = _oracle_metadata_rename_fixture(
+        tmp_path, state, source_thread_id=source_thread_id
+    )
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(tmp_path / "oracle-sessions"))
+    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="exact Oracle metadata replacement exhausted before browser launch",
+    )
+    artifact_path = state_path.parent / "user-confirmed-no-submission.json"
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    del artifact["host_failure"]["source_thread_id"]
+    artifact["host_failure"]["ownership_receipt_sha256"] = "0" * 64
+    artifact_bytes = json.dumps(artifact, ensure_ascii=False, indent=2).encode("utf-8")
+    artifact_path.write_bytes(artifact_bytes)
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["user_confirmed_no_submission"]["sha256"] = hashlib.sha256(
+        artifact_bytes
+    ).hexdigest()
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert state.proven_user_confirmed_no_submission(state_path) is None
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
