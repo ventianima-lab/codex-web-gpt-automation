@@ -36,6 +36,7 @@ DEVSPACE_APP_NAME = WORKSPACE_CONFIG.DEFAULT_APP_NAME
 # separate model row.  The validated Oracle current/LKG contracts verify that
 # Pro effort independently.
 PRO_MODEL = "gpt-5.6-sol"
+PRO_THINKING_TIME = "pro"
 PRO_COMPOSER_PROMPT = (
     "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
     "Do not create, edit, delete, or rename files; do not run commands or change settings, accounts, or external state."
@@ -213,10 +214,10 @@ def build_launch_contract(
             "attachments": [str(path) for path in attachments],
             "model": PRO_MODEL,
             "reasoning_level": "Pro",
-            # `heavy` is Oracle's compatibility token for the current
-            # account-visible Pro power tier.  Keep it explicit so parent
-            # runners cannot fall back to the regular Extra High default.
-            "thinking_time": "heavy",
+            # The current ChatGPT effort menu exposes the fifth tier as Pro.
+            # Keep it explicit so parent runners cannot fall back to regular
+            # Extra High or the retired Heavy compatibility spelling.
+            "thinking_time": PRO_THINKING_TIME,
             "mission_path": str(mission),
             "composer_prompt": PRO_COMPOSER_PROMPT,
         })
@@ -235,7 +236,7 @@ def build_launch_contract(
             "model": PRO_MODEL,
             "model_strategy": "select",
             "reasoning_level": "Pro",
-            "thinking_time": "heavy",
+            "thinking_time": PRO_THINKING_TIME,
             "action_authority": "read-only",
             "write_handoff": "regular-gpt-5.6-extra-high-devspace",
             "mission_path": str(mission),

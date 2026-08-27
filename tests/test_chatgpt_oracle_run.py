@@ -60,7 +60,7 @@ def pro_manifest(tmp_path: Path, **extra) -> Path:
         app_name=None,
         model="gpt-5.6-sol",
         model_strategy="select",
-        thinking_time="heavy",
+        thinking_time="pro",
         attachments=[str(prompt.resolve()), str(packet.resolve())],
         mission_path=str(prompt.resolve()),
         **extra,
@@ -68,13 +68,14 @@ def pro_manifest(tmp_path: Path, **extra) -> Path:
 
 
 def pro_readonly_manifest(tmp_path: Path, **extra) -> Path:
+    thinking_time = extra.pop("thinking_time", "pro")
     return manifest(
         tmp_path,
         transport="pro-devspace-readonly",
         app_name="DevSpace",
         model="gpt-5.6-sol",
         model_strategy="select",
-        thinking_time="heavy",
+        thinking_time=thinking_time,
         research="off",
         task_outcome_contract="v1",
         **extra,
@@ -950,10 +951,10 @@ def thinking_time_selection_unverified_popen(command, **kwargs):
         b"oracle 0.17.1\n"
         b"Session: oracle-test-thinking-time\n"
         b"Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6-sol) with 2 files.\n"
-        b"ERROR: Thinking time: selection unverified (requested Heavy); "
-        b"refusing to submit without confirmed Heavy.\n"
+        b"ERROR: Thinking time: selection unverified (requested Pro); "
+        b"refusing to submit without confirmed Pro.\n"
         b"User error (browser-automation): Thinking time: selection unverified "
-        b"(requested Heavy); refusing to submit without confirmed Heavy.\n"
+        b"(requested Pro); refusing to submit without confirmed Pro.\n"
     )
     kwargs["stdout"].flush()
     return Process(1, [])
@@ -964,10 +965,38 @@ def thinking_time_unknown_outcome_popen(command, **kwargs):
         b"oracle 0.17.1\n"
         b"Session: oracle-test-thinking-time-unknown\n"
         b"Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6-sol) with 2 files.\n"
-        b"ERROR: Thinking time: unknown outcome selecting Heavy; "
-        b"refusing to submit without confirmed Heavy.\n"
-        b"User error (browser-automation): Thinking time: unknown outcome selecting Heavy; "
-        b"refusing to submit without confirmed Heavy.\n"
+        b"ERROR: Thinking time: unknown outcome selecting Pro; "
+        b"refusing to submit without confirmed Extra High.\n"
+        b"User error (browser-automation): Thinking time: unknown outcome selecting Pro; "
+        b"refusing to submit without confirmed Extra High.\n"
+    )
+    kwargs["stdout"].flush()
+    return Process(1, [])
+
+
+def thinking_time_option_not_found_popen(command, **kwargs):
+    kwargs["stdout"].write(
+        b"oracle 0.18.0\n"
+        b"Session: oracle-test-thinking-time-option-not-found\n"
+        b"Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6-sol) with 2 files.\n"
+        b"ERROR: Thinking time: option not found (requested Pro); "
+        b"refusing to submit without confirmed Pro.\n"
+        b"User error (browser-automation): Thinking time: option not found "
+        b"(requested Pro); refusing to submit without confirmed Pro.\n"
+    )
+    kwargs["stdout"].flush()
+    return Process(1, [])
+
+
+def thinking_time_pro_unavailable_popen(command, **kwargs):
+    kwargs["stdout"].write(
+        b"oracle 0.18.0\n"
+        b"Session: oracle-test-thinking-time-unavailable\n"
+        b"Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6-sol) with 2 files.\n"
+        b"ERROR: Thinking time: Pro is unavailable on this account (rate limited); "
+        b"refusing to submit without confirmed Pro.\n"
+        b"User error (browser-automation): Thinking time: Pro is unavailable on this account "
+        b"(rate limited); refusing to submit without confirmed Pro.\n"
     )
     kwargs["stdout"].flush()
     return Process(1, [])
@@ -1222,13 +1251,32 @@ def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_p
     assert "--browser-attachments" not in argv
     assert "--file" not in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
-    assert argv[argv.index("--browser-thinking-time") + 1] == "heavy"
+    assert argv[argv.index("--browser-thinking-time") + 1] == "pro"
     assert prompt.startswith(f"@DevSpace First open exactly this project root in checkout mode: {tmp_path}.")
     assert f"Then read the read-only mission file: {tmp_path / 'mission.md'}." in prompt
     assert "Do not open the mission directory, a parent, a child" in prompt
     assert prompt.index(str(tmp_path)) < prompt.index(str(tmp_path / "mission.md"))
     assert "Perform read-only work only; do not modify files" in prompt
     assert preflight_calls == [True]
+
+
+def test_new_pro_readonly_heavy_manifest_is_rejected_before_layout_or_subprocess(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+    calls: list[str] = []
+
+    with pytest.raises(runner.OracleRunError) as failure:
+        runner.execute_run(
+            pro_readonly_manifest(tmp_path, thinking_time="heavy"),
+            dry_run=True,
+            run_factory=lambda *_args, **_kwargs: calls.append("run"),
+            popen_factory=lambda *_args, **_kwargs: calls.append("popen"),
+        )
+
+    assert failure.value.code == "PRO_THINKING_TIME_LEGACY_FORBIDDEN"
+    assert calls == []
+    assert not (tmp_path / "runs").exists()
 
 
 def test_pro_readonly_dry_run_fails_before_layout_without_fresh_app_read_gate(
@@ -1283,7 +1331,7 @@ def test_new_writable_pro_manifest_is_rejected_before_layout_or_browser(tmp_path
         app_name="DevSpace",
         model="gpt-5.6-sol",
         model_strategy="select",
-        thinking_time="heavy",
+        thinking_time="pro",
         research="off",
         task_outcome_contract="v1",
     )
@@ -2418,9 +2466,9 @@ def test_thinking_time_selection_unverified_is_proven_pre_submit_and_releases_pr
     assert state["session_authority"] == "pre_submit"
     assert state["transport_status"] == "failed_pre_submit"
     assert state["task_outcome"] == "not_executed"
-    assert state["task_outcome_reason"] == "oracle-thinking-time-pre-submit"
-    assert state["pre_submit_failure"]["code"] == "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED"
-    assert state["pre_submit_failure"]["requested_level"] == "Heavy"
+    assert state["task_outcome_reason"] == "oracle-pro-tier-not-selected-pre-submit"
+    assert state["pre_submit_failure"]["code"] == "ORACLE_PRO_TIER_NOT_SELECTED"
+    assert state["pre_submit_failure"]["requested_level"] == "Pro"
     assert runner.STATE.unresolved_project_sessions(
         runner.STATE.load_manifest(pro_manifest(tmp_path)).run_root,
         tmp_path,
@@ -2445,9 +2493,44 @@ def test_thinking_time_unknown_outcome_is_proven_pre_submit_and_releases_project
     assert state["session_authority"] == "pre_submit"
     assert state["transport_status"] == "failed_pre_submit"
     assert state["task_outcome"] == "not_executed"
-    assert state["task_outcome_reason"] == "oracle-thinking-time-pre-submit"
-    assert state["pre_submit_failure"]["code"] == "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED"
-    assert state["pre_submit_failure"]["requested_level"] == "Heavy"
+    assert state["task_outcome_reason"] == "oracle-pro-tier-not-selected-pre-submit"
+    assert state["pre_submit_failure"]["code"] == "ORACLE_PRO_TIER_NOT_SELECTED"
+    assert state["pre_submit_failure"]["requested_level"] == "Pro"
+    assert state["pre_submit_failure"]["required_level"] == "Extra High"
+    assert runner.STATE.unresolved_project_sessions(
+        runner.STATE.load_manifest(pro_manifest(tmp_path)).run_root,
+        tmp_path,
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "popen_factory",
+    (thinking_time_option_not_found_popen, thinking_time_pro_unavailable_popen),
+)
+def test_current_pro_selector_failures_are_proven_pre_submit_and_release_project(
+    tmp_path: Path,
+    popen_factory,
+) -> None:
+    runner = load_runner()
+    seed = tmp_path.parent / f"{tmp_path.name}-profile"
+    seed.mkdir(parents=True)
+    result = execute_run(
+        runner,
+        pro_manifest(tmp_path, run_id="e" * 32, copy_profile=str(seed)),
+        run_factory=version_0171_runner,
+        popen_factory=popen_factory,
+    )
+    state = runner.STATE.load_state(Path(result["run_dir"]) / "state.json")
+
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert state["session_authority"] == "pre_submit"
+    assert state["transport_status"] == "failed_pre_submit"
+    assert state["task_outcome"] == "not_executed"
+    assert state["task_outcome_reason"] == "oracle-pro-tier-not-selected-pre-submit"
+    assert state["pre_submit_failure"]["code"] == "ORACLE_PRO_TIER_NOT_SELECTED"
+    assert state["pre_submit_failure"]["requested_level"] == "Pro"
+    assert state["pre_submit_failure"]["required_level"] == "Pro"
     assert runner.STATE.unresolved_project_sessions(
         runner.STATE.load_manifest(pro_manifest(tmp_path)).run_root,
         tmp_path,
@@ -2734,7 +2817,7 @@ def test_cdp_disconnect_with_exact_unsent_oracle_ledger_is_pre_submit(
 
     result = execute_run(
         runner,
-        pro_readonly_manifest(tmp_path, run_id="c" * 32),
+        pro_readonly_manifest(tmp_path, run_id="c" * 32, thinking_time="pro"),
         run_factory=version_0171_runner,
         popen_factory=cdp_disconnect_pre_submit_popen(session_root),
     )
@@ -2767,7 +2850,7 @@ def test_cdp_disconnect_keeps_lock_when_unsent_proof_is_incomplete(
 
     result = execute_run(
         runner,
-        pro_readonly_manifest(tmp_path, run_id=(variation[0] * 32)),
+        pro_readonly_manifest(tmp_path, run_id=(variation[0] * 32), thinking_time="pro"),
         run_factory=version_0171_runner,
         popen_factory=cdp_disconnect_pre_submit_popen(session_root, variation=variation),
     )
@@ -2790,7 +2873,7 @@ def test_recovery_repairs_legacy_unsent_cdp_disconnect_without_oracle_call(
     monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
     initial = execute_run(
         runner,
-        pro_readonly_manifest(tmp_path, run_id="e" * 32),
+        pro_readonly_manifest(tmp_path, run_id="e" * 32, thinking_time="pro"),
         run_factory=version_0171_runner,
         popen_factory=cdp_disconnect_pre_submit_popen(session_root),
     )

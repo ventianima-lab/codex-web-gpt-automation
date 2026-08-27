@@ -722,7 +722,7 @@ def test_readonly_pro_auto_archive_normalizes_to_never_for_followup(tmp_path: Pa
         transport="pro-devspace-readonly",
         model="gpt-5.6-sol",
         model_strategy="select",
-        thinking_time="heavy",
+        thinking_time="pro",
         archive="auto",
         task_outcome_contract="v1",
     ))
@@ -733,7 +733,7 @@ def test_readonly_pro_auto_archive_normalizes_to_never_for_followup(tmp_path: Pa
         transport="pro-devspace-readonly",
         model="gpt-5.6-sol",
         model_strategy="select",
-        thinking_time="heavy",
+        thinking_time="pro",
         archive="always",
         task_outcome_contract="v1",
     ))
@@ -766,7 +766,7 @@ def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) 
             transport="pro-attachment-only",
             app_name=None,
             model="gpt-5.6-sol",
-            thinking_time="heavy",
+            thinking_time="pro",
             attachments=[str(prompt.resolve()), str(packet.resolve())],
         )
     )
@@ -851,7 +851,7 @@ def test_historical_writable_pro_stays_loadable_and_current_pro_is_readonly(tmp_
         app_name="DevSpace",
         model="gpt-5.6-sol",
         model_strategy="select",
-        thinking_time="heavy",
+        thinking_time="pro",
         research="off",
         task_outcome_contract="v1",
     ))
@@ -862,6 +862,56 @@ def test_historical_writable_pro_stays_loadable_and_current_pro_is_readonly(tmp_
     assert f"Then read the read-only mission file: {mission.resolve()}." in current_prompt
     assert "Perform read-only work only; do not modify files, settings, accounts, or external state." in current_prompt
     assert "create, edit, and remove mission-owned files and run commands" not in current_prompt
+
+
+def test_pro_tier_uses_visible_pro_and_parses_legacy_heavy_losslessly(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("read only", encoding="utf-8")
+
+    common = {
+        "transport": "pro-devspace-readonly",
+        "app_name": "DevSpace",
+        "model": "gpt-5.6-sol",
+        "model_strategy": "select",
+        "research": "off",
+        "task_outcome_contract": "v1",
+    }
+    current = state.load_manifest(manifest(tmp_path, mission.resolve(), thinking_time="pro", **common))
+    legacy = state.load_manifest(manifest(tmp_path, mission.resolve(), thinking_time="heavy", **common))
+
+    assert current.thinking_time == "pro"
+    assert legacy.thinking_time == "heavy"
+    assert state.is_compatible_pro_thinking_time("pro") is True
+    # Historical state/receipt validators still recognize the sealed spelling.
+    assert state.is_compatible_pro_thinking_time("heavy") is True
+    assert state.is_compatible_pro_thinking_time("extra-high") is False
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "oracle-0180-gpt56-sol-effort-menu.json")
+        .read_text(encoding="utf-8")
+    )
+    observed_labels = tuple(item["label"] for item in fixture["items"])
+    assert observed_labels == state.VISIBLE_GPT56_SOL_THINKING_TIME_LABELS
+    assert "Heavy" not in observed_labels
+    assert next(item for item in fixture["items"] if item["ariaChecked"])["label"] == "Extra High"
+    assert next(item for item in fixture["items"] if item["label"] == "Pro")["ariaChecked"] is False
+
+
+def test_missing_new_pro_effort_normalizes_to_visible_pro(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("read only", encoding="utf-8")
+    config = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        transport="pro-devspace-readonly",
+        app_name="DevSpace",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        research="off",
+        task_outcome_contract="v1",
+    ))
+    assert config.thinking_time == "pro"
 
 
 def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path: Path) -> None:
@@ -879,7 +929,7 @@ def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path
             transport="pro-attachment-only",
             app_name=None,
             model="gpt-5.6-sol",
-            thinking_time="heavy",
+            thinking_time="pro",
             attachments=[str(prompt.resolve()), str(packet.resolve())],
         ))
 
@@ -914,7 +964,7 @@ def test_pro_manifest_fails_closed_without_exact_contract(tmp_path: Path, extra:
         "transport": "pro-attachment-only",
         "app_name": None,
         "model": "gpt-5.6-sol",
-        "thinking_time": "heavy",
+        "thinking_time": "pro",
         "attachments": [str(prompt.resolve())],
     }
     value.update(extra)
@@ -1498,7 +1548,7 @@ def test_connector_identity_guard_interpolates_arbitrary_app_names(app_name: str
             {
                 "model": "gpt-5.6-sol",
                 "model_strategy": "select",
-                "thinking_time": "heavy",
+                "thinking_time": "pro",
                 "research": "off",
                 "task_outcome_contract": "v1",
             },
@@ -1508,7 +1558,7 @@ def test_connector_identity_guard_interpolates_arbitrary_app_names(app_name: str
             {
                 "model": "gpt-5.6-sol",
                 "model_strategy": "select",
-                "thinking_time": "heavy",
+                "thinking_time": "pro",
                 "research": "off",
                 "task_outcome_contract": "v1",
             },
@@ -1551,7 +1601,7 @@ def test_attachment_prompt_omits_connector_identity_guard(tmp_path: Path) -> Non
             transport="pro-attachment-only",
             app_name=None,
             model="gpt-5.6-sol",
-            thinking_time="heavy",
+            thinking_time="pro",
             attachments=[str(mission.resolve())],
         )
     )
@@ -1584,7 +1634,7 @@ def test_pro_devspace_connector_guard_prompt_stays_single_line(tmp_path: Path) -
             transport="pro-devspace",
             model="gpt-5.6-sol",
             model_strategy="select",
-            thinking_time="heavy",
+            thinking_time="pro",
             research="off",
             task_outcome_contract="v1",
         )
