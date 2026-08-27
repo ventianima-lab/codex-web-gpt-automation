@@ -1,5 +1,13 @@
 # 기술 변경 기록
 
+## 1.20.12 - Retry transient Windows Oracle metadata replacement
+
+- Oracle 0.18.0 session metadata now retries only transient Windows `EPERM`,
+  `EACCES`, and `EBUSY` failures while atomically replacing `meta.json`. This
+  prevents a pre-submit run from dying when antivirus or another short-lived
+  reader briefly holds the destination, while preserving fail-closed behavior
+  for every other platform and error.
+
 ## 1.20.11 - Recover exact ordinary DevSpace prompt timeouts
 
 - task-bound 일반 `devspace` 실행이 prompt commit timeout 뒤 browser identity

@@ -400,6 +400,98 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
     chrome_lifecycle = package / "dist/src/browser/chromeLifecycle.js"
     chrome_lifecycle_text = chrome_lifecycle.read_text(encoding="utf-8")
     assert chrome_lifecycle_text.count('"--disable-session-crashed-bubble"') == 1
+    session_manager = package / "dist/src/sessionManager.js"
+    session_manager_text = session_manager.read_text(encoding="utf-8")
+    assert 'new Set(["EPERM", "EACCES", "EBUSY"])' in session_manager_text
+    assert "process.platform !== \"win32\"" in session_manager_text
+    assert "WINDOWS_ATOMIC_RENAME_RETRY_DELAYS_MS[attempt]" in session_manager_text
+    assert "await renameMetadataAtomically(temporaryPath, targetPath);" in session_manager_text
+    retry_probe = subprocess.run(
+        [
+            node,
+            "--input-type=module",
+            "--eval",
+            """
+import fs from "node:fs/promises";
+const WINDOWS_ATOMIC_RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const WINDOWS_ATOMIC_RENAME_RETRY_DELAYS_MS = [25, 50, 100, 200, 400, 800, 1600];
+async function renameMetadataAtomically(temporaryPath, targetPath) {
+  for (let attempt = 0;; attempt += 1) {
+    try {
+      await fs.rename(temporaryPath, targetPath);
+      return;
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+      if (process.platform !== "win32" || !WINDOWS_ATOMIC_RENAME_RETRY_CODES.has(code) || attempt >= WINDOWS_ATOMIC_RENAME_RETRY_DELAYS_MS.length)
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, WINDOWS_ATOMIC_RENAME_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+let attempts = 0;
+fs.rename = async () => {
+  attempts += 1;
+  if (attempts < 3) {
+    const error = new Error("transient Windows metadata lock");
+    error.code = "EPERM";
+    throw error;
+  }
+};
+await renameMetadataAtomically("temporary", "target");
+if (attempts !== 3) throw new Error(`expected 3 rename attempts, observed ${attempts}`);
+
+attempts = 0;
+fs.rename = async () => {
+  attempts += 1;
+  const error = new Error("persistent Windows metadata lock");
+  error.code = "EPERM";
+  throw error;
+};
+try {
+  await renameMetadataAtomically("temporary", "target");
+  throw new Error("persistent EPERM unexpectedly succeeded");
+} catch (error) {
+  if (error.code !== "EPERM" || attempts !== 8) throw error;
+}
+
+Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+attempts = 0;
+fs.rename = async () => {
+  attempts += 1;
+  const error = new Error("non-Windows metadata error");
+  error.code = "EPERM";
+  throw error;
+};
+try {
+  await renameMetadataAtomically("temporary", "target");
+  throw new Error("non-Windows EPERM unexpectedly retried");
+} catch (error) {
+  if (error.code !== "EPERM" || attempts !== 1) throw error;
+}
+""",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert retry_probe.returncode == 0, retry_probe.stderr
+
+
+def test_oracle_session_metadata_retry_patch_is_bounded_to_windows_transient_errors() -> None:
+    patch_text = (
+        Path(__file__).resolve().parents[1]
+        / "bin"
+        / "oracle-compat"
+        / "0.18.0"
+        / "sessionManager.windows-atomic-rename-retry.patch"
+    ).read_text(encoding="utf-8")
+
+    assert 'new Set(["EPERM", "EACCES", "EBUSY"])' in patch_text
+    assert "process.platform !== \"win32\"" in patch_text
+    assert "attempt >= WINDOWS_ATOMIC_RENAME_RETRY_DELAYS_MS.length" in patch_text
+    assert "throw error;" in patch_text
+    assert "fs.rm(temporaryPath, { force: true })" in patch_text
 
 
 def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_path: Path) -> None:
