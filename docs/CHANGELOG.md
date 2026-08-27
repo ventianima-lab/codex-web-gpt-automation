@@ -8,6 +8,10 @@
   허용합니다. live recovery는 계속 receipt 없이 거부되고, harvest 뒤에도
   hash-bound recovery evidence와 명시적 사용자 no-submission 확인이 있어야만
   정산·잠금 해제가 가능합니다.
+- exact harvest는 zero-turn/ownership/mission/profile/browser-config 증거를
+  append-only 영수증으로 봉인합니다. 정산과 이후 잠금 판정은 그 영수증의
+  SHA-256과 현재 불변 증거를 다시 대조하므로, generic recovery 로그만으로
+  정산 권한을 얻을 수 없습니다.
 - 모델 ID `gpt-5.6`은 실제 Oracle browser 메타의 선택 라벨 `GPT-5.6 Sol`에
   정확히 결속합니다. 다른 모델·전략·thinking time 또는 zero-turn 증거의
   모순은 계속 fail-closed 합니다.

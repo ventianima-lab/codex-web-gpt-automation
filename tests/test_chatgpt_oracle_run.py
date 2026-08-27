@@ -3399,6 +3399,14 @@ def test_task_bound_direct_devspace_prompt_timeout_can_harvest_without_browser_r
     )
     assert recovered["status"] == "recovery_binding_unavailable"
     assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path) is None
+    bounded_receipt = run_dir / "bounded-prompt-timeout-harvest.json"
+    assert bounded_receipt.is_file()
+    sealed = runner.STATE.proven_bounded_task_owned_prompt_timeout_harvest(state_path)
+    assert sealed is not None
+    assert sealed["ownership_receipt_sha256"]
+    assert sealed["commit_probe_turns"] == 0
+    assert sealed["profile"]["model"] == "gpt-5.6"
+    assert sealed["browser_config"]["desired_model"] == "GPT-5.6 Sol"
     settled = runner.settle_user_confirmed_no_submission(
         run_dir,
         confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
@@ -3411,6 +3419,65 @@ def test_task_bound_direct_devspace_prompt_timeout_can_harvest_without_browser_r
     assert proof is not None
     assert proof["settlement_eligibility"] == "oracle-direct-devspace/v1"
     assert proof["transport"] == "devspace"
+    assert proof["bounded_prompt_timeout_harvest"]["sha256"] == runner.STATE.sha256_file(
+        bounded_receipt
+    )
+
+
+@pytest.mark.parametrize("tamper", ("receipt", "oracle-meta", "ownership"))
+def test_task_bound_direct_devspace_prompt_timeout_settlement_revalidates_bounded_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            run_id="h" * 32,
+            model="gpt-5.6",
+            model_strategy="select",
+            thinking_time="extra-high",
+            research="off",
+            task_outcome_contract="v1",
+        ),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    meta_path = write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+    runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert runner.STATE.proven_bounded_task_owned_prompt_timeout_harvest(state_path) is not None
+
+    if tamper == "receipt":
+        (run_dir / "bounded-prompt-timeout-harvest.json").write_text("{}", encoding="utf-8")
+    elif tamper == "oracle-meta":
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["browser"]["runtime"]["promptSubmitted"] = False
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    else:
+        ownership_path = run_dir / "ownership-receipt.json"
+        ownership_path.write_text("{}", encoding="utf-8")
+
+    assert runner.STATE.proven_bounded_task_owned_prompt_timeout_harvest(state_path) is None
+    with pytest.raises(runner.STATE.OracleStateError) as exc:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="bounded zero-turn evidence was tampered",
+        )
+    assert exc.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
 
 
 def test_task_bound_direct_devspace_prompt_timeout_rejects_profile_bound_meta_mismatch(
