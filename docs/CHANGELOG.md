@@ -1,5 +1,18 @@
 # 기술 변경 기록
 
+## 1.20.13 - Preserve exact task-bound metadata settlements
+
+- A `v1.20.12` Oracle metadata-rename settlement created immediately before
+  the final task-binding hardening remains valid when its append-only artifact
+  lacks only the later `host_failure.source_thread_id` field. Revalidation
+  still requires the current state, originating task, ownership block, and
+  immutable ownership receipt to bind the same valid Codex task UUID, and
+  every pre-existing host-failure field and hash must match exactly.
+- Legacy-unbound runs, foreign-task settlement attempts, changed ownership
+  receipt hashes, provider output/conversation evidence, and any other field
+  drift remain fail-closed. This prevents an already settled pre-submit run
+  from resurrecting its task-scoped project lock after upgrading.
+
 ## 1.20.12 - Retry transient Windows Oracle metadata replacement
 
 - Oracle 0.18.0 session metadata now retries only transient Windows `EPERM`,
