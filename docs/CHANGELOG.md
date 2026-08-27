@@ -13,7 +13,9 @@
   immutable mission and ownership receipt, pending session metadata, exited
   controller, empty output/conversation/browser identity, and the exact Windows
   atomic-rename error; path, runtime, URL, output, or receipt contradictions
-  remain ineligible.
+  remain ineligible. The state, ownership block, and append-only receipt must
+  all bind the same valid Codex task UUID; legacy-unbound and foreign-task
+  settlement attempts remain forbidden.
 
 ## 1.20.11 - Recover exact ordinary DevSpace prompt timeouts
 

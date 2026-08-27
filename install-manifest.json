@@ -69,6 +69,7 @@
     "bin/oracle-compat/0.18.0/browserConfig.followup-port-binding.patch",
     "bin/oracle-compat/0.18.0/browserConfig.copy-profile-windows.patch",
     "bin/oracle-compat/0.18.0/chromeLifecycle.disable-session-crash-bubble.patch",
+    "bin/oracle-compat/0.18.0/sessionManager.windows-atomic-rename-retry.patch",
     "bin/chatgpt_oracle_state.py",
     "bin/chatgpt_oracle_profiles.py",
     "bin/chatgpt_oracle_dispatch.py",

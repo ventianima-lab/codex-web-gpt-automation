@@ -444,7 +444,14 @@ def test_oracle_metadata_rename_prelaunch_failure_is_exactly_settleable(
 
 @pytest.mark.parametrize(
     "mutation",
-    ["wrong-path", "output", "browser-runtime", "browser-receipt", "live-controller"],
+    [
+        "wrong-path",
+        "output",
+        "browser-runtime",
+        "browser-receipt",
+        "live-controller",
+        "legacy-unbound",
+    ],
 )
 def test_oracle_metadata_rename_prelaunch_failure_rejects_contradictions(
     tmp_path: Path,
@@ -476,9 +483,47 @@ def test_oracle_metadata_rename_prelaunch_failure_rejects_contradictions(
         state_path.write_text(json.dumps(payload), encoding="utf-8")
     elif mutation == "browser-receipt":
         (run_dir / "browser-identity-receipt.json").write_text("{}", encoding="utf-8")
+    elif mutation == "legacy-unbound":
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        payload["originating_task"] = {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": None,
+            "binding": "legacy-unbound",
+        }
+        payload["ownership"]["source_thread_id"] = None
+        payload["ownership"]["binding"] = "legacy-unbound"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+        receipt_path = run_dir / "ownership-receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["source_thread_id"] = None
+        receipt["binding"] = "legacy-unbound"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
     assert state.proven_pre_submit_oracle_metadata_rename_failure(state_path) is None
     assert state._pre_submit_host_no_submission_evidence(state_path) is None
+
+
+def test_oracle_metadata_rename_settlement_rejects_foreign_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    owner_thread_id = "019ff05c-bad3-7770-a902-6b1b62588a7d"
+    state_path, _ = _oracle_metadata_rename_fixture(
+        tmp_path, state, source_thread_id=owner_thread_id
+    )
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(tmp_path / "oracle-sessions"))
+    monkeypatch.setenv("CODEX_THREAD_ID", "01a028dd-843a-76c2-b316-376f10c53ddd")
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    assert state.proven_pre_submit_oracle_metadata_rename_failure(state_path) is not None
+    with pytest.raises(state.OracleStateError) as caught:
+        state.settle_user_confirmed_no_submission(
+            state_path,
+            confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+            reason="foreign task must not settle the exact run",
+        )
+    assert caught.value.code == "FOREIGN_TASK_SESSION"
 
 
 def test_v1_task_outcome_accepts_exact_provider_reference_footer(tmp_path: Path) -> None:

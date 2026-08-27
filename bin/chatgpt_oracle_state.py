@@ -5497,6 +5497,15 @@ def proven_pre_submit_oracle_metadata_rename_failure(
     state = load_state(state_path)
     run_dir = state_path.parent.resolve()
     run_id = str(state.get("run_id") or "").strip()
+    originating_task = (
+        state.get("originating_task")
+        if isinstance(state.get("originating_task"), dict)
+        else {}
+    )
+    source_thread_id = source_thread_id_from_state(state)
+    state_ownership = (
+        state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    )
     authority = str(state.get("session_authority") or "")
     transport_status = str(state.get("transport_status") or "")
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
@@ -5510,6 +5519,13 @@ def proven_pre_submit_oracle_metadata_rename_failure(
         state.get("schema") != STATE_SCHEMA
         or not run_id
         or run_dir.name != run_id
+        or source_thread_id is None
+        or originating_task.get("schema") != "codex.chatgpt.oracle-task-owner/v1"
+        or originating_task.get("binding") != "bound"
+        or originating_task.get("source_thread_id") != source_thread_id
+        or state_ownership.get("schema") != "codex.chatgpt.oracle-ownership/v1"
+        or state_ownership.get("binding") != "bound"
+        or state_ownership.get("source_thread_id") != source_thread_id
         or authority not in {"submitted_unknown", "pre_submit"}
         or state.get("status") != "attention_required"
         or transport_status
@@ -5576,6 +5592,8 @@ def proven_pre_submit_oracle_metadata_rename_failure(
         return None
     if (
         not project_root.is_dir()
+        or ownership_payload.get("source_thread_id") != source_thread_id
+        or ownership_payload.get("binding") != "bound"
         or ownership_payload.get("project_root_sha256")
         != hashlib.sha256(str(project_root).casefold().encode("utf-8")).hexdigest()
         or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
@@ -5731,6 +5749,7 @@ def proven_pre_submit_oracle_metadata_rename_failure(
         "rename_destination": destination_text,
         "rename_writer_pid": writer_pid,
         "controller_pid": controller_pid,
+        "source_thread_id": source_thread_id,
         "ownership_receipt_sha256": ownership["sha256"],
         "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
         "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
