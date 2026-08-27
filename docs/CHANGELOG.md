@@ -7,6 +7,13 @@
   prevents a pre-submit run from dying when antivirus or another short-lived
   reader briefly holds the destination, while preserving fail-closed behavior
   for every other platform and error.
+- If the bounded retry still exhausts before any browser runtime or conversation
+  exists, the exact task owner may use the normal explicit
+  `settle-no-submission` path. The evidence binds the exact Oracle locator,
+  immutable mission and ownership receipt, pending session metadata, exited
+  controller, empty output/conversation/browser identity, and the exact Windows
+  atomic-rename error; path, runtime, URL, output, or receipt contradictions
+  remain ineligible.
 
 ## 1.20.11 - Recover exact ordinary DevSpace prompt timeouts
 
