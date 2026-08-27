@@ -22,7 +22,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from chatgpt_chrome_local_network import policy_status
+from chatgpt_chrome_local_network import browser_profile_loopback_allowed, policy_status
 import codex_local_multi_gpt_setup as LOCAL_MULTI_GPT_SETUP
 
 
@@ -44,6 +44,10 @@ STAGE_IDS = (
     "07_chatgpt_app",
     "08_final_gate",
 )
+# These stages existed before the additive local-network stage.  Keep this
+# baseline fixed: later stage additions are migrated as pending rather than
+# making an otherwise valid, resumable v1 state require a reset.
+REQUIRED_LEGACY_STAGE_IDS = tuple(stage_id for stage_id in STAGE_IDS if stage_id != "06b_local_network_access")
 USER_OWNED_STAGES = (
     "02_stable_endpoint",
     "03_devspace_init",
@@ -364,22 +368,7 @@ def _persisted_allowed_roots(devspace_home: Path) -> tuple[str, ...]:
 
 
 def browser_profile_local_network_allowed(profile_dir: Path) -> bool:
-    preferences = _load_json(profile_dir / "Default" / "Preferences") or {}
-    exceptions = (
-        preferences.get("profile", {})
-        .get("content_settings", {})
-        .get("exceptions", {})
-        .get("local_network", {})
-    )
-    if not isinstance(exceptions, dict):
-        return False
-    expected = "https://chatgpt.com:443,*"
-    return any(
-        str(pattern).casefold() == expected
-        and isinstance(entry, dict)
-        and entry.get("setting") == 1
-        for pattern, entry in exceptions.items()
-    )
+    return browser_profile_loopback_allowed(profile_dir)
 
 
 def _root_identities(values: Sequence[Any]) -> list[str]:
@@ -464,7 +453,20 @@ def configure_app_name(*, codex_home: Path | None = None, app_name: str = APP_NA
     root = (codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))).resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = root / "chatgpt-workspace.json"
-    payload = json.dumps({"app_name": app_name}, ensure_ascii=True, indent=2) + "\n"
+    existing: dict[str, Any] = {}
+    if target.exists():
+        loaded = _load_json(target)
+        if loaded is None:
+            raise OnboardingError("CHATGPT_WORKSPACE_STATE_CORRUPT")
+        _secret_free(loaded)
+        if "app_name" in loaded and (
+            not isinstance(loaded["app_name"], str) or not loaded["app_name"].strip()
+        ):
+            raise OnboardingError("CHATGPT_WORKSPACE_STATE_CORRUPT")
+        existing = loaded
+    existing["app_name"] = app_name
+    _secret_free(existing)
+    payload = json.dumps(existing, ensure_ascii=True, indent=2) + "\n"
     fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(root))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
@@ -529,8 +531,9 @@ def load_state(*, codex_home: Path | None = None) -> dict[str, Any]:
         raise OnboardingError("ONBOARDING_NOT_STARTED")
     if value.get("schema") != STATE_SCHEMA:
         raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+    _secret_free(value)
     stages = value.get("stages")
-    if not isinstance(stages, dict) or set(stages) != set(STAGE_IDS):
+    if not isinstance(stages, dict) or not set(REQUIRED_LEGACY_STAGE_IDS).issubset(stages):
         raise OnboardingError("ONBOARDING_STATE_CORRUPT")
     for name in ("provider", "registration_url", "app_name"):
         if not isinstance(value.get(name), str) or not value[name].strip():
@@ -538,12 +541,31 @@ def load_state(*, codex_home: Path | None = None) -> dict[str, Any]:
     roots = value.get("allowed_roots")
     if not isinstance(roots, list) or not roots or not all(isinstance(item, str) and item.strip() for item in roots):
         raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+    for stage_id in STAGE_IDS:
+        stages.setdefault(stage_id, {})
     for stage_id, stage in stages.items():
         if not isinstance(stage, dict):
+            raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+        if not isinstance(stage_id, str) or not stage_id.strip():
+            raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+        if "status" in stage and stage["status"] not in {"pending", "complete"}:
+            raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+        if "verified_at" in stage and stage["verified_at"] is not None and (
+            not isinstance(stage["verified_at"], str) or not stage["verified_at"].strip()
+        ):
+            raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+        if "evidence" in stage and stage["evidence"] is not None and not isinstance(stage["evidence"], dict):
             raise OnboardingError("ONBOARDING_STATE_CORRUPT")
         stage.setdefault("status", "pending")
         stage.setdefault("verified_at", None)
         stage.setdefault("evidence", None)
+    if "requested_roots" in value and (
+        not isinstance(value["requested_roots"], list)
+        or not all(isinstance(item, str) and item.strip() for item in value["requested_roots"])
+    ):
+        raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+    if "enable_local_multi_gpt" in value and not isinstance(value["enable_local_multi_gpt"], bool):
+        raise OnboardingError("ONBOARDING_STATE_CORRUPT")
     value.setdefault("requested_roots", list(roots))
     value.setdefault("enable_local_multi_gpt", False)
     return value
@@ -1393,8 +1415,8 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
             f"새 일반 비-Pro Oracle 실행에서 @{state['app_name']} 로 exact root 를 열고 반환된 workspaceId를 보존합니다.",
             "Oracle run_id를 세 호출의 auditNonce로 쓰고 open_workspace를 그 대화의 첫 workspace/process/mutation 호출로 실행합니다. 같은 workspaceId로 미션 파일을 별도 read 호출한 뒤 같은 파일 전체를 offset 0의 read_chunk로 읽습니다.",
             "각 도구 결과가 돌려준 서버 생성 Audit receipt ID 3개를 최종 답변에 정확히 다시 적습니다. 이 challenge-response와 ~/.devspace/state/tool-read-receipts의 open_workspace → read → read_chunk 영수증을 함께 검증하며, 임의 ID/SHA 자기진술만으로는 통과하지 않습니다.",
-            f"새 canary에 read_chunk 또는 서버 생성 Audit receipt ID가 없으면 ChatGPT의 정확한 @{state['app_name']} 앱 Action 스냅샷이 오래된 것입니다. Enterprise/Edu 관리자는 워크스페이스 설정 → 앱에서 {state['app_name']} 앱의 더보기 메뉴를 열고 Action control → Refresh를 직접 실행한 뒤 새 Action을 검토·활성화합니다. 자동화가 이 설정을 조작하지 않습니다.",
-            "Business 또는 Refresh가 보이지 않는 UI에서는 같은 exact /mcp URL로 앱을 다시 만들고 게시한 뒤 현재 서버 Action을 검토·활성화하고 Owner 승인을 직접 완료합니다. 그 뒤 위 post-register를 한 번 실행하고 새 regular non-Pro auditNonce canary를 실행합니다. open_workspace/read만으로는 절대 통과하지 않습니다.",
+            f"새 canary에 read_chunk 또는 서버 생성 Audit receipt ID가 없으면 ChatGPT의 정확한 기존 @{state['app_name']} 앱 Action 스냅샷이 오래된 것입니다. 앱 상세에서 보이는 Refresh/새로 고침으로 Action을 갱신하고 새 Action을 검토·활성화합니다. 자동화가 이 설정을 조작하지 않습니다.",
+            "OAuth 또는 도구 호출이 계속 오래되면 https://chatgpt.com/#settings/Plugins/ 에서 기존 앱을 선택하고 Reconnect/다시 연결합니다. Business 또는 Refresh 부재만으로 앱을 삭제·재등록하지 않습니다. 앱 레코드가 실제로 없거나 손상된 경우에만 예외적으로 같은 exact 이름과 /mcp URL로 다시 만듭니다. 진단이 요구할 때만 위 post-register를 정확히 한 번 실행한 뒤 새 regular non-Pro auditNonce canary를 실행합니다. open_workspace/read만으로는 절대 통과하지 않습니다.",
             "Codex Desktop 내장 DevSpace 플러그인 결과는 증거로 쓰지 않습니다.",
             "성공하면 onboard.py record-final-gate --run-dir <Oracle run 디렉터리> --root <루트> --evidence <요약> --listing <항목> 을 실행합니다.",
         ],
@@ -1471,8 +1493,8 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
             f"In a fresh regular non-Pro Oracle run, open the exact root with @{state['app_name']} and preserve the returned workspaceId.",
             "Use the Oracle run_id as auditNonce for all three calls and make open_workspace the conversation's first workspace/process/mutation call. With that same workspaceId, separately read the mission and then read_chunk the complete same file from offset zero.",
             "Echo the three server-generated Audit receipt IDs returned by the tool calls exactly in the final answer. The gate verifies that challenge-response together with DevSpace's ~/.devspace/state/tool-read-receipts open_workspace → read → read_chunk chain; arbitrary output ID/SHA claims alone never pass.",
-            f"If the fresh canary exposes no read_chunk or server-generated Audit receipt ID, the exact @{state['app_name']} ChatGPT app Action snapshot is stale. On Enterprise/Edu, an admin must open that app's overflow menu under Workspace settings > Apps, use Action control > Refresh, and review and enable the new Actions; automation must not change this ChatGPT setting.",
-            "On Business, or when Refresh is unavailable, recreate and publish the app with the same exact /mcp URL, review and enable the current server Actions, and complete Owner approval manually. Then run the post-register command above once and run a fresh regular non-Pro auditNonce canary. open_workspace/read alone never passes.",
+            f"If the fresh canary exposes no read_chunk or server-generated Audit receipt ID, the exact existing @{state['app_name']} ChatGPT app Action snapshot is stale. Use the visible Refresh/New refresh control in that app's detail, then review and enable the new Actions; automation must not change this ChatGPT setting.",
+            "If OAuth or tool calls remain stale, open https://chatgpt.com/#settings/Plugins/, select the existing app, and use Reconnect. Do not delete or re-register it merely because the workspace is Business or Refresh is unavailable. Recreate with the same exact name and /mcp URL only when the app record is actually absent or corrupt. Run the post-register command above exactly once only when diagnosis requires it, then run a fresh regular non-Pro auditNonce canary. open_workspace/read alone never passes.",
             "The built-in Codex Desktop DevSpace plugin is not valid evidence.",
             "On success run onboard.py record-final-gate --run-dir <Oracle run directory> --root <root> --evidence <summary> --listing <entry>.",
         ],

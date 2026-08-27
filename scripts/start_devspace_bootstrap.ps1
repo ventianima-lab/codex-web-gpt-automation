@@ -108,7 +108,10 @@ try {
         }
         if ([bool]$Recovery.service_started) {
           $Service = $Recovery.service
-          Write-BootstrapLog ("DevSpace restarted (cycle={0}, attempt={1}, supervisor_pid={2}, child_pid={3}, state={4})." -f $Cycle, $Attempt, $Service.supervisor_pid, $Service.child_pid, $Service.state_path)
+          Write-BootstrapLog ("DevSpace started after listener absence (cycle={0}, attempt={1}, supervisor_pid={2}, child_pid={3}, state={4}, reason={5})." -f $Cycle, $Attempt, $Service.supervisor_pid, $Service.child_pid, $Service.state_path, $Recovery.reconciliation_reason)
+        } elseif ([bool]$Recovery.service_restarted) {
+          $Service = $Recovery.service
+          Write-BootstrapLog ("DevSpace restarted for compatibility reconciliation (cycle={0}, attempt={1}, supervisor_pid={2}, child_pid={3}, state={4}, reason={5})." -f $Cycle, $Attempt, $Service.supervisor_pid, $Service.child_pid, $Service.state_path, $Recovery.reconciliation_reason)
         }
         $Healthy = $true
         break

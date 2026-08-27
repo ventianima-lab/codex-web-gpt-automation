@@ -1,5 +1,19 @@
 # 기술 변경 기록
 
+## 1.20.9 - Preserve registered apps across DevSpace updates
+
+- 기존 ChatGPT 개발 앱의 이름·MCP URL·OAuth 연결을 업그레이드가 보존하고,
+  도구 목록이 오래된 경우에는 앱 재생성 대신 기존 앱의 `새로 고침` 후 필요한
+  경우에만 `다시 연결`하도록 한영 온보딩과 진단 메시지를 바로잡았습니다.
+- DevSpace 1.0.8의 `ui://devspace/workspace-app.html` 리소스에 공개 HTTPS origin을
+  hash-gated `ui.domain`으로 결속해 앱 제출 화면의 widget-domain 누락 경고를
+  제거합니다. HTTP, 자격 증명이 포함된 URL, loopback origin은 fail-closed 됩니다.
+- 관리형 DevSpace 복구가 healthy 401만 보고 패치 적용을 건너뛰지 않고 매번 exact
+  package/native/compatibility 상태를 재검증합니다. 실제 restart marker가 있을 때만
+  서비스를 한 번 재기동하며 malformed marker 보고는 재시작 없이 거부합니다.
+- OAuth replay canary timeout을 구조화된 비밀 없는 오류로 남기고, Chrome의 분리된
+  Local Network/loopback 정책과 기존 온보딩 상태 마이그레이션을 회귀 테스트합니다.
+
 ## 1.20.8 - Decode Tailscale status as UTF-8 during onboarding
 
 - Windows 한국어 로케일에서도 `onboard.py start`가 `tailscale status --json`의

@@ -201,6 +201,22 @@ def test_configure_app_name_is_atomic_and_contains_only_public_name(tmp_path: Pa
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_configure_app_name_preserves_existing_non_secret_fields(tmp_path: Path) -> None:
+    target = tmp_path / "chatgpt-workspace.json"
+    target.write_text(
+        json.dumps({"app_name": "old-name", "registration_url": "https://mcp.example.com/mcp", "future": {"enabled": True}}),
+        encoding="utf-8",
+    )
+
+    module.configure_app_name(codex_home=tmp_path, app_name="dongju")
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {
+        "app_name": "dongju",
+        "registration_url": "https://mcp.example.com/mcp",
+        "future": {"enabled": True},
+    }
+
+
 def test_plan_status_and_cli_share_the_same_arbitrary_app_name(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -279,7 +295,7 @@ def test_seed_profile_local_network_grant_is_accepted(tmp_path: Path) -> None:
                 "profile": {
                     "content_settings": {
                         "exceptions": {
-                            "local_network": {
+                            "loopback_network": {
                                 "https://chatgpt.com:443,*": {"setting": 1}
                             }
                         }
@@ -291,6 +307,58 @@ def test_seed_profile_local_network_grant_is_accepted(tmp_path: Path) -> None:
     )
     assert module.browser_profile_local_network_allowed(profile) is True
     assert module.browser_profile_local_network_allowed(tmp_path / "missing") is False
+
+
+def test_pre_migration_profile_grant_remains_accepted(tmp_path: Path) -> None:
+    profile = tmp_path / "browser-profile"
+    preferences = profile / "Default" / "Preferences"
+    preferences.parent.mkdir(parents=True)
+    preferences.write_text(
+        json.dumps(
+            {
+                "profile": {
+                    "content_settings": {
+                        "exceptions": {
+                            "local_network_access": {
+                                "https://chatgpt.com:443,*": {"setting": 1}
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert module.browser_profile_local_network_allowed(profile) is True
+
+
+def test_profile_split_permissions_require_loopback_allow_and_fail_closed(tmp_path: Path) -> None:
+    profile = tmp_path / "browser-profile"
+    preferences = profile / "Default" / "Preferences"
+    preferences.parent.mkdir(parents=True)
+    base = {
+        "profile": {
+            "content_settings": {
+                "exceptions": {
+                    "local_network": {"https://chatgpt.com:443,*": {"setting": 1}},
+                }
+            }
+        }
+    }
+    preferences.write_text(json.dumps(base), encoding="utf-8")
+    assert module.browser_profile_local_network_allowed(profile) is False
+
+    base["profile"]["content_settings"]["exceptions"]["loopback_network"] = {
+        "https://chatgpt.com:443,*": {"setting": 1}
+    }
+    preferences.write_text(json.dumps(base), encoding="utf-8")
+    assert module.browser_profile_local_network_allowed(profile) is True
+
+    base["profile"]["content_settings"]["exceptions"]["loopback_network"] = {
+        "https://chatgpt.com:443,*": {"setting": 2}
+    }
+    preferences.write_text(json.dumps(base), encoding="utf-8")
+    assert module.browser_profile_local_network_allowed(profile) is False
 
 
 @pytest.mark.parametrize("value", ["", "@dongju", "bad/name", "bad\\name", "bad\nname"])
@@ -928,9 +996,12 @@ def test_final_gate_instructions_require_manual_registered_app_action_refresh_be
     )
     instructions = "\n".join(module.stage_instructions("08_final_gate", state, language))
 
-    assert "Action control" in instructions
+    assert "Action" in instructions
     assert "Refresh" in instructions
     assert "Business" in instructions
+    assert "https://chatgpt.com/#settings/Plugins/" in instructions
+    assert ("다시 연결" in instructions) if language == "ko" else ("Reconnect" in instructions)
+    assert ("삭제·재등록하지" in instructions) if language == "ko" else ("Do not delete or re-register" in instructions)
     assert "read_chunk" in instructions
     assert "post-register" in instructions
     assert "open_workspace/read" in instructions
@@ -1615,6 +1686,57 @@ def test_load_state_backfills_missing_stage_defaults(tmp_path: Path) -> None:
     )
     reloaded = module.load_state(codex_home=environment["codex_home"])
     assert {"status", "verified_at", "evidence"}.issubset(reloaded["stages"]["01_install"])
+
+
+def test_load_state_migrates_additive_stage_without_erasing_verified_evidence(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=False)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    path = module.state_path(codex_home=environment["codex_home"])
+    state = json.loads(path.read_text(encoding="utf-8"))
+    oracle_evidence = {"kind": "user-confirmed", "confirmed_at": "2026-08-27T00:00:00Z"}
+    app_evidence = {"kind": "user-confirmed", "confirmed_at": "2026-08-27T00:01:00Z"}
+    final_evidence = {"transport": "regular-non-pro-oracle", "read_ok": True, "evidence": "preserved"}
+    state["stages"]["06_oracle_login"] = {"status": "complete", "verified_at": "2026-08-27T00:00:00Z", "evidence": oracle_evidence}
+    state["stages"]["07_chatgpt_app"] = {"status": "complete", "verified_at": "2026-08-27T00:01:00Z", "evidence": app_evidence}
+    state["stages"]["08_final_gate"] = {"status": "complete", "verified_at": "2026-08-27T00:02:00Z", "evidence": final_evidence}
+    state["stages"].pop("06b_local_network_access")
+    state["stages"]["09_future_stage"] = {"status": "complete", "verified_at": "2026-08-27T00:03:00Z", "evidence": {"kind": "future"}}
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    migrated = module.load_state(codex_home=environment["codex_home"])
+
+    assert migrated["stages"]["06b_local_network_access"] == {
+        "status": "pending",
+        "verified_at": None,
+        "evidence": None,
+    }
+    assert migrated["stages"]["06_oracle_login"]["evidence"] == oracle_evidence
+    assert migrated["stages"]["07_chatgpt_app"]["evidence"] == app_evidence
+    assert migrated["stages"]["08_final_gate"]["evidence"] == final_evidence
+    assert migrated["stages"]["09_future_stage"]["evidence"] == {"kind": "future"}
+
+
+def test_load_state_rejects_banned_state_content_before_migration(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=False)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    path = module.state_path(codex_home=environment["codex_home"])
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["stages"].pop("06b_local_network_access")
+    state["stages"]["09_future_stage"] = {"status": "pending", "token": "must-not-be-stored"}
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(module.OnboardingError, match="ONBOARDING_STATE_MUST_NOT_CARRY_SECRETS"):
+        module.load_state(codex_home=environment["codex_home"])
 
 
 def _final_gate_record(root: Path, **overrides: object) -> dict[str, object]:

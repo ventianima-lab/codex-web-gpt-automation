@@ -14,10 +14,21 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 
 CHATGPT_ORIGIN = "https://chatgpt.com"
 POLICY_SUBKEY = r"Software\Policies\Google\Chrome\LocalNetworkAccessAllowedForUrls"
+POLICY_SUBKEYS = {
+    "legacy_allow": POLICY_SUBKEY,
+    "legacy_block": r"Software\Policies\Google\Chrome\LocalNetworkAccessBlockedForUrls",
+    "local_allow": r"Software\Policies\Google\Chrome\LocalNetworkAllowedForUrls",
+    "local_block": r"Software\Policies\Google\Chrome\LocalNetworkBlockedForUrls",
+    "loopback_allow": r"Software\Policies\Google\Chrome\LoopbackNetworkAllowedForUrls",
+    "loopback_block": r"Software\Policies\Google\Chrome\LoopbackNetworkBlockedForUrls",
+}
+_PROFILE_LEGACY_KEY = "local_network_access"
+_PROFILE_SPLIT_KEYS = ("local_network", "loopback_network")
 
 
 def _normalized(value: object) -> str:
@@ -29,6 +40,76 @@ def policy_contains_origin(values: Mapping[str, object], origin: str = CHATGPT_O
     return any(_normalized(value) == expected for value in values.values())
 
 
+def _policy_pattern_matches_origin(value: object, origin: str = CHATGPT_ORIGIN) -> bool:
+    """Match the bounded Chrome URL-pattern forms relevant to this exact origin."""
+    # Profile exceptions use a primary,secondary content-setting pattern such
+    # as ``https://chatgpt.com:443,*``; policy lists contain just the primary.
+    pattern = _normalized(value).split(",", 1)[0]
+    expected = _normalized(origin)
+    if pattern in {"*", expected}:
+        return True
+    parsed = urlsplit(expected)
+    host = parsed.hostname or ""
+    if pattern in {f"[*.]{host}", f"*.{host}"}:
+        return True
+    candidate = urlsplit(pattern)
+    if not candidate.scheme or candidate.hostname != host or candidate.scheme != parsed.scheme:
+        return False
+    authority = pattern.split("://", 1)[1].split("/", 1)[0]
+    expected_port = "443" if parsed.scheme == "https" else "80" if parsed.scheme == "http" else ""
+    return authority in {host, f"{host}:{expected_port}", f"{host}:*"}
+
+
+def _matching_policy_value_names(
+    values: Mapping[str, object], origin: str = CHATGPT_ORIGIN
+) -> list[str]:
+    return [name for name, value in values.items() if _policy_pattern_matches_origin(value, origin)]
+
+
+def _profile_setting(entries: object, origin: str = CHATGPT_ORIGIN) -> int | None:
+    if not isinstance(entries, dict):
+        return None
+    matches: list[int] = []
+    for pattern, entry in entries.items():
+        if not _policy_pattern_matches_origin(pattern, origin) or not isinstance(entry, dict):
+            continue
+        setting = entry.get("setting")
+        if isinstance(setting, int):
+            matches.append(setting)
+    if 2 in matches:  # ContentSetting::CONTENT_SETTING_BLOCK
+        return 2
+    if 1 in matches:  # ContentSetting::CONTENT_SETTING_ALLOW
+        return 1
+    return None
+
+
+def browser_profile_loopback_allowed(profile_dir: Path) -> bool:
+    """Return whether the profile effectively allows chatgpt.com loopback access.
+
+    Chrome 151 splits the legacy local-network-access grant into local_network
+    and loopback_network. DevSpace connects to 127.0.0.1, so local_network on
+    its own is not sufficient. A legacy grant is accepted only before either
+    split preference has been created; this avoids treating a partially migrated
+    profile as ready.
+    """
+    try:
+        preferences = json.loads((profile_dir / "Default" / "Preferences").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(preferences, dict):
+        return False
+    exceptions = preferences.get("profile", {}).get("content_settings", {}).get("exceptions", {})
+    if not isinstance(exceptions, dict):
+        return False
+    split_present = any(key in exceptions for key in _PROFILE_SPLIT_KEYS)
+    loopback_setting = _profile_setting(exceptions.get("loopback_network"))
+    if loopback_setting is not None:
+        return loopback_setting == 1
+    if split_present:
+        return False
+    return _profile_setting(exceptions.get(_PROFILE_LEGACY_KEY)) == 1
+
+
 def next_policy_value_name(values: Mapping[str, object]) -> str:
     used = {int(name) for name in values if str(name).isdigit() and int(name) > 0}
     candidate = 1
@@ -37,11 +118,11 @@ def next_policy_value_name(values: Mapping[str, object]) -> str:
     return str(candidate)
 
 
-def _read_windows_policy() -> dict[str, str]:
+def _read_windows_policy(subkey: str = POLICY_SUBKEY) -> dict[str, str]:
     import winreg
 
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, POLICY_SUBKEY, 0, winreg.KEY_READ)
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_READ)
     except FileNotFoundError:
         return {}
     values: dict[str, str] = {}
@@ -66,17 +147,33 @@ def policy_status() -> dict[str, Any]:
             "origin": CHATGPT_ORIGIN,
             "reason": "WINDOWS_CHROME_POLICY_ONLY",
         }
-    values = _read_windows_policy()
+    policies = {name: _read_windows_policy(subkey) for name, subkey in POLICY_SUBKEYS.items()}
+    matches = {name: _matching_policy_value_names(values) for name, values in policies.items()}
+    # Chrome's split-policy precedence for a loopback request is specific
+    # loopback block/allow, then legacy block/allow. Local-network entries are
+    # intentionally reported but cannot make a 127.0.0.1 DevSpace ready.
+    if matches["loopback_block"]:
+        effective = "blocked"
+    elif matches["loopback_allow"]:
+        effective = "allowed"
+    elif matches["legacy_block"]:
+        effective = "blocked"
+    elif matches["legacy_allow"]:
+        effective = "allowed"
+    else:
+        effective = "unset"
     return {
         "schema": "codex-web-gpt.chrome-local-network/v1",
         "supported": True,
-        "enabled": policy_contains_origin(values),
+        "enabled": effective == "allowed",
         "origin": CHATGPT_ORIGIN,
         "policy_subkey": POLICY_SUBKEY,
-        "matching_value_names": [
-            name for name, value in values.items() if _normalized(value) == _normalized(CHATGPT_ORIGIN)
-        ],
-        "entry_count": len(values),
+        "matching_value_names": matches["legacy_allow"],
+        "entry_count": len(policies["legacy_allow"]),
+        "effective_permission": "loopback_network",
+        "effective_policy": effective,
+        "policy_matches": matches,
+        "policy_entry_counts": {name: len(values) for name, values in policies.items()},
     }
 
 

@@ -28,15 +28,17 @@ REGISTERED_APP_ACTION_SNAPSHOT_GATE_ERRORS = frozenset(
 REGISTERED_APP_ACTION_SNAPSHOT_GUIDANCE = {
     "ko": [
         "새 일반 비-Pro canary에서 read_chunk 또는 서버 생성 Audit receipt ID가 보이지 않으면, 서버가 아니라 ChatGPT의 등록 앱 Action 스냅샷이 오래된 상태로 취급합니다.",
-        "Enterprise/Edu 관리자는 ChatGPT의 Workspace settings > Apps에서 정확한 codex 앱의 더보기 메뉴를 열고 Action control > Refresh를 직접 실행한 뒤 새 Action을 검토·활성화합니다. 이 과정은 자동화하지 않습니다.",
-        "Business 또는 Refresh가 없는 UI에서는 같은 정확한 /mcp URL로 앱을 다시 만들고 게시한 뒤, 현재 서버가 노출한 Action을 검토·활성화하고 Owner 승인을 직접 완료합니다.",
-        "그 뒤 post-register를 한 번 실행하고, 새 일반 비-Pro auditNonce canary에서 open_workspace, read, read_chunk 및 세 서버 생성 receipt ID를 다시 증명합니다. open_workspace/read만으로는 통과하지 않습니다.",
+        "정확한 기존 codex 앱의 이름과 /mcp URL은 보존합니다. 앱 상세에서 보이는 Refresh 또는 새로 고침을 직접 눌러 Action을 갱신한 뒤 새 Action을 검토·활성화합니다. 이 ChatGPT 설정은 자동화하지 않습니다.",
+        "OAuth 또는 도구 호출이 계속 오래되면 https://chatgpt.com/#settings/Plugins/ 에서 기존 codex 앱을 선택하고 Reconnect(다시 연결)를 직접 실행합니다. Business라는 이유나 Refresh가 보이지 않는다는 이유만으로 앱을 삭제·재등록하지 않습니다.",
+        "post-register는 방금 등록했거나 다시 연결한 뒤 단계/진단이 요구할 때만 정확히 한 번 실행합니다. 이어서 새 일반 비-Pro auditNonce canary에서 open_workspace, read, read_chunk 및 세 서버 생성 receipt ID를 다시 증명합니다. open_workspace/read만으로는 통과하지 않습니다.",
+        "앱 레코드가 실제로 없거나 손상되어 기존 앱을 선택·갱신·재연결할 수 없을 때만 예외적으로 같은 정확한 이름과 /mcp URL로 다시 만듭니다.",
     ],
     "en": [
         "If a fresh regular non-Pro canary exposes no read_chunk or server-generated Audit receipt IDs, treat the registered ChatGPT app Action snapshot as stale rather than accepting the partial tool surface.",
-        "On Enterprise/Edu, an admin must open the exact codex app's overflow menu under Workspace settings > Apps, use Action control > Refresh, and review and enable the new Actions. Do not automate this ChatGPT setting.",
-        "On Business, or when Refresh is unavailable, recreate and publish the app with the same exact /mcp URL, review and enable the Actions currently exposed by the server, and complete Owner approval manually.",
-        "Then run post-register once and run a fresh regular non-Pro auditNonce canary proving open_workspace, read, read_chunk, and all three server-generated receipt IDs. open_workspace/read alone never passes.",
+        "Keep the exact existing codex app name and /mcp URL. In the app detail, manually use the visible Refresh or New refresh control to update Actions, then review and enable the new Actions. Do not automate this ChatGPT setting.",
+        "If OAuth or tool calls remain stale, manually open https://chatgpt.com/#settings/Plugins/, select the existing codex app, and use Reconnect. Do not delete or re-register the app merely because the workspace is Business or Refresh is unavailable.",
+        "Run post-register exactly once only when the stage or diagnosis requires it after registration or reconnection. Then run a fresh regular non-Pro auditNonce canary proving open_workspace, read, read_chunk, and all three server-generated receipt IDs. open_workspace/read alone never passes.",
+        "Recreate with the same exact name and /mcp URL only as an exception when the app record is actually absent or corrupt and the existing app cannot be selected, refreshed, or reconnected.",
     ],
 }
 

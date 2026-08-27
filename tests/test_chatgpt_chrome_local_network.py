@@ -24,6 +24,38 @@ def test_new_entry_preserves_sparse_existing_names() -> None:
     assert module.next_policy_value_name({"1": "https://example.com", "3": "https://other.example"}) == "2"
 
 
+def test_split_policy_requires_loopback_allow_and_honors_blockers(monkeypatch) -> None:
+    policies = {
+        module.POLICY_SUBKEYS["legacy_allow"]: {"1": "https://chatgpt.com"},
+        module.POLICY_SUBKEYS["legacy_block"]: {},
+        module.POLICY_SUBKEYS["local_allow"]: {"1": "https://chatgpt.com"},
+        module.POLICY_SUBKEYS["local_block"]: {},
+        module.POLICY_SUBKEYS["loopback_allow"]: {"1": "https://chatgpt.com:443"},
+        module.POLICY_SUBKEYS["loopback_block"]: {},
+    }
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module, "_read_windows_policy", lambda subkey: policies[subkey])
+    allowed = module.policy_status()
+    assert allowed["enabled"] is True
+    assert allowed["effective_permission"] == "loopback_network"
+    assert allowed["effective_policy"] == "allowed"
+
+    policies[module.POLICY_SUBKEYS["loopback_block"]] = {"1": "https://chatgpt.com"}
+    blocked = module.policy_status()
+    assert blocked["enabled"] is False
+    assert blocked["effective_policy"] == "blocked"
+
+
+def test_split_local_policy_cannot_authorize_loopback(monkeypatch) -> None:
+    policies = {subkey: {} for subkey in module.POLICY_SUBKEYS.values()}
+    policies[module.POLICY_SUBKEYS["local_allow"]] = {"1": "https://chatgpt.com"}
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module, "_read_windows_policy", lambda subkey: policies[subkey])
+    status = module.policy_status()
+    assert status["enabled"] is False
+    assert status["effective_policy"] == "unset"
+
+
 def test_permission_denial_returns_bounded_manual_fallback(monkeypatch, capsys) -> None:
     def denied(**_kwargs):
         raise PermissionError("denied")

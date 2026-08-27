@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.20.8",
+  "version": "1.20.9",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -28,6 +28,7 @@
     "bin/devspace-compat/1.0.8/artifact-audit-readonly.patch",
     "bin/devspace-compat/1.0.8/workspace-write-and-read-bridge.patch",
     "bin/devspace-compat/1.0.8/tool-read-receipts.patch",
+    "bin/devspace-compat/1.0.8/widget-domain.patch",
     "bin/devspace-compat/1.0.8/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.patch",
@@ -228,7 +229,7 @@
         "version": "1.0.7",
         "integrity": "sha512-kP+Wk52qiMRwdqAP+nV4OZ4HU8feivZQ0k6u4ZUkvqxu8j0Rp/AU8H0K4T43G+zmu9WJKlYLTet7vIUeZHU72A=="
       },
-      "installation": "resolved by the explicit setup skill at 1.0.8; exact published hashes are compatibility-patched for bounded OAuth replay, workspace writes, large reads, and context discovery; 1.0.7 remains rollback LKG only"
+      "installation": "resolved by the explicit setup skill at 1.0.8; exact published hashes are compatibility-patched for bounded OAuth replay, workspace writes, large reads, context discovery, immutable read receipts, and a credential-free HTTPS workspace-app domain; 1.0.7 remains rollback LKG only"
     },
     "codexpro": {
       "package": "codexpro",

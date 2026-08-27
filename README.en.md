@@ -110,6 +110,16 @@ for exact commands and provider-specific branches.
 When adding a project, preserve the complete existing root set and add only the
 new exact folder. Do not inspect or automate ChatGPT app settings per task.
 
+Keep an existing `codex` app's exact name and `/mcp` URL. When Actions are
+stale, use the visible **Refresh**/**New refresh** control in the app detail;
+if OAuth or tool calls remain stale, open `https://chatgpt.com/#settings/Plugins/`,
+select the existing app, and use **Reconnect**. Business UI or an unavailable
+Refresh control is not grounds to recreate the app: do so only when its record
+is actually absent or corrupt. Run `post-register` exactly once only when
+required, then use a fresh regular non-Pro auditNonce canary to prove
+`open_workspace → read → read_chunk`. A widget-domain warning alone does not
+establish whether `read_chunk` is present.
+
 ## Choose a mode
 
 | Desired result | Mode | Route |

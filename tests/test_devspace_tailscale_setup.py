@@ -431,6 +431,12 @@ def test_recover_starts_missing_service_then_restores_exact_funnel(
 
     def runner(argv, **kwargs):
         calls.append(list(argv))
+        if argv == module.devspace_compat_argv():
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"ok": True, "service_restart_required": False}),
+                stderr="",
+            )
         if argv[:4] == ["tailscale", "funnel", "status", "--json"]:
             return SimpleNamespace(
                 returncode=0,
@@ -454,6 +460,129 @@ def test_recover_starts_missing_service_then_restores_exact_funnel(
     assert launches[0] == module.managed_service_runner_argv()
     assert any("--stop-exact-service" in call for call in calls)
     assert any("--confirm-service-restarted" in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("restart_required", "expected_restarted", "expected_reason"),
+    (
+        (True, True, "compatibility-restart-required"),
+        (False, False, "healthy-listener-compatible"),
+    ),
+)
+def test_recover_reconciles_healthy_listener_only_when_compatibility_requires_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    restart_required: bool,
+    expected_restarted: bool,
+    expected_reason: str,
+) -> None:
+    module, current = config(tmp_path)
+    bash = tmp_path / "bash.exe"
+    bash.write_text("", encoding="utf-8")
+    monkeypatch.setenv("DEVSPACE_GIT_BASH", str(bash))
+    calls: list[list[str]] = []
+    launches: list[list[str]] = []
+
+    class Response:
+        status = 401
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+
+    def opener(request, timeout):
+        response = Response()
+        response.status = 200 if request.full_url.endswith("/healthz") else 401
+        return response
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv == module.devspace_compat_argv():
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"ok": True, "service_restart_required": restart_required}),
+                stderr="",
+            )
+        if argv == ["tailscale", "funnel", "status", "--json"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"Web": {current.hostname + ":443": {"Proxy": f"http://127.0.0.1:{current.local_port}"}}}),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    report = module.recover_service(
+        current,
+        opener=opener,
+        runner=runner,
+        popen_factory=lambda argv, **kwargs: (launches.append(list(argv)) or SimpleNamespace(pid=4567)),
+        sleeper=lambda _: None,
+    )
+
+    assert report["ok"] is True
+    assert report["service_started"] is False
+    assert report["service_restarted"] is expected_restarted
+    assert report["reconciliation_reason"] == expected_reason
+    assert report["compatibility"]["service_restart_required"] is restart_required
+    assert len(launches) == int(expected_restarted)
+    assert calls.count(module.devspace_compat_argv(stop_exact_service=True)) == int(expected_restarted)
+    assert calls.count(module.devspace_compat_argv(confirm_restarted=True)) == int(expected_restarted)
+    assert module.devspace_package_prepare_argv() in calls
+    assert module.devspace_native_prepare_argv() in calls
+    assert module.devspace_native_argv() in calls
+    assert not any("post-register" in call for call in calls)
+    assert not any(call[:3] == ["tailscale", "funnel", "reset"] for call in calls)
+    assert not any(call[-1:] == ["off"] for call in calls)
+
+
+@pytest.mark.parametrize(
+    "compatibility_payload",
+    (
+        {"ok": True},
+        {"ok": True, "service_restart_required": None},
+        {"ok": True, "service_restart_required": "false"},
+        {"ok": True, "service_restart_required": 0},
+        {"ok": True, "service_restart_required": 1},
+        {"ok": True, "service_restart_required": []},
+        {"ok": True, "service_restart_required": {}},
+    ),
+)
+def test_recover_rejects_non_boolean_compatibility_restart_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    compatibility_payload: dict[str, object],
+) -> None:
+    module, current = config(tmp_path)
+    bash = tmp_path / "bash.exe"
+    bash.write_text("", encoding="utf-8")
+    monkeypatch.setenv("DEVSPACE_GIT_BASH", str(bash))
+    launches: list[list[str]] = []
+
+    class Response:
+        status = 401
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+
+    def runner(argv, **kwargs):
+        if argv == module.devspace_compat_argv():
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(compatibility_payload),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with pytest.raises(module.SetupError, match="DEVSPACE_COMPAT_REPORT_INVALID"):
+        module.recover_service(
+            current,
+            opener=lambda request, timeout: Response(),
+            runner=runner,
+            popen_factory=lambda argv, **kwargs: launches.append(list(argv)),
+            sleeper=lambda _: None,
+        )
+    assert launches == []
 
 
 def test_post_register_always_recycles_service_and_preserves_oauth_state(

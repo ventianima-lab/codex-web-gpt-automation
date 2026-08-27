@@ -61,14 +61,28 @@ required.
 
 ChatGPT keeps a registered app's Action list as a snapshot. If a fresh final
 canary sees `open_workspace` and `read` but no `read_chunk`, or it sees no
-server-generated Audit receipt IDs, do not accept the partial result. The user
-must manually open the exact `codex` app's overflow menu under **Workspace
-settings > Apps**, select **Action control > Refresh**, then review and enable
-the new Actions. On Business, or when Refresh is unavailable, recreate and
-publish the app with the same exact `/mcp` URL, review and enable the Actions
-currently exposed by the server, and complete Owner approval manually. Agents must not automate
-these ChatGPT settings. Afterwards run the one `post-register` command shown by
-stage `08_final_gate`, then run a fresh regular non-Pro auditNonce canary.
+server-generated Audit receipt IDs, do not accept the partial result. Keep the
+exact existing `codex` app name and `/mcp` URL. In the app detail, manually use
+the visible **Refresh** or **New refresh** control to update Actions, then
+review and enable the new Actions. Agents must not automate these ChatGPT
+settings.
+
+If OAuth or tool calls remain stale, manually open
+`https://chatgpt.com/#settings/Plugins/`, select the existing `codex` app, and
+use **Reconnect**. Do not delete or re-register the app merely because the
+workspace is Business or Refresh is unavailable. Run `post-register` exactly
+once only when `08_final_gate` or diagnosis requires it after registration or
+reconnection, then run a fresh regular non-Pro auditNonce canary. Recreate with
+the same exact name and `/mcp` URL only as an exception when the app record is
+actually absent or corrupt and the existing app cannot be selected, refreshed,
+or reconnected.
+
+A widget-domain warning concerns required app-submission UI metadata; it does
+not prove whether the `read_chunk` Action is present. The managed DevSpace
+compatibility patch supplies the exact credential-free public HTTPS origin. If
+the warning remains after installation, Refresh the existing app's Actions;
+do not recreate the app. Verify the actual `open_workspace → read → read_chunk`
+surface with the fresh canary instead of inferring it from that warning.
 
 ## Final gate
 

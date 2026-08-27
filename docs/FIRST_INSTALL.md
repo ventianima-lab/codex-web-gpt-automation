@@ -107,14 +107,23 @@ Plus/Pro에서도 보통 등록할 수 있으므로 요금제는 마지막 가�
 
 ChatGPT의 등록 앱 Action 목록은 고정 스냅샷일 수 있습니다. 새 final canary에서
 `open_workspace`와 `read`만 보이고 `read_chunk`가 없거나 서버 생성 Audit receipt ID가
-보이지 않으면 부분 성공으로 처리하지 않습니다. Enterprise/Edu 관리자는
-`워크스페이스 설정 → 앱`에서 정확한 `codex` 앱의 더보기 메뉴를 열고
-`Action control → Refresh`를 직접 실행한 뒤 새 Action을 검토·활성화합니다.
-Business 또는 Refresh가 없는 UI에서는 같은 exact `/mcp` URL로 앱을 다시 만들고
-게시한 뒤 서버가 현재 노출한 Action을 검토·활성화하고 Owner 승인을 직접 완료합니다.
-에이전트는 이 ChatGPT 설정을
-자동 조작하지 않습니다. 그 뒤 `08_final_gate`가 출력한 `post-register`를 한 번 실행하고,
-새 일반 비-Pro auditNonce canary를 실행합니다.
+보이지 않으면 부분 성공으로 처리하지 않습니다. 정확한 기존 `codex` 앱의 이름과 `/mcp`
+URL을 보존하고, 앱 상세에서 보이는 `Refresh` 또는 `새로 고침`으로 Action을 갱신한 뒤
+새 Action을 검토·활성화합니다. 에이전트는 이 ChatGPT 설정을 자동 조작하지 않습니다.
+
+OAuth 또는 도구 호출이 계속 오래되면 `https://chatgpt.com/#settings/Plugins/`에서 기존
+`codex` 앱을 선택하고 `Reconnect`/`다시 연결`을 직접 실행합니다. Business라는 이유나
+`Refresh`가 보이지 않는다는 이유만으로 앱을 삭제·재등록하지 않습니다. `post-register`는
+방금 등록했거나 다시 연결한 뒤 `08_final_gate` 또는 진단이 요구할 때만 정확히 한 번
+실행하고, 이어서 새 일반 비-Pro auditNonce canary를 실행합니다. 앱 레코드가 실제로
+없거나 손상되어 기존 앱을 선택·갱신·재연결할 수 없을 때만 예외적으로 같은 정확한 이름과
+`/mcp` URL로 다시 만듭니다.
+
+위젯 도메인 경고는 앱 제출에 필요한 UI 메타데이터에 관한 경고이며 `read_chunk` Action의
+존재·부재를 증명하지 않습니다. 관리형 DevSpace 호환 패치는 정확한 자격 증명 없는 공개
+HTTPS origin을 제공합니다. 설치 뒤에도 경고가 남으면 기존 앱의 Action을 `새로 고침`하고
+앱을 다시 만들지 않습니다. 이 경우에도 Action 목록 추측 대신 새 canary로 실제
+`open_workspace → read → read_chunk`를 확인합니다.
 
 ### 실제 연결 확인
 

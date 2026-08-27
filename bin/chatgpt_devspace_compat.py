@@ -41,9 +41,10 @@ PATCHES = {
     "dist/server.js": {
         "patch": "workspace-write-and-read-bridge.patch",
         "pristine": "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263",
-        "patched": "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c",
+        "patched": "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985",
         "upgrades": {
             "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": "tool-read-receipts.patch",
+            "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c": "widget-domain.patch",
         },
     },
     "dist/workspaces.js": {
@@ -405,17 +406,24 @@ try {
   fs.rmSync(state, { recursive: true, force: true });
 }
 """
-    completed = runner(
-        [node, "--input-type=module", "-e", source],
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        timeout=30,
-        **_git_kwargs(),
-    )
+    try:
+        completed = runner(
+            [node, "--input-type=module", "-e", source],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+            **_git_kwargs(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_TIMEOUT",
+            "DevSpace OAuth refresh replay check timed out",
+            {"root": str(root), "timeout_seconds": 30},
+        ) from exc
     if completed.returncode != 0:
         raise DevSpaceCompatError(
             "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_FAILED",
