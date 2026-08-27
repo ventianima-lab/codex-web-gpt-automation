@@ -107,6 +107,16 @@ ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER = (
     "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED: unarchive-menu-not-found"
 )
 ORACLE_FOLLOWUP_PRE_COMPOSER_STAGES = frozenset({"resume-conversation"})
+ORACLE_SESSION_METADATA_RENAME_RE = re.compile(
+    r"^(?P<prefix>.{1,4}\s+)?(?P<code>EPERM|EACCES|EBUSY): "
+    r"(?P<message>operation not permitted|permission denied|resource busy or locked), "
+    r"rename '(?P<source>[^'\r\n]+)' -> '(?P<destination>[^'\r\n]+)'$"
+)
+ORACLE_SESSION_METADATA_RENAME_MESSAGES = {
+    "EPERM": "operation not permitted",
+    "EACCES": "permission denied",
+    "EBUSY": "resource busy or locked",
+}
 
 
 def _process_may_be_alive(pid: int) -> bool:
@@ -5051,6 +5061,9 @@ def settle_user_confirmed_no_submission(
                 "user-confirmed-no-submission-after-devspace-restart-required"
                 if evidence.get("host_failure", {}).get("failure_reason")
                 == "devspace-service-restart-required"
+                else "user-confirmed-no-submission-after-oracle-metadata-rename-failure"
+                if evidence.get("host_failure", {}).get("failure_reason")
+                == "oracle-session-metadata-rename-failed-before-browser"
                 else "user-confirmed-no-submission-after-oracle-version-resolution-failure"
             )
             if evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
@@ -5469,6 +5482,287 @@ def proven_pre_submit_cdp_disconnect(state_path: Path) -> dict[str, Any] | None:
     }
 
 
+def proven_pre_submit_oracle_metadata_rename_failure(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Prove Oracle 0.18.0 failed writing its pending ledger before Chrome.
+
+    This is intentionally narrower than a generic EPERM classifier.  It binds
+    the exact task/run/mission/locator, the immutable ownership receipt, the
+    pending Oracle ledger, the normal pre-browser banner, and the exact
+    ``meta.json.<pid>.<uuid>.tmp -> meta.json`` replacement.  Any browser
+    runtime, receipt, URL, output, recovery attempt, live process, or path
+    mismatch keeps the run submitted-unknown.
+    """
+    state = load_state(state_path)
+    run_dir = state_path.parent.resolve()
+    run_id = str(state.get("run_id") or "").strip()
+    originating_task = (
+        state.get("originating_task")
+        if isinstance(state.get("originating_task"), dict)
+        else {}
+    )
+    source_thread_id = source_thread_id_from_state(state)
+    state_ownership = (
+        state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    )
+    authority = str(state.get("session_authority") or "")
+    transport_status = str(state.get("transport_status") or "")
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    command = tuple(str(item) for item in (oracle.get("command") or []))
+    try:
+        validated_command = validate_oracle_command(list(command))
+    except OracleStateError:
+        validated_command = ()
+    if (
+        state.get("schema") != STATE_SCHEMA
+        or not run_id
+        or run_dir.name != run_id
+        or source_thread_id is None
+        or originating_task.get("schema") != "codex.chatgpt.oracle-task-owner/v1"
+        or originating_task.get("binding") != "bound"
+        or originating_task.get("source_thread_id") != source_thread_id
+        or state_ownership.get("schema") != "codex.chatgpt.oracle-ownership/v1"
+        or state_ownership.get("binding") != "bound"
+        or state_ownership.get("source_thread_id") != source_thread_id
+        or authority not in {"submitted_unknown", "pre_submit"}
+        or state.get("status") != "attention_required"
+        or transport_status
+        not in {"failed", "failed_pre_submit", "not_submitted_user_confirmed"}
+        or state.get("task_outcome") != "pending"
+        or state.get("terminal_harvested") is not False
+        or int(state.get("exit_code") or 0) == 0
+        or str(state.get("mode") or "") != "browser"
+        or not is_devspace_transport(str(state.get("transport") or ""))
+        or state.get("parallel_parent_id") is not None
+        or state.get("requested_run_id") not in (None, run_id)
+        or state.get("web_multi_child_provenance") is not None
+        or state.get("attachments") not in (None, [])
+        or not locator
+        or oracle.get("slug") != locator
+        or str(oracle.get("resolved_version") or "").removeprefix("oracle ").strip()
+        != "0.18.0"
+        or validated_command != command
+        or _state_has_conversation_url(state)
+    ):
+        return None
+
+    ownership = proven_ownership_receipt(state_path)
+    if ownership is None:
+        return None
+    ownership_payload = ownership.get("payload") if isinstance(ownership.get("payload"), dict) else {}
+    controller_pid = int(ownership_payload.get("oracle_process_pid") or 0)
+    observer = state.get("browser_observer") if isinstance(state.get("browser_observer"), dict) else {}
+    if (
+        controller_pid <= 0
+        or int(observer.get("oracle_process_pid") or 0) != controller_pid
+        or observer.get("status") != "process-exited"
+        or _process_may_be_alive(controller_pid)
+    ):
+        return None
+
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    mission_sha256 = str(mission.get("sha256") or "").casefold()
+    transport_path = Path(str(mission.get("transport_path") or ""))
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output_path = Path(str(artifacts.get("output") or ""))
+    browser_temp = Path(str(artifacts.get("browser_temp") or ""))
+    records = {name: _artifact_bytes(state, name) for name in ("stdout", "stderr", "transcript")}
+    if (
+        not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
+        or transport_path.resolve() != (run_dir / "mission.md").resolve()
+        or transport_path.is_symlink()
+        or output_path.resolve() != (run_dir / "output.md").resolve()
+        or output_path.exists()
+        or output_path.is_symlink()
+        or browser_temp.resolve() != (run_dir / "browser-temp").resolve()
+        or browser_temp.is_symlink()
+        or any(record is None for record in records.values())
+        or any(run_dir.glob("recovery-*-stdout.log"))
+        or any(run_dir.glob("recovery-*-stderr.log"))
+    ):
+        return None
+    try:
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+        transport_bytes = transport_path.read_bytes()
+        if not browser_temp.is_dir():
+            return None
+    except OSError:
+        return None
+    if (
+        not project_root.is_dir()
+        or ownership_payload.get("source_thread_id") != source_thread_id
+        or ownership_payload.get("binding") != "bound"
+        or ownership_payload.get("project_root_sha256")
+        != hashlib.sha256(str(project_root).casefold().encode("utf-8")).hexdigest()
+        or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
+        or ownership_payload.get("mission_sha256") != mission_sha256
+        or ownership_payload.get("run_id") != run_id
+        or ownership_payload.get("slug") != locator
+        or ownership_payload.get("project_root") != str(state.get("project_root") or "")
+    ):
+        return None
+
+    stdout_path, stdout_bytes = records["stdout"]  # type: ignore[misc]
+    stderr_path, stderr_bytes = records["stderr"]  # type: ignore[misc]
+    transcript_path, transcript_bytes = records["transcript"]  # type: ignore[misc]
+    if (
+        stdout_path.resolve() != (run_dir / "stdout.log").resolve()
+        or stderr_path.resolve() != (run_dir / "stderr.log").resolve()
+        or transcript_path.resolve() != (run_dir / "transcript.md").resolve()
+        or any(path.is_symlink() for path in (stdout_path, stderr_path, transcript_path))
+        or transcript_bytes != stdout_bytes + stderr_bytes
+    ):
+        return None
+    try:
+        stdout_text = stdout_bytes.decode("utf-8", errors="strict")
+        stderr_text = stderr_bytes.decode("utf-8", errors="strict")
+        transcript_text = transcript_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    lines = stdout_text.splitlines()
+    if (
+        len(lines) != 6
+        or re.fullmatch(r".{1,4}\s+oracle 0\.18\.0\s+.{2,160}", lines[0]) is None
+        or lines[1:] != [
+            f"Session: {locator}",
+            "Mode: browser foreground",
+            "Models: 1",
+            "Detach: no",
+            f"Reattach: oracle session {locator}",
+        ]
+        or CHATGPT_CONVERSATION_URL_RE.search(transcript_text)
+    ):
+        return None
+    rename = ORACLE_SESSION_METADATA_RENAME_RE.fullmatch(stderr_text.strip())
+    if (
+        rename is None
+        or ORACLE_SESSION_METADATA_RENAME_MESSAGES.get(rename.group("code"))
+        != rename.group("message")
+    ):
+        return None
+
+    session_root = Path(
+        os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+    ).resolve()
+    meta_path = session_root / locator / "meta.json"
+    if meta_path.is_symlink() or meta_path.parent.is_symlink():
+        return None
+    try:
+        meta_bytes = meta_path.read_bytes()
+        meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    source_text = rename.group("source")
+    destination_text = rename.group("destination")
+    expected_destination = str(meta_path)
+    source_match = re.fullmatch(
+        re.escape(expected_destination)
+        + r"\.(?P<pid>[1-9][0-9]*)\.(?P<nonce>[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.tmp",
+        source_text,
+        re.IGNORECASE,
+    )
+    if destination_text != expected_destination or source_match is None:
+        return None
+    writer_pid = int(source_match.group("pid"))
+    if _process_may_be_alive(writer_pid) or Path(source_text).exists():
+        return None
+
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    option_browser = options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
+    models = meta.get("models") if isinstance(meta.get("models"), list) else []
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    browser_identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    provider = state.get("provider_session") if isinstance(state.get("provider_session"), dict) else {}
+    try:
+        meta_cwd = Path(str(meta.get("cwd") or "")).resolve()
+        meta_output = Path(str(options.get("writeOutputPath") or "")).resolve()
+        state_profile = Path(str(profile.get("copy_profile") or "")).resolve()
+        config_profile = Path(str(config.get("copyProfileSource") or "")).resolve()
+        option_profile = Path(str(option_browser.get("copyProfileSource") or "")).resolve()
+        provider_meta = Path(str(provider.get("oracle_meta_path") or "")).resolve()
+    except OSError:
+        return None
+
+    forbidden_runtime_keys = {"promptSubmitted", "conversationId", "tabUrl", "commitProbe"}
+
+    def contains_forbidden_runtime_key(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(
+                key in forbidden_runtime_keys or contains_forbidden_runtime_key(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(contains_forbidden_runtime_key(item) for item in value)
+        return False
+
+    expected_port = int(browser_identity.get("expected_cdp_port") or 0)
+    browser_receipt = run_dir / "browser-identity-receipt.json"
+    if (
+        meta.get("id") != locator
+        or meta.get("status") != "pending"
+        or meta.get("model") != "gpt-5.6"
+        or meta.get("mode") != "browser"
+        or meta_cwd != project_root
+        or not str(meta.get("createdAt") or "").strip()
+        or models != [{"model": "gpt-5.6", "status": "pending", "log": {"path": "models\\gpt-5.6.log"}}]
+        or "runtime" in browser
+        or contains_forbidden_runtime_key(meta)
+        or expected_port <= 0
+        or profile.get("model") != "gpt-5.6"
+        or profile.get("model_strategy") != "select"
+        or profile.get("thinking_time") != "extra-high"
+        or config.get("debugPort") != expected_port
+        or option_browser.get("debugPort") != expected_port
+        or config.get("desiredModel") != "GPT-5.6 Sol"
+        or config.get("modelStrategy") != "select"
+        or config.get("thinkingTime") != "extra-high"
+        or options.get("model") != "gpt-5.6"
+        or options.get("slug") != locator
+        or options.get("mode") != "browser"
+        or meta_output != output_path.resolve()
+        or state_profile != config_profile
+        or state_profile != option_profile
+        or browser_identity.get("receipt_path") is not None
+        or browser_identity.get("receipt_sha256") is not None
+        or browser_receipt.exists()
+        or browser_receipt.is_symlink()
+        or provider.get("status") != "pending"
+        or provider.get("terminal_confirmed") is not False
+        or provider.get("binding") != "unconfirmed"
+        or provider.get("observed_conversation_url") is not None
+        or provider_meta != meta_path.resolve()
+        or provider.get("oracle_meta_sha256") != hashlib.sha256(meta_bytes).hexdigest()
+    ):
+        return None
+
+    return {
+        "schema": "codex.chatgpt.oracle-pre-submit-host-failure/v1",
+        "code": "ORACLE_SESSION_METADATA_RENAME_PRELAUNCH_FAILED",
+        "oracle_locator": locator,
+        "oracle_version": "0.18.0",
+        "rename_error_code": rename.group("code"),
+        "rename_source": source_text,
+        "rename_destination": destination_text,
+        "rename_writer_pid": writer_pid,
+        "controller_pid": controller_pid,
+        "source_thread_id": source_thread_id,
+        "ownership_receipt_sha256": ownership["sha256"],
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+        "oracle_meta_path": str(meta_path),
+        "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "resolved_version": "0.18.0",
+        "failure_reason": "oracle-session-metadata-rename-failed-before-browser",
+    }
+
+
 def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
     """Prove a host failure happened before Oracle/browser launch.
 
@@ -5476,6 +5770,9 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
     process is created.  The additional immutable-state checks keep this from
     reclassifying a real submitted or live session.
     """
+    metadata_rename = proven_pre_submit_oracle_metadata_rename_failure(state_path)
+    if metadata_rename is not None:
+        return metadata_rename
     manual_login = proven_pre_submit_manual_login_profile_uninitialized(state_path)
     if manual_login is not None:
         return manual_login
@@ -5711,6 +6008,7 @@ def _pre_submit_host_no_submission_evidence(state_path: Path) -> dict[str, Any] 
         failure is None
         or failure.get("code") not in {
             "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED",
+            "ORACLE_SESSION_METADATA_RENAME_PRELAUNCH_FAILED",
             "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED",
         }
     ):
@@ -5746,7 +6044,8 @@ def _pre_submit_host_no_submission_evidence(state_path: Path) -> dict[str, Any] 
         or transcript_path.resolve() != (run_dir / "transcript.md").resolve()
         or transcript_path.is_symlink()
         or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
-        or hashlib.sha256(transcript_bytes).hexdigest() != failure["stderr_sha256"]
+        or hashlib.sha256(transcript_bytes).hexdigest()
+        != failure.get("transcript_sha256", failure["stderr_sha256"])
     ):
         return None
     return {
@@ -6057,6 +6356,7 @@ def settle_proven_pre_submit_failure(state_path: Path) -> dict[str, Any] | None:
                 "ORACLE_LAUNCH_FLAGS_MUTUALLY_EXCLUSIVE_PRELAUNCH_FAILED",
                 "ORACLE_MANUAL_LOGIN_PROFILE_UNINITIALIZED_PRELAUNCH_FAILED",
                 "ORACLE_CDP_DISCONNECT_PRE_SUBMIT_FAILED",
+                "ORACLE_SESSION_METADATA_RENAME_PRELAUNCH_FAILED",
             }
             else "pending"
         ),
@@ -6073,6 +6373,8 @@ def settle_proven_pre_submit_failure(state_path: Path) -> dict[str, Any] | None:
             if evidence["code"] == "ORACLE_MANUAL_LOGIN_PROFILE_UNINITIALIZED_PRELAUNCH_FAILED"
             else "oracle-cdp-disconnect-pre-submit"
             if evidence["code"] == "ORACLE_CDP_DISCONNECT_PRE_SUBMIT_FAILED"
+            else "oracle-session-metadata-rename-pre-submit"
+            if evidence["code"] == "ORACLE_SESSION_METADATA_RENAME_PRELAUNCH_FAILED"
             else "oracle-model-switcher-pre-submit"
             if evidence["code"] == "ORACLE_MODEL_SWITCHER_PRE_SUBMIT_FAILED"
             else "prelaunch-host-failure"

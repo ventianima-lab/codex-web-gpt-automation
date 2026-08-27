@@ -1,5 +1,22 @@
 # 기술 변경 기록
 
+## 1.20.12 - Retry transient Windows Oracle metadata replacement
+
+- Oracle 0.18.0 session metadata now retries only transient Windows `EPERM`,
+  `EACCES`, and `EBUSY` failures while atomically replacing `meta.json`. This
+  prevents a pre-submit run from dying when antivirus or another short-lived
+  reader briefly holds the destination, while preserving fail-closed behavior
+  for every other platform and error.
+- If the bounded retry still exhausts before any browser runtime or conversation
+  exists, the exact task owner may use the normal explicit
+  `settle-no-submission` path. The evidence binds the exact Oracle locator,
+  immutable mission and ownership receipt, pending session metadata, exited
+  controller, empty output/conversation/browser identity, and the exact Windows
+  atomic-rename error; path, runtime, URL, output, or receipt contradictions
+  remain ineligible. The state, ownership block, and append-only receipt must
+  all bind the same valid Codex task UUID; legacy-unbound and foreign-task
+  settlement attempts remain forbidden.
+
 ## 1.20.11 - Recover exact ordinary DevSpace prompt timeouts
 
 - task-bound 일반 `devspace` 실행이 prompt commit timeout 뒤 browser identity

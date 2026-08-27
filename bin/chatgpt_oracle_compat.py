@@ -220,6 +220,11 @@ LKG_PATCHES = {
 # changed follow-up port/timeout and Windows copy-profile hunks are rebased in
 # the 0.18.0 directory.
 PATCHES = {
+    "dist/src/sessionManager.js": {
+        "patch": "sessionManager.windows-atomic-rename-retry.patch",
+        "pristine": "c9442c359117c059f1a2145042b119bd235af7695f22929b97bc014331135a69",
+        "patched": "5dd851474fb123a01421dd7650d6519f7933e5e385ec1f322291542be5521694",
+    },
     "dist/bin/oracle-cli.js": {
         "patch": "oracle-cli.followup-port-and-timeout.patch",
         "pristine": "6909a8fd25ff7e5459123637e90a79d72dc5733cc2af0c14220018cb663b1825",

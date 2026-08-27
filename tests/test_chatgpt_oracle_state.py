@@ -236,6 +236,296 @@ def test_write_json_atomic_uses_short_same_directory_temp_name(tmp_path: Path) -
     assert list(directory.glob(".t-*")) == []
 
 
+def _oracle_metadata_rename_fixture(
+    tmp_path: Path,
+    state,
+    *,
+    source_thread_id: str = "019ff05c-bad3-7770-a902-6b1b62588a7d",
+) -> tuple[Path, Path]:
+    project_root = tmp_path / "project"
+    run_id = "20260827T075513Z-23acae337024"
+    locator = "oracle-project-23acae3370"
+    run_dir = tmp_path / "state" / "projects" / "project" / "runs" / run_id
+    browser_temp = run_dir / "browser-temp"
+    session_root = tmp_path / "oracle-sessions"
+    meta_path = session_root / locator / "meta.json"
+    profile_path = tmp_path / "oracle-profile"
+    project_root.mkdir()
+    run_dir.mkdir(parents=True)
+    browser_temp.mkdir()
+    profile_path.mkdir()
+    meta_path.parent.mkdir(parents=True)
+    mission_bytes = b"verify registered app read route\n"
+    mission_sha256 = hashlib.sha256(mission_bytes).hexdigest()
+    (run_dir / "mission.md").write_bytes(mission_bytes)
+    output_path = run_dir / "output.md"
+    expected_cdp_port = 56853
+    controller_pid = 10796
+    writer_pid = 12312
+    nonce = "97ee88b0-7c8d-46d0-bfee-5aa74901def3"
+    stdout_bytes = (
+        "🧿 oracle 0.18.0 — Fine, I'll write the test for the AI too.\n"
+        f"Session: {locator}\n"
+        "Mode: browser foreground\n"
+        "Models: 1\n"
+        "Detach: no\n"
+        f"Reattach: oracle session {locator}\n"
+    ).encode("utf-8")
+    stderr_bytes = (
+        "✖ EPERM: operation not permitted, rename "
+        f"'{meta_path}.{writer_pid}.{nonce}.tmp' -> '{meta_path}'\n"
+    ).encode("utf-8")
+    (run_dir / "stdout.log").write_bytes(stdout_bytes)
+    (run_dir / "stderr.log").write_bytes(stderr_bytes)
+    (run_dir / "transcript.md").write_bytes(stdout_bytes + stderr_bytes)
+    browser_config = {
+        "debugPort": expected_cdp_port,
+        "copyProfileSource": str(profile_path),
+        "desiredModel": "GPT-5.6 Sol",
+        "modelStrategy": "select",
+        "thinkingTime": "extra-high",
+    }
+    meta = {
+        "id": locator,
+        "createdAt": "2026-08-27T07:55:18.733Z",
+        "status": "pending",
+        "model": "gpt-5.6",
+        "models": [
+            {"model": "gpt-5.6", "status": "pending", "log": {"path": "models\\gpt-5.6.log"}}
+        ],
+        "cwd": str(project_root),
+        "mode": "browser",
+        "browser": {"config": browser_config},
+        "options": {
+            "model": "gpt-5.6",
+            "slug": locator,
+            "mode": "browser",
+            "writeOutputPath": str(output_path),
+            "browserConfig": dict(browser_config),
+        },
+    }
+    meta_bytes = json.dumps(meta, indent=2).encode("utf-8")
+    meta_path.write_bytes(meta_bytes)
+    project_hash = hashlib.sha256(
+        str(project_root).casefold().encode("utf-8")
+    ).hexdigest()
+    payload = {
+        "schema": state.STATE_SCHEMA,
+        "run_id": run_id,
+        "project_root": str(project_root),
+        "mode": "browser",
+        "transport": "devspace",
+        "app_name": "codex",
+        "profile": {
+            "model": "gpt-5.6",
+            "model_strategy": "select",
+            "thinking_time": "extra-high",
+            "copy_profile": str(profile_path),
+        },
+        "parallel_parent_id": None,
+        "requested_run_id": None,
+        "web_multi_child_provenance": None,
+        "originating_task": {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": source_thread_id,
+            "binding": "bound",
+        },
+        "ownership": {
+            "schema": "codex.chatgpt.oracle-ownership/v1",
+            "source_thread_id": source_thread_id,
+            "binding": "bound",
+            "project_root_sha256": project_hash,
+            "run_id": run_id,
+            "mission_sha256": mission_sha256,
+            "slug": locator,
+        },
+        "transport_status": "failed",
+        "task_outcome_contract": "v1",
+        "task_outcome": "pending",
+        "mission": {
+            "path": str(project_root / "mission-source.md"),
+            "transport_path": str(run_dir / "mission.md"),
+            "sha256": mission_sha256,
+        },
+        "attachments": [],
+        "oracle": {
+            "resolved_version": "0.18.0",
+            "command": ["npx.cmd", "-y", "@steipete/oracle@0.18.0"],
+            "slug": locator,
+            "session_locator": locator,
+        },
+        "artifacts": {
+            "output": str(output_path),
+            "transcript": str(run_dir / "transcript.md"),
+            "stdout": str(run_dir / "stdout.log"),
+            "stderr": str(run_dir / "stderr.log"),
+            "browser_temp": str(browser_temp),
+        },
+        "browser_identity": {
+            "schema": "codex.chatgpt.oracle-browser-identity/v1",
+            "expected_cdp_port": expected_cdp_port,
+            "receipt_path": None,
+            "receipt_sha256": None,
+        },
+        "provider_session": {
+            "schema": "codex.chatgpt.oracle-provider-session/v1",
+            "status": "pending",
+            "terminal_confirmed": False,
+            "binding": "unconfirmed",
+            "reason": "browser-identity-receipt-unavailable",
+            "oracle_meta_path": str(meta_path),
+            "observed_conversation_url": None,
+            "completed_at": None,
+            "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        },
+        "status": "attention_required",
+        "exit_code": 1,
+        "session_authority": "submitted_unknown",
+        "terminal_harvested": False,
+        "artifact_sha256": None,
+        "browser_observer": {
+            "status": "process-exited",
+            "oracle_process_pid": controller_pid,
+            "timeout_is_terminal": False,
+        },
+    }
+    state_path = run_dir / "state.json"
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+    ownership_receipt = {
+        "schema": "codex.chatgpt.oracle-ownership-receipt/v1",
+        "source_thread_id": source_thread_id,
+        "binding": "bound",
+        "project_root": str(project_root),
+        "project_root_sha256": project_hash,
+        "run_id": run_id,
+        "mission_sha256": mission_sha256,
+        "slug": locator,
+        "oracle_process_pid": controller_pid,
+        "expected_cdp_port": expected_cdp_port,
+        "browser_temp": str(browser_temp),
+        "created_at": "2026-08-27T07:55:16.726047+00:00",
+    }
+    (run_dir / "ownership-receipt.json").write_text(
+        json.dumps(ownership_receipt), encoding="utf-8"
+    )
+    return state_path, meta_path
+
+
+def test_oracle_metadata_rename_prelaunch_failure_is_exactly_settleable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    source_thread_id = "019ff05c-bad3-7770-a902-6b1b62588a7d"
+    state_path, _ = _oracle_metadata_rename_fixture(
+        tmp_path, state, source_thread_id=source_thread_id
+    )
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(tmp_path / "oracle-sessions"))
+    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    failure = state.proven_pre_submit_oracle_metadata_rename_failure(state_path)
+    assert failure is not None
+    assert failure["code"] == "ORACLE_SESSION_METADATA_RENAME_PRELAUNCH_FAILED"
+    assert state._pre_submit_host_no_submission_evidence(state_path) is not None
+
+    settled = state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="exact Oracle metadata replacement exhausted before browser launch",
+    )
+    assert settled["session_authority"] == "pre_submit"
+    assert settled["transport_status"] == "not_submitted_user_confirmed"
+    assert settled["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-oracle-metadata-rename-failure"
+    )
+    assert state.proven_user_confirmed_no_submission(state_path) is not None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong-path",
+        "output",
+        "browser-runtime",
+        "browser-receipt",
+        "live-controller",
+        "legacy-unbound",
+    ],
+)
+def test_oracle_metadata_rename_prelaunch_failure_rejects_contradictions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    state = load_state()
+    state_path, meta_path = _oracle_metadata_rename_fixture(tmp_path, state)
+    run_dir = state_path.parent
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(tmp_path / "oracle-sessions"))
+    monkeypatch.setenv("CODEX_THREAD_ID", "019ff05c-bad3-7770-a902-6b1b62588a7d")
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda pid: mutation == "live-controller" and pid == 10796)
+
+    if mutation == "wrong-path":
+        stderr = (run_dir / "stderr.log").read_bytes().replace(
+            str(meta_path).encode("utf-8"), str(meta_path.with_name("other.json")).encode("utf-8")
+        )
+        (run_dir / "stderr.log").write_bytes(stderr)
+        (run_dir / "transcript.md").write_bytes((run_dir / "stdout.log").read_bytes() + stderr)
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("unexpected provider output", encoding="utf-8")
+    elif mutation == "browser-runtime":
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["browser"]["runtime"] = {"promptSubmitted": False}
+        meta_bytes = json.dumps(meta, indent=2).encode("utf-8")
+        meta_path.write_bytes(meta_bytes)
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        payload["provider_session"]["oracle_meta_sha256"] = hashlib.sha256(meta_bytes).hexdigest()
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+    elif mutation == "browser-receipt":
+        (run_dir / "browser-identity-receipt.json").write_text("{}", encoding="utf-8")
+    elif mutation == "legacy-unbound":
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        payload["originating_task"] = {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": None,
+            "binding": "legacy-unbound",
+        }
+        payload["ownership"]["source_thread_id"] = None
+        payload["ownership"]["binding"] = "legacy-unbound"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+        receipt_path = run_dir / "ownership-receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["source_thread_id"] = None
+        receipt["binding"] = "legacy-unbound"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    assert state.proven_pre_submit_oracle_metadata_rename_failure(state_path) is None
+    assert state._pre_submit_host_no_submission_evidence(state_path) is None
+
+
+def test_oracle_metadata_rename_settlement_rejects_foreign_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    owner_thread_id = "019ff05c-bad3-7770-a902-6b1b62588a7d"
+    state_path, _ = _oracle_metadata_rename_fixture(
+        tmp_path, state, source_thread_id=owner_thread_id
+    )
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(tmp_path / "oracle-sessions"))
+    monkeypatch.setenv("CODEX_THREAD_ID", "01a028dd-843a-76c2-b316-376f10c53ddd")
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    assert state.proven_pre_submit_oracle_metadata_rename_failure(state_path) is not None
+    with pytest.raises(state.OracleStateError) as caught:
+        state.settle_user_confirmed_no_submission(
+            state_path,
+            confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+            reason="foreign task must not settle the exact run",
+        )
+    assert caught.value.code == "FOREIGN_TASK_SESSION"
+
+
 def test_v1_task_outcome_accepts_exact_provider_reference_footer(tmp_path: Path) -> None:
     state = load_state()
     output = tmp_path / "output.md"
