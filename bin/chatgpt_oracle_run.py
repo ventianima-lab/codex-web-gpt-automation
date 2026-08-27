@@ -737,6 +737,28 @@ def process_is_alive(pid: int) -> bool:
     return True
 
 
+_RAW_PROCESS_IS_ALIVE = process_is_alive
+
+
+def run_owned_process_is_alive(
+    run_dir: Path,
+    state: dict[str, Any],
+    pid: int,
+    *,
+    process_alive: Callable[[int], bool] | None = None,
+) -> bool:
+    """Bind a live PID to this exact run before treating it as active."""
+    probe = process_alive or process_is_alive
+    if probe is not _RAW_PROCESS_IS_ALIVE:
+        return bool(probe(pid))
+    return STATE.exact_run_process_may_be_alive(
+        run_dir,
+        state,
+        pid,
+        process_probe=probe,
+    )
+
+
 def historical_session_authority(run_dir: Path, state: dict[str, Any]) -> str:
     """Recover the strongest exact-session authority from durable observer logs."""
     current = str(state.get("session_authority") or "submitted_unknown")
@@ -1007,7 +1029,10 @@ def seal_saved_output_browser_identity(
             "terminal Oracle browser identity is not exactly bound to the saved-output settlement",
         )
     checked_pids = tuple(sorted(set(run_owned_process_ids(directory, state)) | {chrome_pid, parent_pid}))
-    active_pids = [pid for pid in checked_pids if process_alive(pid)]
+    active_pids = [
+        pid for pid in checked_pids
+        if run_owned_process_is_alive(directory, state, pid, process_alive=process_alive)
+    ]
     if active_pids:
         raise OracleRunError(
             "SAVED_IDENTITY_PROCESS_ACTIVE",
@@ -1298,7 +1323,10 @@ def settle_saved_terminal_output(
             "Oracle terminal metadata is not exactly bound to this follow-up conversation and browser profile",
         )
     checked_pids = tuple(sorted(set(run_owned_process_ids(directory, state)) | set(runtime_pids)))
-    active_pids = [pid for pid in checked_pids if process_alive(pid)]
+    active_pids = [
+        pid for pid in checked_pids
+        if run_owned_process_is_alive(directory, state, pid, process_alive=process_alive)
+    ]
     if active_pids:
         raise OracleRunError(
             "SAVED_OUTPUT_PROCESS_ACTIVE",
@@ -2682,7 +2710,10 @@ def settle_user_confirmed_delivery_timeout_execution(
             "EXECUTION_ENDED_TIMEOUT_EVIDENCE_REQUIRED",
             "exact run does not retain provider delivery-timeout evidence",
         )
-    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_alive(pid)]
+    active_pids = [
+        pid for pid in run_owned_process_ids(directory, state)
+        if run_owned_process_is_alive(directory, state, pid, process_alive=process_alive)
+    ]
     if active_pids:
         raise OracleRunError(
             "EXECUTION_ENDED_PROCESS_ACTIVE",
@@ -2778,7 +2809,10 @@ def settle_user_confirmed_no_submission(
     state_path = directory / "state.json"
     stored = STATE.load_state(state_path)
     require_current_task_owns_run(stored)
-    active_pids = [pid for pid in run_owned_process_ids(directory, stored) if process_is_alive(pid)]
+    active_pids = [
+        pid for pid in run_owned_process_ids(directory, stored)
+        if run_owned_process_is_alive(directory, stored, pid)
+    ]
     if active_pids:
         raise OracleRunError(
             "NO_SUBMISSION_PROCESS_ACTIVE",
@@ -2895,7 +2929,10 @@ def settle_recursive_self_observation_fresh_run(
             "RECURSIVE_SELF_OBSERVATION_EVIDENCE_REQUIRED",
             "exact terminal output does not satisfy the bounded self-observation signature",
         )
-    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_is_alive(pid)]
+    active_pids = [
+        pid for pid in run_owned_process_ids(directory, state)
+        if run_owned_process_is_alive(directory, state, pid)
+    ]
     if active_pids:
         raise OracleRunError(
             "RECURSIVE_SELF_OBSERVATION_PROCESS_ACTIVE",
@@ -3095,7 +3132,10 @@ def settle_terminal_devspace_nonexecution_fresh_run(
             "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED",
             "terminal output lacks bounded DevSpace failure and explicit nonexecution proof",
         )
-    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_alive(pid)]
+    active_pids = [
+        pid for pid in run_owned_process_ids(directory, state)
+        if run_owned_process_is_alive(directory, state, pid, process_alive=process_alive)
+    ]
     if active_pids:
         raise OracleRunError(
             "TERMINAL_DEVSPACE_NONEXECUTION_PROCESS_ACTIVE",
@@ -3307,7 +3347,10 @@ def settle_terminal_devspace_read_route_refresh_fresh_run(
             "DEVSPACE_READ_ROUTE_REFRESH_EVIDENCE_REQUIRED",
             "terminal output does not prove the exact read-only read_chunk exposure failure",
         )
-    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_alive(pid)]
+    active_pids = [
+        pid for pid in run_owned_process_ids(directory, state)
+        if run_owned_process_is_alive(directory, state, pid, process_alive=process_alive)
+    ]
     if active_pids:
         raise OracleRunError(
             "DEVSPACE_READ_ROUTE_REFRESH_PROCESS_ACTIVE",

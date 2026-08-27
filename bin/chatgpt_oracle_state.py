@@ -138,6 +138,127 @@ def _process_may_be_alive(pid: int) -> bool:
     except (PermissionError, OSError):
         return True
     return True
+
+
+def _windows_process_snapshot(pid: int) -> dict[str, Any] | None:
+    """Return one bounded Windows process identity, or None after exact exit.
+
+    The PID alone is not an identity: Windows may reuse it after Oracle exits.
+    Keep this query fixed and pass only the integer PID as data.
+    """
+    script = r'''
+$targetPid = [int]$args[0]
+$p = Get-CimInstance Win32_Process -Filter "ProcessId=$targetPid" -ErrorAction Stop
+if ($null -eq $p) { exit 3 }
+[pscustomobject]@{
+  ProcessId = [int]$p.ProcessId
+  ParentProcessId = [int]$p.ParentProcessId
+  CreationDate = [string]$p.CreationDate
+  Name = [string]$p.Name
+  ExecutablePath = [string]$p.ExecutablePath
+  CommandLine = [string]$p.CommandLine
+} | ConvertTo-Json -Compress -Depth 3
+'''
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+            str(int(pid)),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    if completed.returncode == 3:
+        return None
+    if completed.returncode != 0:
+        raise OSError(completed.stderr.strip() or "Windows process identity query failed")
+    raw = completed.stdout.strip()
+    if not raw:
+        return None
+    value = json.loads(raw)
+    if not isinstance(value, dict) or int(value.get("ProcessId") or 0) != int(pid):
+        raise OSError("Windows process identity query returned an ambiguous record")
+    return value
+
+
+def _normalized_process_identity_text(value: object) -> str:
+    return re.sub(r"/+", "/", str(value or "").replace("\\", "/").casefold())
+
+
+def exact_run_process_may_be_alive(
+    run_dir: Path,
+    state: dict[str, Any],
+    pid: int,
+    *,
+    process_probe: Any = None,
+    windows_snapshot: Any = _windows_process_snapshot,
+    platform_name: str | None = None,
+) -> bool:
+    """Fail closed for a live exact-run process, but reject a reused PID.
+
+    Modern Oracle controller and recovery commands contain the exact slug;
+    Oracle Chrome contains the exact run-local browser profile.  A live PID
+    whose readable command line contains neither is a different process and
+    must not keep an old run locked.  Unreadable or contradictory evidence is
+    deliberately still treated as active.
+    """
+    probe = process_probe or _process_may_be_alive
+    if not probe(pid):
+        return False
+    if (platform_name or os.name) != "nt":
+        return True
+    try:
+        snapshot = windows_snapshot(pid)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, subprocess.SubprocessError):
+        return True
+    if snapshot is None:
+        return bool(probe(pid))
+
+    command_line = _normalized_process_identity_text(snapshot.get("CommandLine"))
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    slug = str(oracle.get("slug") or "").strip().casefold()
+    markers = {
+        _normalized_process_identity_text(run_dir.resolve()),
+        _normalized_process_identity_text(artifacts.get("browser_temp")),
+        _normalized_process_identity_text(artifacts.get("output")),
+        _normalized_process_identity_text(Path.home() / ".oracle" / "sessions" / slug)
+        if slug
+        else "",
+        slug,
+    }
+    markers.discard("")
+    if command_line and any(marker in command_line for marker in markers):
+        return True
+    if command_line:
+        return False
+
+    image_name = Path(
+        str(snapshot.get("ExecutablePath") or snapshot.get("Name") or "")
+    ).name.casefold()
+    oracle_runtime_images = {
+        "chrome.exe",
+        "cmd.exe",
+        "node.exe",
+        "npx.exe",
+        "npx.cmd",
+        "powershell.exe",
+        "pwsh.exe",
+        "python.exe",
+        "pythonw.exe",
+    }
+    if image_name and image_name not in oracle_runtime_images:
+        return False
+    return True
 LEGACY_V1184_FOLLOWUP_MANAGED_HASHES = {
     "bin/chatgpt_oracle_compat.py": "f41d3fb50b911f882a8e23e71cb02a5e9e81ee5ebe16f548ee48e7f815da0ee1",
     "bin/chatgpt_oracle_run.py": "957cd75a52cbe9258a994e66b557987cda4617de561307acaff5632a66fdfdf7",
@@ -3958,7 +4079,7 @@ def _followup_no_submission_evidence(
             or not isinstance(observer_pid, int)
             or isinstance(observer_pid, bool)
             or observer_pid <= 0
-            or _process_may_be_alive(observer_pid)
+            or exact_run_process_may_be_alive(state_path.parent, state, observer_pid)
             or error.get("category") != "browser-automation"
         ):
             return None
