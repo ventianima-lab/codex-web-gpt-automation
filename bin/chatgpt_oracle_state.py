@@ -359,8 +359,13 @@ ORACLE_MODEL_OPTION_MISSING_PRE_SUBMIT_RE = re.compile(
     r'in the model switcher\. Available: (?P<available>[^\r\n]{1,1000})\.$'
 )
 ORACLE_THINKING_TIME_PRE_SUBMIT_RE = re.compile(
-    r"Thinking time: (?:selection unverified \(requested |unknown outcome selecting )"
-    r"(?P<requested>[^);]+)\)?; refusing to submit without confirmed (?P<required>[^.]+)\.",
+    r"Thinking time: (?:"
+    r"(?:chip not found|menu not found|option not found|selection unverified|"
+    r"model kind not found(?: for [^();\r\n]+)?) \(requested (?P<requested_status>[^);]+)\)"
+    r"|unknown outcome selecting (?P<requested_unknown>[^;\r\n]+)"
+    r"|(?P<requested_unavailable>[^;\r\n]{1,160}?) is unavailable on this account "
+    r"\([^\r\n]*\)"
+    r"); refusing to submit without confirmed (?P<required>[^.]+)\.",
     re.IGNORECASE,
 )
 # Upstream Oracle copies a signed-in browser profile with rsync.  On POSIX
@@ -374,10 +379,24 @@ PROFILE_COPY_DEPENDENCY = "rsync"
 PROFILE_COPY_NATIVE_PLATFORMS = ("nt",)
 PRO_TRANSPORTS = frozenset(("pro-attachment-only", "pro-devspace", "pro-devspace-readonly"))
 DEVSPACE_TRANSPORTS = frozenset(("devspace", "pro-devspace", "pro-devspace-readonly"))
+# New GPT-5.6 Sol Pro launches use the provider's visible fifth effort tier.
+# Historical receipts used Oracle's retired compatibility token; read-only
+# recovery and follow-up validation must continue to recognize those sealed
+# records without ever rewriting them.
+PRO_THINKING_TIME = "pro"
+COMPATIBLE_PRO_THINKING_TIMES = frozenset((PRO_THINKING_TIME, "heavy"))
+VISIBLE_GPT56_SOL_THINKING_TIME_LABELS = (
+    "Instant", "Medium", "High", "Extra High", "Pro",
+)
 
 
 def is_pro_transport(transport: str) -> bool:
     return str(transport or "").strip().casefold() in PRO_TRANSPORTS
+
+
+def is_compatible_pro_thinking_time(value: object) -> bool:
+    """Accept only the current Pro tier plus persisted Heavy receipts."""
+    return str(value or "").strip().casefold() in COMPATIBLE_PRO_THINKING_TIMES
 
 
 def is_devspace_transport(transport: str) -> bool:
@@ -714,11 +733,16 @@ def load_manifest(
     model_strategy = str(payload.get("model_strategy") or "select").strip().casefold()
     if model_strategy not in {"select", "current", "ignore"}:
         raise OracleStateError("MODEL_STRATEGY_INVALID", "model_strategy must be select, current, or ignore")
-    thinking_time = str(payload.get("thinking_time") or "heavy").strip().casefold()
-    if thinking_time not in {"light", "standard", "extended", "extra-high", "heavy"}:
+    # A missing effort on a new Pro manifest is normalized to the visible Pro
+    # tier.  Keep the historical regular default intact for legacy regular
+    # manifests that omitted this optional field.
+    thinking_time = str(
+        payload.get("thinking_time") or (PRO_THINKING_TIME if is_pro_transport(transport) else "heavy")
+    ).strip().casefold()
+    if thinking_time not in {"light", "standard", "extended", "extra-high", *COMPATIBLE_PRO_THINKING_TIMES}:
         raise OracleStateError(
             "THINKING_TIME_INVALID",
-            "thinking_time must be light, standard, extended, extra-high, or heavy",
+            "thinking_time must be light, standard, extended, extra-high, pro, or legacy heavy",
         )
     if is_pro_transport(transport):
         if model.casefold() != "gpt-5.6-sol":
@@ -729,8 +753,14 @@ def load_manifest(
             )
         if model_strategy != "select":
             raise OracleStateError("PRO_MODEL_STRATEGY_INVALID", "Pro requires explicit model selection")
-        if thinking_time != "heavy":
-            raise OracleStateError("PRO_THINKING_TIME_INVALID", "Pro requires heavy reasoning")
+        # Parsing remains lossless for already-persisted Heavy-era manifests.
+        # The runner's pre-layout launch gate rejects this legacy spelling for
+        # every new current Pro execution before it can create a run or submit.
+        if not is_compatible_pro_thinking_time(thinking_time):
+            raise OracleStateError(
+                "PRO_THINKING_TIME_INVALID",
+                "Pro requires the explicit Pro reasoning tier",
+            )
     copy_profile_raw = str(payload.get("copy_profile") or "").strip()
     if copy_profile_raw:
         copy_profile = absolute_path(copy_profile_raw, label="copy_profile", must_exist=True)
@@ -1284,7 +1314,7 @@ def _validate_followup_reservation_for_child(
         or parent_state.get("transport") != "pro-devspace-readonly"
         or parent_profile.get("model") != "gpt-5.6-sol"
         or parent_profile.get("model_strategy") != "select"
-        or parent_profile.get("thinking_time") != "heavy"
+        or not is_compatible_pro_thinking_time(parent_profile.get("thinking_time"))
         or parent_owner is None
         or parent_browser is None
         or parent.get("ownership_receipt_sha256") != parent_owner.get("sha256")
@@ -2992,7 +3022,7 @@ def _standalone_pro_attachment_no_submission_evidence(
         or run_dir.name != run_id
         or str(profile.get("model") or "") != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or not is_compatible_pro_thinking_time(profile.get("thinking_time"))
     ):
         return None
 
@@ -3230,7 +3260,7 @@ def _standalone_pro_no_submission_evidence(
         or run_dir.name != run_id
         or str(profile.get("model") or "") != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or not is_compatible_pro_thinking_time(profile.get("thinking_time"))
     ):
         return None
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
@@ -3967,7 +3997,7 @@ def _followup_no_submission_evidence(
         or state.get("transport_status") not in {"failed", "not_submitted_user_confirmed"}
         or profile.get("model") != "gpt-5.6-sol"
         or profile.get("model_strategy") != "select"
-        or profile.get("thinking_time") != "heavy"
+        or not is_compatible_pro_thinking_time(profile.get("thinking_time"))
         or state.get("task_outcome") != "pending"
         or state.get("terminal_harvested") is True
         or state.get("parallel_parent_id") is not None
@@ -5370,7 +5400,7 @@ def proven_pre_submit_cdp_disconnect(state_path: Path) -> dict[str, Any] | None:
     if (
         str(profile.get("model") or "") != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or not is_compatible_pro_thinking_time(profile.get("thinking_time"))
         or copy_profile != expected_profile
         or str(oracle.get("resolved_version") or "").removeprefix("oracle ").strip() != "0.17.1"
         or not locator
@@ -6252,7 +6282,31 @@ def proven_pre_submit_thinking_time_failure(state_path: Path) -> dict[str, Any] 
     if CHATGPT_CONVERSATION_URL_RE.search(combined):
         return None
     match = ORACLE_THINKING_TIME_PRE_SUBMIT_RE.search(combined)
-    if match is None or match.group("requested").casefold() != match.group("required").casefold():
+    if match is None:
+        return None
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    requested_level = next(
+        value.strip()
+        for value in (
+            match.group("requested_status"),
+            match.group("requested_unknown"),
+            match.group("requested_unavailable"),
+        )
+        if value is not None
+    )
+    is_current_pro = (
+        is_pro_transport(str(state.get("transport") or ""))
+        and str(profile.get("model") or "").casefold() == "gpt-5.6-sol"
+        and str(profile.get("model_strategy") or "").casefold() == "select"
+        and str(profile.get("thinking_time") or "").casefold() == PRO_THINKING_TIME
+    )
+    # A current Pro launch may only settle this exact pre-submit refusal when
+    # Oracle itself says it requested Pro.  A different confirmed tier is the
+    # failure we must preserve fail-closed.  Heavy-era receipts retain the
+    # older same-level rule.
+    if is_current_pro and requested_level.casefold() != PRO_THINKING_TIME:
+        return None
+    if not is_current_pro and requested_level.casefold() != match.group("required").strip().casefold():
         return None
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
     locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
@@ -6260,14 +6314,21 @@ def proven_pre_submit_thinking_time_failure(state_path: Path) -> dict[str, Any] 
         return None
     return {
         "schema": "codex.chatgpt.oracle-pre-submit-ui-failure/v1",
-        "code": "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED",
+        "code": (
+            "ORACLE_PRO_TIER_NOT_SELECTED"
+            if is_current_pro else "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED"
+        ),
         "oracle_locator": locator,
-        "requested_level": match.group("requested"),
+        "requested_level": requested_level,
+        "required_level": match.group("required").strip(),
         "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
         "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
         "output_absent": True,
         "conversation_url_absent": True,
-        "failure_reason": "oracle-thinking-time-selection-unverified",
+        "failure_reason": (
+            "oracle-pro-tier-not-selected"
+            if is_current_pro else "oracle-thinking-time-selection-unverified"
+        ),
     }
 
 
@@ -6385,6 +6446,7 @@ def settle_proven_pre_submit_failure(state_path: Path) -> dict[str, Any] | None:
                 "ORACLE_PROFILE_COPY_EBUSY_PRELAUNCH_FAILED",
                 "ORACLE_PROFILE_COPY_RSYNC_PRELAUNCH_FAILED",
                 "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED",
+                "ORACLE_PRO_TIER_NOT_SELECTED",
                 "ORACLE_LAUNCH_FLAGS_MUTUALLY_EXCLUSIVE_PRELAUNCH_FAILED",
                 "ORACLE_MANUAL_LOGIN_PROFILE_UNINITIALIZED_PRELAUNCH_FAILED",
                 "ORACLE_CDP_DISCONNECT_PRE_SUBMIT_FAILED",
@@ -6399,6 +6461,8 @@ def settle_proven_pre_submit_failure(state_path: Path) -> dict[str, Any] | None:
             if evidence["code"] == "ORACLE_PROFILE_COPY_RSYNC_PRELAUNCH_FAILED"
             else "oracle-thinking-time-pre-submit"
             if evidence["code"] == "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED"
+            else "oracle-pro-tier-not-selected-pre-submit"
+            if evidence["code"] == "ORACLE_PRO_TIER_NOT_SELECTED"
             else "oracle-launch-flags-mutually-exclusive-pre-submit"
             if evidence["code"] == "ORACLE_LAUNCH_FLAGS_MUTUALLY_EXCLUSIVE_PRELAUNCH_FAILED"
             else "oracle-manual-login-profile-uninitialized-pre-submit"

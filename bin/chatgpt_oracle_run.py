@@ -1666,6 +1666,19 @@ def execute_run(
                 "write_thinking_time": "extra-high",
             },
         )
+    if (
+        STATE.is_pro_transport(str(config.transport or ""))
+        and str(config.thinking_time or "").strip().casefold() != STATE.PRO_THINKING_TIME
+    ):
+        raise OracleRunError(
+            "PRO_THINKING_TIME_LEGACY_FORBIDDEN",
+            "new Pro launches require the exact visible Pro tier; legacy Heavy is recovery-only",
+            {
+                "transport": config.transport,
+                "thinking_time": config.thinking_time,
+                "required_thinking_time": STATE.PRO_THINKING_TIME,
+            },
+        )
     validate_oracle_attachment_sizes(config)
     layout = STATE.create_layout(config, run_id=config.requested_run_id)
     transport_mission_path = layout.run_dir / "mission.md"
@@ -3621,7 +3634,7 @@ def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict
         str(state.get("transport") or "") != "pro-devspace-readonly"
         or str(profile.get("model") or "").casefold() != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or not STATE.is_compatible_pro_thinking_time(profile.get("thinking_time"))
     ):
         raise OracleRunError(
             "FOLLOWUP_PARENT_PROFILE_FORBIDDEN",
@@ -3690,7 +3703,9 @@ def _followup_manifest_payload(
         "episode_policy": policy,
         "model": "gpt-5.6-sol",
         "model_strategy": "select",
-        "thinking_time": "heavy",
+        # A child is a new Pro submission even when its sealed parent used
+        # Oracle's historical Heavy spelling.
+        "thinking_time": STATE.PRO_THINKING_TIME,
         "research": str(profile.get("research") or "off"),
         "archive": "always" if archive_contract.get("was_archived") is True else "never",
         "task_outcome_contract": "v1",

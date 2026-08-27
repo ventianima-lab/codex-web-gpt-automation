@@ -120,11 +120,11 @@ def test_pro_attachment_compiles_attachment_only_oracle_and_manual_never_launche
     value = json.loads(pro_target.read_text(encoding="utf-8"))
     assert pro["contract"]["route"] == "oracle-pro-attachment-only"
     assert pro["contract"]["task_kind"] == "pro"
-    assert pro["contract"]["thinking_time"] == "heavy"
+    assert pro["contract"]["thinking_time"] == "pro"
     assert value["transport"] == "pro-attachment-only"
     assert value["task_kind"] == "pro"
     assert value["model"] == "gpt-5.6-sol"
-    assert value["thinking_time"] == "heavy"
+    assert value["thinking_time"] == "pro"
     assert value["attachments"] == [str(prompt.resolve()), str(packet.resolve())]
     assert "app_name" not in value
 
@@ -152,7 +152,7 @@ def test_pro_defaults_to_devspace_without_attachments(tmp_path: Path) -> None:
     assert value["app_name"] == "DevSpace"
     assert value["model"] == "gpt-5.6-sol"
     assert value["model_strategy"] == "select"
-    assert value["thinking_time"] == "heavy"
+    assert value["thinking_time"] == "pro"
     assert value["research"] == "off"
     assert value["task_outcome_contract"] == "v1"
     assert "attachments" not in value
@@ -186,4 +186,4 @@ def test_pro_cli_dry_run_validates_compiled_manifest_without_submission(
     assert emitted["run"]["transport"] == "pro-attachment-only"
     assert manifest["task_kind"] == "pro"
     assert manifest["model"] == "gpt-5.6-sol"
-    assert manifest["thinking_time"] == "heavy"
+    assert manifest["thinking_time"] == "pro"

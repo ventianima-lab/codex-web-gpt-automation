@@ -79,7 +79,7 @@ def test_pro_attachment_is_oracle_attachment_only_and_manual_launches_nothing(tm
     assert pro["devspace_required"] is False
     assert pro["model"] == "gpt-5.6-sol"
     assert pro["task_kind"] == "pro"
-    assert pro["thinking_time"] == "heavy"
+    assert pro["thinking_time"] == "pro"
     assert pro["attachment_policy"] == "always"
     assert pro["attachments"] == [str(mission), str(packet)]
     assert pro["composer_prompt"].startswith(
@@ -138,7 +138,8 @@ def test_pro_is_explicit_readonly_devspace_without_attachments(tmp_path: Path) -
     assert contract["app_name"] == "DevSpace"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["model_strategy"] == "select"
-    assert contract["thinking_time"] == "heavy"
+    assert contract["thinking_time"] == "pro"
+    assert profiles.PRO_THINKING_TIME == "pro"
     assert contract["research"] is False
     assert contract["attachments"] == []
     assert contract["action_authority"] == "read-only"

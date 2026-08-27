@@ -1,0 +1,14 @@
+{
+  "schema": "codex.chatgpt.oracle-effort-menu-fixture/v1",
+  "source": "live-gpt-5.6-sol-model-picker-diagnostic",
+  "requested_model": "gpt-5.6-sol",
+  "requested_effort": "pro",
+  "items": [
+    {"role": "menuitemradio", "label": "Instant", "ariaChecked": false},
+    {"role": "menuitemradio", "label": "Medium", "ariaChecked": false},
+    {"role": "menuitemradio", "label": "High", "ariaChecked": false},
+    {"role": "menuitemradio", "label": "Extra High", "ariaChecked": true},
+    {"role": "menuitemradio", "label": "Pro", "ariaChecked": false}
+  ],
+  "advanced_view_text": "ModelGPT-5.6 SolEffortExtra High"
+}

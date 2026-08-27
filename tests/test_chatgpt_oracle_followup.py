@@ -46,7 +46,7 @@ def make_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "project_root": str(project), "mission_path": str(mission), "app_name": "codex",
         "mode": "browser", "transport": "pro-devspace-readonly", "run_root": str(run_root),
         "oracle_command": ["oracle"], "model": "gpt-5.6-sol", "model_strategy": "select",
-        "thinking_time": "heavy", "research": "off", "task_outcome_contract": "v1",
+        "thinking_time": "pro", "research": "off", "task_outcome_contract": "v1",
         "source_thread_id": OWNER,
     }), encoding="utf-8")
     config = runner.STATE.load_manifest(manifest, bind_runtime_task=True)
@@ -943,6 +943,33 @@ def test_followup_dry_run_is_same_task_and_same_conversation_without_writes(tmp_
         archive_contract=result["round_receipt_plan"]["parent"]["archive_contract"],
     )
     assert payload["archive"] == "always"
+    assert payload["thinking_time"] == "pro"
+
+
+def test_followup_accepts_sealed_heavy_parent_but_emits_pro_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    parent_state = runner.STATE.load_state(parent.state_path)
+    parent_state["profile"]["thinking_time"] = "heavy"
+    runner.STATE.write_json_atomic(parent.state_path, parent_state)
+
+    result = runner.followup_run(
+        parent.run_dir,
+        mission_path=mission,
+        round_key="legacy-heavy-parent",
+        run_id="followup-legacy-heavy-parent-0001",
+        dry_run=True,
+    )
+
+    assert result["ok"] is True
+    child_payload = runner._followup_manifest_payload(
+        runner.STATE.load_state(parent.state_path),
+        mission_path=mission,
+        run_id="followup-legacy-heavy-child-0001",
+        archive_contract=result["round_receipt_plan"]["parent"]["archive_contract"],
+    )
+    assert child_payload["thinking_time"] == "pro"
 
 
 def test_followup_actual_preflight_failure_has_child_state_logs_and_result_receipt(

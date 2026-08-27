@@ -1,5 +1,22 @@
 # 기술 변경 기록
 
+## 1.20.14 - Select the current visible Pro effort fail-closed
+
+- New GPT-5.6 Sol Pro and read-only Pro follow-up submissions now pass Oracle
+  0.18.0's explicit `pro` thinking-time token instead of the retired `heavy`
+  compatibility spelling. A missing effort on a new Pro manifest normalizes to
+  `pro`, while regular non-Pro defaults remain unchanged.
+- Historical `heavy` runs, immutable receipts, no-submission evidence, and
+  follow-up parents remain readable and recoverable without rewriting their
+  authority. Only new child submissions are normalized to `pro`; a newly
+  supplied raw Pro manifest that still requests `heavy` is rejected before a
+  run directory or subprocess can be created.
+- If the current ChatGPT effort selector cannot prove that the visible `Pro`
+  radio is selected, the run fails before submission as
+  `ORACLE_PRO_TIER_NOT_SELECTED`; it may not silently continue on Extra High.
+  Regression coverage binds the current five-label effort menu and preserves
+  the bounded legacy Oracle 0.17.1 compatibility paths.
+
 ## 1.20.13 - Preserve exact task-bound metadata settlements
 
 - A `v1.20.12` Oracle metadata-rename settlement created immediately before

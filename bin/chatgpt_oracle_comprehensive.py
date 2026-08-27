@@ -1246,7 +1246,7 @@ def _oracle_manifest(
         "model_strategy": "select",
         # Pro is the explicit highest effort in the current GPT-5.6 Sol UI;
         # regular comprehensive stages use the separately verified Extra High.
-        "thinking_time": "heavy" if stage == "pro" else "extra-high",
+        "thinking_time": "pro" if stage == "pro" else "extra-high",
         "research": "off",
         "archive": "auto",
         "parallel_parent_id": config["_parallel_parent_id"],

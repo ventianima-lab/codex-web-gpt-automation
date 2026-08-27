@@ -105,7 +105,7 @@ def test_ultra_economy_runtime_dry_run_is_pro_first_and_readonly(tmp_path: Path,
     result = module.run_workflow(workflow_manifest(tmp_path), dry_run=True, oracle_execute=preview)
     assert result["stage"] == "pro"
     assert seen["transport"] == "pro-devspace-readonly"
-    assert seen["thinking_time"] == "heavy"
+    assert seen["thinking_time"] == "pro"
 
 
 def test_ultra_economy_requires_separate_explicit_pro_authority(tmp_path: Path) -> None:

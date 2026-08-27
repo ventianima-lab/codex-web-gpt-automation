@@ -478,6 +478,86 @@ try {
     assert retry_probe.returncode == 0, retry_probe.stderr
 
 
+def test_published_0180_pro_effort_is_strict_for_current_five_row_menu(tmp_path: Path) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
+        pytest.skip("published Oracle 0.18.0 package root is unavailable")
+    package = tmp_path / "oracle-pro-effort"
+    shutil.copytree(source, package)
+    compat.ensure_oracle_compatibility(
+        "oracle 0.18.0", package_root=package, backup_root=tmp_path / "backup-pro-effort"
+    )
+    target = package / "dist/src/browser/actions/thinkingTime.js"
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "oracle-0180-gpt56-sol-effort-menu.json")
+        .read_text(encoding="utf-8")
+    )
+    labels = [item["label"] for item in fixture["items"]]
+    assert labels == ["Instant", "Medium", "High", "Extra High", "Pro"]
+    assert "Heavy" not in labels
+    node = shutil.which("node")
+    assert node is not None
+    source_text = target.read_text(encoding="utf-8")
+    source_text = source_text.replace(
+        'import { MENU_CONTAINER_SELECTOR, MENU_ITEM_SELECTOR, MODEL_BUTTON_SELECTOR, } from "../constants.js";',
+        'const MENU_CONTAINER_SELECTOR=""; const MENU_ITEM_SELECTOR=""; const MODEL_BUTTON_SELECTOR="";',
+    ).replace(
+        'import { logDomFailure } from "../domDebug.js";',
+        'const logDomFailure=async()=>{};',
+    ).replace(
+        'import { buildClickDispatcher } from "./domEvents.js";',
+        'const buildClickDispatcher=()=>"";',
+    ).replace(
+        'import { BrowserAutomationError } from "../../oracle/errors.js";',
+        'class BrowserAutomationError extends Error { constructor(message, details) { super(message); this.details=details; } }',
+    )
+    test_module = tmp_path / "thinkingTime-current-contract.mjs"
+    test_module.write_text(source_text, encoding="utf-8")
+    assert not source_text.startswith("import ")
+    script = f"""
+import {{ ensureThinkingTime }} from {json.dumps(test_module.as_uri())};
+const diagnostic = {json.dumps(fixture)};
+const runCase = async (firstResult) => {{
+  let calls = 0;
+  const Runtime = {{ evaluate: async () => ({{ result: {{ value: calls++ === 0 ? firstResult : null }} }}) }};
+  const logs = [];
+  try {{
+    await ensureThinkingTime(Runtime, 'pro', (message) => logs.push(message), 'gpt-5.6-sol');
+    return {{ ok: true, logs }};
+  }} catch (error) {{
+    return {{ ok: false, message: error.message, logs }};
+  }}
+}};
+const selected = await runCase({{ status: 'already-selected', label: 'Pro', modelKind: 'gpt56', diagnostic }});
+const missing = await runCase({{ status: 'option-not-found', modelKind: 'gpt56', diagnostic }});
+const unverified = await runCase({{ status: 'selection-unverified', modelKind: 'gpt56', diagnostic }});
+const unavailable = await runCase({{
+  status: 'option-disabled', label: 'Pro', notice: 'temporarily unavailable', modelKind: 'gpt56', diagnostic
+}});
+console.log(JSON.stringify({{ selected, missing, unverified, unavailable }}));
+"""
+    completed = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["selected"] == {
+        "ok": True,
+        "logs": ["[browser] Thinking time: Pro (already selected)"],
+    }
+    for case in ("missing", "unverified", "unavailable"):
+        assert result[case]["ok"] is False
+        assert "refusing to submit without confirmed Pro" in result[case]["message"]
+
+
 def test_oracle_session_metadata_retry_patch_is_bounded_to_windows_transient_errors() -> None:
     patch_text = (
         Path(__file__).resolve().parents[1]

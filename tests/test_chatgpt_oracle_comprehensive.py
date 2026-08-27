@@ -99,7 +99,7 @@ def test_ultra_economy_dry_run_starts_with_explicit_pro_design(tmp_path: Path, m
     assert result["stage"] == "pro"
     assert result["workflow_profile"] == "ultra-economy"
     assert seen["model"] == "gpt-5.6-sol"
-    assert seen["thinking_time"] == "heavy"
+    assert seen["thinking_time"] == "pro"
     assert seen["transport"] == "pro-devspace-readonly"
 
 
