@@ -337,10 +337,19 @@ def durable_status(*, profile_dir: Path) -> dict[str, Any]:
     policy = policy_status()
     profile = browser_profile_network_status(profile_dir)
     profile_enabled = bool(profile["local_network"] and profile["loopback_network"])
+    policy_blocked = policy.get("effective_policy") == "blocked"
     return {
         **policy,
-        "enabled": bool(policy.get("enabled")) or profile_enabled,
-        "mode": "chrome-policy" if policy.get("enabled") else "oracle-seed-profile" if profile_enabled else "unset",
+        "enabled": False if policy_blocked else bool(policy.get("enabled")) or profile_enabled,
+        "mode": (
+            "blocked-by-chrome-policy"
+            if policy_blocked
+            else "chrome-policy"
+            if policy.get("enabled")
+            else "oracle-seed-profile"
+            if profile_enabled
+            else "unset"
+        ),
         "oracle_profile": profile,
     }
 
@@ -349,6 +358,9 @@ def enable_durable_permission(*, profile_dir: Path, codex_home: Path | None = No
     try:
         policy = enable_policy(codex_home=codex_home)
     except PermissionError:
+        policy = policy_status()
+        if policy.get("effective_policy") == "blocked":
+            raise RuntimeError("CHATGPT_LOCAL_NETWORK_POLICY_BLOCKED")
         return enable_profile_permission(profile_dir=profile_dir, codex_home=codex_home)
     if policy.get("enabled"):
         return {**durable_status(profile_dir=profile_dir), "changed": policy.get("changed"), "receipt": policy.get("receipt")}
