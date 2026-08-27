@@ -147,6 +147,7 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
         "bin/devspace-compat/1.0.8/artifact-audit-readonly.patch",
         "bin/devspace-compat/1.0.8/workspace-write-and-read-bridge.patch",
         "bin/devspace-compat/1.0.8/tool-read-receipts.patch",
+        "bin/devspace-compat/1.0.8/receipt-structured-output.patch",
         "bin/devspace-compat/1.0.8/widget-domain.patch",
         "bin/devspace-compat/1.0.8/workspaces.patch",
         "bin/devspace-compat/1.0.7/tool-read-receipts.patch",

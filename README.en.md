@@ -103,7 +103,7 @@ for exact commands and provider-specific branches.
 2. **Configure DevSpace** — register every exact project root and public origin
 3. **Protect Owner approval data** — never copy the password into CLI, Git, or logs
 4. **Verify restart recovery** — confirm local/public endpoints and root persistence
-5. **Sign in and persist Local network access** — keep the Oracle browser separate; on Windows use the exact-origin `chatgpt.com` policy helper
+5. **Sign in and persist Local network access** — keep the Oracle browser separate; on Windows the helper prefers the exact-origin `chatgpt.com` policy and falls back to a backed-up, receipted Oracle seed-profile grant when policy ACLs are locked
 6. **Register the ChatGPT app manually** — name `codex`, URL `https://stable-host/mcp`
 7. **Run a regular GPT read probe** — validate `@codex` without consuming Pro
 

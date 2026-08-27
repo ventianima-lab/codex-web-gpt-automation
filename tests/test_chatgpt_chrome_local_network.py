@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -56,12 +57,77 @@ def test_split_local_policy_cannot_authorize_loopback(monkeypatch) -> None:
     assert status["effective_policy"] == "unset"
 
 
-def test_permission_denial_returns_bounded_manual_fallback(monkeypatch, capsys) -> None:
+def _profile(tmp_path: Path) -> Path:
+    profile = tmp_path / "oracle-profile"
+    preferences = profile / "Default" / "Preferences"
+    preferences.parent.mkdir(parents=True)
+    preferences.write_text(
+        json.dumps(
+            {
+                "profile": {
+                    "content_settings": {
+                        "exceptions": {
+                            "notifications": {"https://example.com:443,*": {"setting": 2}},
+                            "local_network": {},
+                            "loopback_network": {},
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return profile
+
+
+def test_profile_fallback_persists_both_split_permissions_and_preserves_unrelated_settings(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    result = module.enable_profile_permission(profile_dir=profile, codex_home=tmp_path / "codex-home")
+    assert result["enabled"] is True
+    assert result["mode"] == "oracle-seed-profile"
+    status = module.browser_profile_network_status(profile)
+    assert status["local_network"] is True
+    assert status["loopback_network"] is True
+    preferences = json.loads((profile / "Default" / "Preferences").read_text(encoding="utf-8"))
+    exceptions = preferences["profile"]["content_settings"]["exceptions"]
+    assert exceptions["notifications"]["https://example.com:443,*"]["setting"] == 2
+    assert exceptions["local_network"]["https://chatgpt.com:443,*"]["setting"] == 1
+    assert exceptions["loopback_network"]["https://chatgpt.com:443,*"]["setting"] == 1
+    receipt = json.loads(Path(result["receipt"]).read_text(encoding="utf-8"))
+    assert Path(receipt["backup_path"]).is_file()
+    assert receipt["before_sha256"] != receipt["after_sha256"]
+
+
+def test_permission_denial_uses_bounded_seed_profile_fallback(monkeypatch, tmp_path: Path, capsys) -> None:
     def denied(**_kwargs):
         raise PermissionError("denied")
 
+    profile = _profile(tmp_path)
     monkeypatch.setattr(module, "enable_policy", denied)
-    assert module.main(["enable"]) == 2
+    assert module.main(
+        [
+            "enable",
+            "--profile-dir",
+            str(profile),
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+        ]
+    ) == 0
     output = capsys.readouterr().out
-    assert "CHROME_POLICY_WRITE_DENIED" in output
-    assert "dedicated Oracle browser profile" in output
+    assert '"mode": "oracle-seed-profile"' in output
+    assert module.browser_profile_loopback_allowed(profile) is True
+
+
+def test_profile_fallback_refuses_a_live_seed_profile(monkeypatch, tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    before = (profile / "Default" / "Preferences").read_bytes()
+    monkeypatch.setattr(module, "_profile_in_use", lambda _profile: True)
+    try:
+        module.enable_profile_permission(profile_dir=profile, codex_home=tmp_path / "codex-home")
+    except RuntimeError as exc:
+        assert str(exc) == "ORACLE_CHROME_PROFILE_IN_USE"
+    else:
+        raise AssertionError("a live Oracle seed profile must fail closed")
+    assert (profile / "Default" / "Preferences").read_bytes() == before

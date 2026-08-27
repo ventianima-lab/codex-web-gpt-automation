@@ -1,5 +1,17 @@
 # 기술 변경 기록
 
+## 1.20.10 - Persist Oracle Local network access and expose audit receipts
+
+- 사용자 범위 Chrome 정책 ACL이 쓰기 금지인 Windows에서도 `enable`이 실패 안내로
+  끝나지 않고, 닫힌 Oracle seed 프로필의 정확한 `chatgpt.com` origin에 Chrome 151+
+  `local_network`와 `loopback_network` 허용을 백업·원자적 쓰기·SHA 영수증과 함께
+  저장합니다. 일반 Chrome 프로필, 로그인, 쿠키, 다른 사이트 권한은 변경하지 않습니다.
+- `status`는 enterprise policy와 Oracle seed 프로필을 함께 검증하므로 throwaway 실행이
+  복제 전에 실제 영속 권한을 갖는지 판정합니다.
+- DevSpace 1.0.8의 `open_workspace`, `read`, `read_chunk`가 서버 생성 Audit receipt ID를
+  텍스트뿐 아니라 각 도구의 `structuredContent`와 output schema에도 노출해, ChatGPT 앱
+  렌더러가 보조 text block을 생략하더라도 final canary challenge-response를 완결합니다.
+
 ## 1.20.9 - Preserve registered apps across DevSpace updates
 
 - 기존 ChatGPT 개발 앱의 이름·MCP URL·OAuth 연결을 업그레이드가 보존하고,

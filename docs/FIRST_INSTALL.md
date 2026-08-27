@@ -367,9 +367,11 @@ python .\bin\chatgpt_chrome_local_network.py enable
 python .\bin\chatgpt_chrome_local_network.py status
 ```
 
-조직 정책 ACL이나 일반 사용자 권한 때문에 `CHROME_POLICY_WRITE_DENIED`가 나오면
-관리자 권한을 우회하지 않습니다. 아래 비-Windows 절차와 똑같이 전용 Oracle
-프로필에서 한 번 직접 허용합니다.
+조직 정책 ACL이나 일반 사용자 권한 때문에 정책 쓰기가 거부되면 관리자 권한을
+우회하지 않습니다. helper가 로그인·쿠키·다른 사이트 권한은 건드리지 않고 닫힌
+전용 Oracle seed 프로필의 `local_network`와 `loopback_network`에 정확한
+`https://chatgpt.com` origin만 백업·원자적 쓰기·SHA 영수증과 함께 저장합니다.
+따라서 업그레이드마다 다시 묻지 않으며 앱 재등록도 필요하지 않습니다.
 
 macOS 등 비-Windows 환경에서는 전용 Oracle 프로필에서 `chatgpt.com`의 **Local
 network**를 한 번 허용한 뒤 Chrome을 완전히 종료해 seed profile에 저장합니다.

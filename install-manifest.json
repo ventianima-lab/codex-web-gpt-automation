@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.20.9",
+  "version": "1.20.10",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -28,6 +28,7 @@
     "bin/devspace-compat/1.0.8/artifact-audit-readonly.patch",
     "bin/devspace-compat/1.0.8/workspace-write-and-read-bridge.patch",
     "bin/devspace-compat/1.0.8/tool-read-receipts.patch",
+    "bin/devspace-compat/1.0.8/receipt-structured-output.patch",
     "bin/devspace-compat/1.0.8/widget-domain.patch",
     "bin/devspace-compat/1.0.8/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
