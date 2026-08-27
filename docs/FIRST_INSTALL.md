@@ -371,7 +371,10 @@ python .\bin\chatgpt_chrome_local_network.py status
 우회하지 않습니다. helper가 로그인·쿠키·다른 사이트 권한은 건드리지 않고 닫힌
 전용 Oracle seed 프로필의 `local_network`와 `loopback_network`에 정확한
 `https://chatgpt.com` origin만 백업·원자적 쓰기·SHA 영수증과 함께 저장합니다.
-따라서 업그레이드마다 다시 묻지 않으며 앱 재등록도 필요하지 않습니다.
+동시에 그 seed 프로필만 정상 종료 상태로 표시하고 Oracle 격리 Chrome에 복구 버블
+억제 플래그를 적용하므로 반복적인 "페이지 복원" 안내도 뜨지 않습니다. 일반 Chrome의
+프로필·열린 탭·세션 복원 설정은 건드리지 않습니다. 따라서 업그레이드마다 다시 묻지
+않으며 앱 재등록도 필요하지 않습니다.
 
 macOS 등 비-Windows 환경에서는 전용 Oracle 프로필에서 `chatgpt.com`의 **Local
 network**를 한 번 허용한 뒤 Chrome을 완전히 종료해 seed profile에 저장합니다.

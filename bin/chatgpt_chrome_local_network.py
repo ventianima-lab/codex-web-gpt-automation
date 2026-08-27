@@ -108,7 +108,13 @@ def browser_profile_network_status(profile_dir: Path) -> dict[str, Any]:
             "initialized": False,
             "local_network": False,
             "loopback_network": False,
+            "exit_type": None,
+            "exited_cleanly": False,
+            "crash_restore_ready": False,
         }
+    profile_value = preferences.get("profile", {}) if isinstance(preferences, dict) else {}
+    if not isinstance(profile_value, dict):
+        profile_value = {}
     exceptions = (
         preferences.get("profile", {}).get("content_settings", {}).get("exceptions", {})
         if isinstance(preferences, dict)
@@ -129,6 +135,12 @@ def browser_profile_network_status(profile_dir: Path) -> dict[str, Any]:
         "initialized": True,
         "local_network": local_setting == 1,
         "loopback_network": loopback_setting == 1,
+        "exit_type": profile_value.get("exit_type"),
+        "exited_cleanly": profile_value.get("exited_cleanly") is True,
+        "crash_restore_ready": (
+            profile_value.get("exit_type") == "Normal"
+            and profile_value.get("exited_cleanly") is True
+        ),
     }
 
 
@@ -285,7 +297,11 @@ def enable_profile_permission(
     root = (codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))).resolve()
     before_sha256 = _sha256(preferences_path)
     before_status = browser_profile_network_status(profile)
-    changed = not (before_status["local_network"] and before_status["loopback_network"])
+    changed = not (
+        before_status["local_network"]
+        and before_status["loopback_network"]
+        and before_status["crash_restore_ready"]
+    )
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S%f")
     backup_path: Path | None = None
     if changed:
@@ -295,6 +311,10 @@ def enable_profile_permission(
         profile_value = preferences.setdefault("profile", {})
         if not isinstance(profile_value, dict):
             raise RuntimeError("ORACLE_CHROME_PROFILE_SECTION_INVALID")
+        # This seed is copied into isolated Oracle Chrome profiles. Mark only
+        # the seed as clean; never change the user's ordinary Chrome profile.
+        profile_value["exit_type"] = "Normal"
+        profile_value["exited_cleanly"] = True
         content_settings = profile_value.setdefault("content_settings", {})
         if not isinstance(content_settings, dict):
             raise RuntimeError("ORACLE_CHROME_CONTENT_SETTINGS_INVALID")
@@ -313,11 +333,15 @@ def enable_profile_permission(
             entries[pattern] = entry
         _write_profile_json_atomic(preferences_path, preferences)
     after_status = browser_profile_network_status(profile)
-    if not (after_status["local_network"] and after_status["loopback_network"]):
+    if not (
+        after_status["local_network"]
+        and after_status["loopback_network"]
+        and after_status["crash_restore_ready"]
+    ):
         raise RuntimeError("ORACLE_CHROME_LOCAL_NETWORK_PERMISSION_NOT_DURABLE")
     receipt = root / "receipts" / f"chatgpt-local-network-profile-{stamp}.json"
     payload = {
-        "schema": "codex-web-gpt.chrome-local-network-profile-receipt/v1",
+        "schema": "codex-web-gpt.chrome-local-network-profile-receipt/v2",
         "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "origin": CHATGPT_ORIGIN,
         "profile_dir": str(profile),
@@ -328,6 +352,9 @@ def enable_profile_permission(
         "after_sha256": _sha256(preferences_path),
         "local_network": True,
         "loopback_network": True,
+        "exit_type": "Normal",
+        "exited_cleanly": True,
+        "crash_restore_ready": True,
     }
     _write_json_atomic(receipt, payload)
     return {**after_status, "enabled": True, "mode": "oracle-seed-profile", "changed": changed, "receipt": str(receipt)}
@@ -363,7 +390,13 @@ def enable_durable_permission(*, profile_dir: Path, codex_home: Path | None = No
             raise RuntimeError("CHATGPT_LOCAL_NETWORK_POLICY_BLOCKED")
         return enable_profile_permission(profile_dir=profile_dir, codex_home=codex_home)
     if policy.get("enabled"):
-        return {**durable_status(profile_dir=profile_dir), "changed": policy.get("changed"), "receipt": policy.get("receipt")}
+        profile = enable_profile_permission(profile_dir=profile_dir, codex_home=codex_home)
+        return {
+            **durable_status(profile_dir=profile_dir),
+            "changed": bool(policy.get("changed")) or bool(profile.get("changed")),
+            "receipt": profile.get("receipt"),
+            "policy_receipt": policy.get("receipt"),
+        }
     if policy.get("effective_policy") == "blocked":
         raise RuntimeError("CHATGPT_LOCAL_NETWORK_POLICY_BLOCKED")
     return enable_profile_permission(profile_dir=profile_dir, codex_home=codex_home)

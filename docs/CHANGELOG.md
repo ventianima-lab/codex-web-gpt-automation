@@ -2,6 +2,10 @@
 
 ## 1.20.10 - Persist Oracle Local network access and expose audit receipts
 
+- Oracle 0.18.0이 띄우는 격리 Chrome에만 `--disable-session-crashed-bubble`을
+  해시 결속 패치로 추가하고, Oracle seed 프로필의 `exit_type=Normal` 및
+  `exited_cleanly=true`를 백업·SHA 영수증과 함께 고정합니다. 일반 Chrome의
+  세션 복원 설정과 열린 탭은 변경하지 않습니다.
 - 사용자 범위 Chrome 정책 ACL이 쓰기 금지인 Windows에서도 `enable`이 실패 안내로
   끝나지 않고, 닫힌 Oracle seed 프로필의 정확한 `chatgpt.com` origin에 Chrome 151+
   `local_network`와 `loopback_network` 허용을 백업·원자적 쓰기·SHA 영수증과 함께

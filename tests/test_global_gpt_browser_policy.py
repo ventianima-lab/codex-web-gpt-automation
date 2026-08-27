@@ -159,6 +159,7 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
         "bin/oracle-compat/0.18.0/oracle-cli.followup-port-and-timeout.patch",
         "bin/oracle-compat/0.18.0/browserConfig.followup-port-binding.patch",
         "bin/oracle-compat/0.18.0/browserConfig.copy-profile-windows.patch",
+        "bin/oracle-compat/0.18.0/chromeLifecycle.disable-session-crash-bubble.patch",
         "upstream-runtime-policy.json",
         "scripts/check_upstream_runtime_policy.py",
         "skills/chatgpt-workspace-setup/SKILL.md",

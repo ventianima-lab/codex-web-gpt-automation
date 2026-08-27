@@ -90,7 +90,12 @@ def test_profile_fallback_persists_both_split_permissions_and_preserves_unrelate
     status = module.browser_profile_network_status(profile)
     assert status["local_network"] is True
     assert status["loopback_network"] is True
+    assert status["exit_type"] == "Normal"
+    assert status["exited_cleanly"] is True
+    assert status["crash_restore_ready"] is True
     preferences = json.loads((profile / "Default" / "Preferences").read_text(encoding="utf-8"))
+    assert preferences["profile"]["exit_type"] == "Normal"
+    assert preferences["profile"]["exited_cleanly"] is True
     exceptions = preferences["profile"]["content_settings"]["exceptions"]
     assert exceptions["notifications"]["https://example.com:443,*"]["setting"] == 2
     assert exceptions["local_network"]["https://chatgpt.com:443,*"]["setting"] == 1
@@ -98,6 +103,17 @@ def test_profile_fallback_persists_both_split_permissions_and_preserves_unrelate
     receipt = json.loads(Path(result["receipt"]).read_text(encoding="utf-8"))
     assert Path(receipt["backup_path"]).is_file()
     assert receipt["before_sha256"] != receipt["after_sha256"]
+    assert receipt["crash_restore_ready"] is True
+
+
+def test_profile_fallback_is_idempotent_after_network_and_clean_exit_are_durable(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    module.enable_profile_permission(profile_dir=profile, codex_home=tmp_path / "codex-home")
+    result = module.enable_profile_permission(profile_dir=profile, codex_home=tmp_path / "codex-home")
+    assert result["changed"] is False
+    assert result["crash_restore_ready"] is True
 
 
 def test_permission_denial_uses_bounded_seed_profile_fallback(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -118,6 +134,27 @@ def test_permission_denial_uses_bounded_seed_profile_fallback(monkeypatch, tmp_p
     output = capsys.readouterr().out
     assert '"mode": "oracle-seed-profile"' in output
     assert module.browser_profile_loopback_allowed(profile) is True
+
+
+def test_policy_success_still_normalizes_only_the_oracle_seed_profile(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "enable_policy",
+        lambda **_kwargs: {"enabled": True, "changed": False, "receipt": "policy-receipt.json"},
+    )
+    monkeypatch.setattr(
+        module,
+        "policy_status",
+        lambda: {"enabled": True, "effective_policy": "allowed", "supported": True},
+    )
+    result = module.enable_durable_permission(profile_dir=profile, codex_home=tmp_path / "codex-home")
+    status = module.browser_profile_network_status(profile)
+    assert result["enabled"] is True
+    assert result["policy_receipt"] == "policy-receipt.json"
+    assert status["crash_restore_ready"] is True
 
 
 def test_profile_fallback_refuses_a_live_seed_profile(monkeypatch, tmp_path: Path) -> None:

@@ -235,6 +235,11 @@ PATCHES = {
         "pristine": "956eff0b47da8bc35abb940b37c7f55e64177733cc668931daf53fb444e8f9cb",
         "patched": "3c24dbb5fb78e56a069103bbdb6dfe0d4f394215d9d1223a6f0b541c867b4b4d",
     },
+    "dist/src/browser/chromeLifecycle.js": {
+        "patch": "chromeLifecycle.disable-session-crash-bubble.patch",
+        "pristine": "312b45c44d4cd69a3a057e7bd1584b58182b4b37bc88f6ce6c7d11e216267c81",
+        "patched": "f3b405464515e858c9f773d67fa0e94bca07dadff8ea49caa7859ad37e730ff7",
+    },
     "dist/src/browser/actions/assistantResponse.js": {
         "patch": "../0.17.1/assistantResponse.terminal-marker-fallback.patch",
         "pristine": "93d2465ed7dce43d8093a91bada7656bc9ba7ba3729d2fcc43229fa8aa6e36de",

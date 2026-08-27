@@ -1,0 +1,10 @@
+diff --git a/dist/src/browser/chromeLifecycle.js b/dist/src/browser/chromeLifecycle.js
+--- a/dist/src/browser/chromeLifecycle.js
++++ b/dist/src/browser/chromeLifecycle.js
+@@ -531,5 +531,6 @@ function buildChromeFlags(headless, debugBindAddress, hideWindow = false) {
+         "--disable-background-timer-throttling",
+         "--disable-breakpad",
++        "--disable-session-crashed-bubble",
+         "--disable-client-side-phishing-detection",
+         "--disable-default-apps",
+         "--disable-hang-monitor",
