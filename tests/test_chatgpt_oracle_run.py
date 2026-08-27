@@ -381,10 +381,17 @@ def write_prompt_timeout_oracle_meta(
         f"@codex Then read the read-only mission file: "
         f"{Path(state['mission']['path']).resolve()}. Read the mission fully."
     )
+    model_id = str(state["profile"]["model"])
+    desired_model = {
+        "gpt-5.6": "GPT-5.6 Sol",
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+    }[model_id]
+    model_strategy = str(state["profile"]["model_strategy"])
+    thinking_time = str(state["profile"]["thinking_time"])
     meta = {
         "id": slug,
         "status": "error",
-        "model": "gpt-5.6-sol",
+        "model": model_id,
         "mode": "browser",
         "cwd": str(Path(state["project_root"]).resolve()),
         "completedAt": "2026-08-23T00:00:00Z",
@@ -416,9 +423,9 @@ def write_prompt_timeout_oracle_meta(
             "config": {
                 "debugPort": expected_port,
                 "copyProfileSource": str(copy_profile),
-                "desiredModel": "GPT-5.6 Sol",
-                "modelStrategy": "select",
-                "thinkingTime": "heavy",
+                "desiredModel": desired_model,
+                "modelStrategy": model_strategy,
+                "thinkingTime": thinking_time,
             },
             "runtime": {
                 "chromePid": 41001,
@@ -434,15 +441,15 @@ def write_prompt_timeout_oracle_meta(
         },
         "options": {
             "prompt": prompt,
-            "model": "gpt-5.6-sol",
+            "model": model_id,
             "slug": slug,
             "writeOutputPath": str(Path(state["artifacts"]["output"]).resolve()),
             "browserConfig": {
                 "debugPort": expected_port,
                 "copyProfileSource": str(copy_profile),
-                "desiredModel": "GPT-5.6 Sol",
-                "modelStrategy": "select",
-                "thinkingTime": "heavy",
+                "desiredModel": desired_model,
+                "modelStrategy": model_strategy,
+                "thinkingTime": thinking_time,
             },
         },
     }
@@ -3335,6 +3342,111 @@ def test_task_bound_readonly_prompt_timeout_can_harvest_without_browser_receipt(
         source_thread_id=owner,
     )
     assert [item["run_id"] for item in owners] == ["c" * 32]
+
+
+def test_task_bound_direct_devspace_prompt_timeout_can_harvest_without_browser_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            run_id="f" * 32,
+            model="gpt-5.6",
+            model_strategy="select",
+            thinking_time="extra-high",
+            research="off",
+            task_outcome_contract="v1",
+        ),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+
+    evidence = runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+    assert evidence is not None
+    assert evidence["source_thread_id"] == owner
+    assert evidence["commit_probe_turns"] == 0
+    assert evidence["conversation_url_absent"] is True
+    assert runner.STATE.proven_browser_identity_receipt(state_path) is None
+    with pytest.raises(runner.OracleRunError) as live_exc:
+        runner.recover_run(run_dir, action="live", dry_run=True, oracle_command=["oracle"])
+    assert live_exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+
+    dry_run = runner.recover_run(
+        run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    assert dry_run["browser_identity_mode"] == "bounded-prompt-timeout-harvest"
+    assert "--harvest" in dry_run["argv"]
+    assert "--prompt" not in dry_run["argv"]
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path) is None
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user inspected the exact ChatGPT history and confirmed no prompt or response",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["unresolved_owners"] == []
+    assert proof is not None
+    assert proof["settlement_eligibility"] == "oracle-direct-devspace/v1"
+    assert proof["transport"] == "devspace"
+
+
+def test_task_bound_direct_devspace_prompt_timeout_rejects_profile_bound_meta_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            run_id="g" * 32,
+            model="gpt-5.6",
+            model_strategy="select",
+            thinking_time="extra-high",
+            research="off",
+            task_outcome_contract="v1",
+        ),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    meta_path = write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["model"] = "gpt-5.6-sol"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(
+        run_dir / "state.json"
+    ) is None
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(run_dir, action="harvest", dry_run=True, oracle_command=["oracle"])
+    assert exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
 
 
 @pytest.mark.parametrize(

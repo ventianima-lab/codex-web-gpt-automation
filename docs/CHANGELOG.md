@@ -1,5 +1,17 @@
 # 기술 변경 기록
 
+## 1.20.11 - Recover exact ordinary DevSpace prompt timeouts
+
+- task-bound 일반 `devspace` 실행이 prompt commit timeout 뒤 browser identity
+  receipt를 만들기 전에 끝나도, 동일한 Oracle zero-turn commit probe와
+  profile-bound browser 메타가 정확히 일치할 때에만 `harvest --dry-run`을
+  허용합니다. live recovery는 계속 receipt 없이 거부되고, harvest 뒤에도
+  hash-bound recovery evidence와 명시적 사용자 no-submission 확인이 있어야만
+  정산·잠금 해제가 가능합니다.
+- 모델 ID `gpt-5.6`은 실제 Oracle browser 메타의 선택 라벨 `GPT-5.6 Sol`에
+  정확히 결속합니다. 다른 모델·전략·thinking time 또는 zero-turn 증거의
+  모순은 계속 fail-closed 합니다.
+
 ## 1.20.10 - Persist Oracle Local network access and expose audit receipts
 
 - Oracle 0.18.0이 띄우는 격리 Chrome에만 `--disable-session-crashed-bubble`을

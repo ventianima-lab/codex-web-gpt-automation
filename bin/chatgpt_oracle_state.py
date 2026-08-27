@@ -3527,31 +3527,41 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         and followup.get("failure_kind") != "archived-parent-unarchive-menu-absent"
     ):
         return followup
-    direct_model_option = _direct_devspace_no_submission_evidence(
+    direct_evidence = _direct_devspace_no_submission_evidence(
         state_path,
         require_persisted_recovery=False,
         require_recovery_evidence=False,
     )
     if (
-        direct_model_option is not None
-        and direct_model_option.get("pre_submit_marker")
+        direct_evidence is not None
+        and direct_evidence.get("pre_submit_marker")
         == "oracle-model-option-missing/v1"
-        and direct_model_option.get("recovery_evidence") == []
+        and direct_evidence.get("recovery_evidence") == []
     ):
         return {
-            **direct_model_option,
+            **direct_evidence,
             "schema": "codex.chatgpt.oracle-bounded-model-option-harvest/v1",
             "_bounded_harvest_kind": "direct-devspace-model-option-missing",
         }
-    evidence = _standalone_pro_no_submission_evidence(
-        state_path,
-        require_recovery_evidence=False,
-    )
+    # The ordinary DevSpace predicate already verifies the exact state/log/mission
+    # tuple. It needs recovery evidence for settlement, but the separate zero-turn
+    # Oracle ledger proof below permits one exact harvest to create that evidence.
+    if direct_evidence is not None and direct_evidence.get("recovery_evidence") == []:
+        evidence = direct_evidence
+    else:
+        evidence = _standalone_pro_no_submission_evidence(
+            state_path,
+            require_recovery_evidence=False,
+        )
     if (
         evidence is None
-        or evidence.get("_pre_submit_failure_kind") != "prompt-not-observed"
         or evidence.get("recovery_evidence") != []
     ):
+        return None
+    if evidence.get("settlement_eligibility") == "oracle-standalone-qualified-pro/v1":
+        if evidence.get("_pre_submit_failure_kind") != "prompt-not-observed":
+            return None
+    elif evidence.get("settlement_eligibility") != "oracle-direct-devspace/v1":
         return None
     state = load_state(state_path)
     run_dir = state_path.parent.resolve()
@@ -3601,6 +3611,11 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
     )
     profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    model_id = str(profile.get("model") or "")
+    expected_model_label = {
+        "gpt-5.6": "GPT-5.6 Sol",
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+    }.get(model_id)
     artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
     try:
         chrome_pid = int(runtime.get("chromePid"))
@@ -3629,9 +3644,10 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         "inConversation",
     )
     if (
-        meta.get("id") != locator
+        expected_model_label is None
+        or meta.get("id") != locator
         or meta.get("status") != "error"
-        or meta.get("model") != "gpt-5.6-sol"
+        or meta.get("model") != model_id
         or meta.get("mode") != "browser"
         or not str(meta.get("completedAt") or "").strip()
         or meta_cwd != Path(str(state.get("project_root") or "")).resolve()
@@ -3651,14 +3667,14 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         or not str(profile.get("copy_profile") or "").strip()
         or config_profile != state_profile
         or option_profile != state_profile
-        or config.get("desiredModel") != "GPT-5.6 Sol"
-        or config.get("modelStrategy") != "select"
-        or config.get("thinkingTime") != "heavy"
-        or options.get("model") != "gpt-5.6-sol"
+        or config.get("desiredModel") != expected_model_label
+        or config.get("modelStrategy") != profile.get("model_strategy")
+        or config.get("thinkingTime") != profile.get("thinking_time")
+        or options.get("model") != model_id
         or options.get("slug") != locator
-        or option_browser.get("desiredModel") != "GPT-5.6 Sol"
-        or option_browser.get("modelStrategy") != "select"
-        or option_browser.get("thinkingTime") != "heavy"
+        or option_browser.get("desiredModel") != expected_model_label
+        or option_browser.get("modelStrategy") != profile.get("model_strategy")
+        or option_browser.get("thinkingTime") != profile.get("thinking_time")
         or runtime.get("promptSubmitted") is not True
         or runtime.get("tabUrl") != "https://chatgpt.com/"
         or runtime.get("conversationId") not in {None, ""}
