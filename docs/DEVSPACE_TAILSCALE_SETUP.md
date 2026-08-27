@@ -42,8 +42,10 @@ environment only selects the tool mode.
 The managed service also advertises `offline_access` together with the
 `devspace` OAuth scope so ChatGPT can renew its authorization instead of losing
 the connector after the one-hour access token expires. After upgrading an
-existing setup from metadata that omitted `offline_access`, recreate or
-reconnect the app once so ChatGPT reads the corrected OAuth metadata.
+existing setup from metadata that omitted `offline_access`, keep the existing
+`codex` app and exact URL, then manually reconnect that app once so ChatGPT
+reads the corrected OAuth metadata. Recreate only if the existing app record is
+actually absent or corrupt.
 
 The managed launch also pins `DEVSPACE_SUBAGENTS=false`. DevSpace 1.0.8's
 optional local-agent daemon and provider CLI adapters remain disabled unless
@@ -71,9 +73,9 @@ do not yet have this explicit config.
 
 Approve the initial Owner-password page when DevSpace asks. This tooling never opens settings, creates/deletes apps, picks permissions, inspects app lists, or selects an app in the composer.
 
-After a manual first registration or requested reconnect, recycle the managed
-DevSpace process once without changing its roots, Owner credential, OAuth
-database, or Funnel hostname:
+After a manual first registration or requested reconnect, run the following
+managed refresh exactly once only when the stage or diagnosis requires it. It
+does not change roots, Owner credential, OAuth database, or Funnel hostname:
 
 ```powershell
 python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py post-register --root C:\projects\one --hostname your-device.your-tailnet.ts.net
@@ -103,10 +105,23 @@ python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py doctor
 
 Diagnosis checks local DevSpace `/mcp`, then `tailscale funnel status --json`,
 then the public `/mcp` endpoint. If the endpoint is healthy but a ChatGPT tool
-call fails just after manual registration or reconnect, run the explicit
-`post-register` refresh once and repeat only the regular read-only Oracle
-probe. If it still fails, keep the server running and report the same connector
-URL; do not automate deletion, re-registration, or repeated refreshes.
+call is stale, first preserve the existing `codex` app and exact URL: use the
+visible Refresh/New refresh control in its app detail to update Actions. If
+OAuth or calls remain stale, manually open `https://chatgpt.com/#settings/Plugins/`,
+select the existing app, and use Reconnect. Run the explicit `post-register`
+refresh exactly once only when the stage or diagnosis requires it, then repeat
+only the fresh regular non-Pro auditNonce read-only Oracle probe. If it still
+fails, keep the server running and report the same connector URL; do not
+automate deletion, re-registration, or repeated refreshes. Business UI or an
+unavailable Refresh control is not a re-registration fallback; recreation is
+exceptional for an app record that is actually absent or corrupt.
+
+A widget-domain warning concerns required app-submission UI metadata, not a
+`read_chunk` Action inventory. The managed 1.0.8 compatibility patch now binds
+that resource to the exact credential-free public HTTPS origin. If the warning
+remains after installation, Refresh the existing app's Actions; do not recreate
+the app. The warning alone still cannot establish that `read_chunk` is absent,
+so the fresh canary remains the action-availability proof.
 
 A local/public `401` proves that the DevSpace OAuth challenge is reachable; it
 does **not** prove that ChatGPT's registered `@codex` account binding can mint a

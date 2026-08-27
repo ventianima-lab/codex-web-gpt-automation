@@ -1,0 +1,41 @@
+diff --git a/dist/server.js b/dist/server.js
+index e65aac9..5e26b95 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -742,6 +742,20 @@ function appCsp(config) {
+         connectDomains: [publicBaseUrl],
+     };
+ }
++function appDomain(config) {
++    const publicBaseUrl = new URL(config.publicBaseUrl);
++    const hostname = publicBaseUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
++    const loopback = hostname === "localhost"
++        || hostname.endsWith(".localhost")
++        || hostname === "::1"
++        || hostname.startsWith("::ffff:127.")
++        || hostname.startsWith("::ffff:7f")
++        || /^127(?:\.\d{1,3}){3}$/.test(hostname);
++    if (publicBaseUrl.protocol !== "https:" || publicBaseUrl.username || publicBaseUrl.password || loopback) {
++        throw new Error("DevSpace workspace app domain must be a credential-free HTTPS origin.");
++    }
++    return publicBaseUrl.origin;
++}
+ function uiBuildDirectory() {
+     return fileURLToPath(new URL("../dist/ui", import.meta.url));
+ }
+@@ -937,6 +951,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+         description: "Interactive card for viewing DevSpace file diffs.",
+         _meta: {
+             ui: {
++                domain: appDomain(config),
+                 csp: appCsp(config),
+             },
+         },
+@@ -950,6 +965,7 @@ export function createMcpServer(config, workspaces, reviewCheckpoints, processSe
+                     text: workspaceAppHtml(config),
+                     _meta: {
+                         ui: {
++                            domain: appDomain(config),
+                             csp: appCsp(config),
+                         },
+                     },

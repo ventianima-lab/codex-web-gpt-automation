@@ -156,6 +156,17 @@ def test_oauth_refresh_replay_probe_is_isolated_and_fail_closed(tmp_path: Path) 
         compat.check_oauth_refresh_replay(package_root=package, runner=failing)
     assert failure.value.code == "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_FAILED"
 
+    def timing_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    with pytest.raises(compat.DevSpaceCompatError) as timeout:
+        compat.check_oauth_refresh_replay(package_root=package, runner=timing_out)
+    assert timeout.value.code == "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_TIMEOUT"
+    assert timeout.value.evidence == {
+        "root": str(package.resolve()),
+        "timeout_seconds": 30,
+    }
+
 
 def test_large_read_bridge_probe_is_utf8_bounded_and_fail_closed(tmp_path: Path) -> None:
     compat = load_compat()
@@ -711,9 +722,10 @@ def test_108_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     assert compat.PATCHES["dist/server.js"] == {
         "patch": "workspace-write-and-read-bridge.patch",
         "pristine": "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263",
-        "patched": "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c",
+        "patched": "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985",
         "upgrades": {
             "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": "tool-read-receipts.patch",
+            "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c": "widget-domain.patch",
         },
     }
     assert 'delete: "delete_file"' in patch
@@ -763,6 +775,90 @@ def test_108_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     ):
         assert tool in receipt_patch
     assert "await writeToolReadReceipt" in receipt_patch
+    widget_patch = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "widget-domain.patch"
+    ).read_text(encoding="utf-8")
+    assert widget_patch.count("domain: appDomain(config),") == 2
+    assert 'publicBaseUrl.protocol !== "https:"' in widget_patch
+    assert "publicBaseUrl.username || publicBaseUrl.password" in widget_patch
+    assert 'hostname === "localhost"' in widget_patch
+    assert '.replace(/\\.$/, "")' in widget_patch
+    assert 'hostname.endsWith(".localhost")' in widget_patch
+    assert 'hostname === "::1"' in widget_patch
+    assert 'hostname.startsWith("::ffff:127.")' in widget_patch
+    assert 'hostname.startsWith("::ffff:7f")' in widget_patch
+    assert r'/^127(?:\.\d{1,3}){3}$/.test(hostname)' in widget_patch
+    assert "return publicBaseUrl.origin;" in widget_patch
+
+
+def test_108_widget_domain_upgrade_is_hash_gated_to_the_public_app_origin(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    try:
+        source_root = compat.resolve_package_roots()[0]
+    except compat.DevSpaceCompatError as exc:
+        pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
+    source = source_root / "dist" / "server.js"
+    prior_hash = "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c"
+    if compat.sha256_file(source) != prior_hash:
+        pytest.skip("installed DevSpace server is not the prior hash-gated receipt payload")
+    package = tmp_path / "devspace"
+    (package / "dist").mkdir(parents=True)
+    shutil.copy2(source, package / "dist" / "server.js")
+    compat._apply_patch(
+        package,
+        MODULE_PATH.parent / "devspace-compat" / compat.SUPPORTED_VERSION / "widget-domain.patch",
+    )
+    server = (package / "dist" / "server.js").read_text(encoding="utf-8")
+    assert compat.sha256_file(package / "dist" / "server.js") == compat.PATCHES["dist/server.js"]["patched"]
+    assert server.count("domain: appDomain(config),") == 2
+    assert 'publicBaseUrl.protocol !== "https:"' in server
+    assert 'hostname === "localhost"' in server
+    assert '.replace(/\\.$/, "")' in server
+    assert 'hostname.endsWith(".localhost")' in server
+    assert 'hostname === "::1"' in server
+    assert 'hostname.startsWith("::ffff:127.")' in server
+    assert 'hostname.startsWith("::ffff:7f")' in server
+    assert r'/^127(?:\.\d{1,3}){3}$/.test(hostname)' in server
+    assert "return publicBaseUrl.origin;" in server
+    assert "domain: config.localBaseUrl" not in server
+
+    function_match = re.search(r"function appDomain\(config\) \{.*?\n\}", server, re.DOTALL)
+    assert function_match is not None
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for the widget-domain runtime probe")
+    probe = function_match.group(0) + r'''
+const accepted = appDomain({ publicBaseUrl: "https://lasal-pc.tail46ec90.ts.net/mcp" });
+if (accepted !== "https://lasal-pc.tail46ec90.ts.net") process.exit(11);
+for (const candidate of [
+  "http://lasal-pc.tail46ec90.ts.net/mcp",
+  "https://user:password@lasal-pc.tail46ec90.ts.net/mcp",
+  "https://localhost:7676/mcp",
+  "https://localhost.:7676/mcp",
+  "https://dev.localhost:7676/mcp",
+  "https://dev.localhost.:7676/mcp",
+  "https://127.0.0.1:7676/mcp",
+  "https://127.42.0.9:7676/mcp",
+  "https://[::1]:7676/mcp",
+  "https://[::ffff:127.0.0.1]:7676/mcp",
+]) {
+  let rejected = false;
+  try { appDomain({ publicBaseUrl: candidate }); } catch { rejected = true; }
+  if (!rejected) process.exit(12);
+}
+'''
+    completed = subprocess.run(
+        [node, "--input-type=module", "--eval", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_108_artifact_write_is_bound_to_audit_readonly_scope() -> None:

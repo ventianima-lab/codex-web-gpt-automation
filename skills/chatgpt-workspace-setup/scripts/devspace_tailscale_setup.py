@@ -241,6 +241,13 @@ def setup_plan(
 
 
 def run_checked(argv: Sequence[str], *, runner: Callable[..., Any] = subprocess.run) -> None:
+    run_checked_result(argv, runner=runner)
+
+
+def run_checked_result(
+    argv: Sequence[str], *, runner: Callable[..., Any] = subprocess.run
+) -> Any:
+    """Run a managed command and retain its checked result for a bounded caller."""
     completed = runner(
         list(argv), check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
         **windows_subprocess_kwargs(),
@@ -248,6 +255,23 @@ def run_checked(argv: Sequence[str], *, runner: Callable[..., Any] = subprocess.
     if completed.returncode != 0:
         summary = redact((completed.stderr or completed.stdout or "").strip())[-1200:]
         raise SetupError(f"MANAGED_COMMAND_FAILED:{completed.returncode}:{summary}")
+    return completed
+
+
+def checked_compatibility_report(
+    *, runner: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any]:
+    """Run the exact compatibility gate and require its machine-readable result."""
+    completed = run_checked_result(devspace_compat_argv(), runner=runner)
+    try:
+        report = json.loads(completed.stdout or "")
+    except json.JSONDecodeError as error:
+        raise SetupError("DEVSPACE_COMPAT_REPORT_INVALID") from error
+    if not isinstance(report, dict) or report.get("ok") is not True:
+        raise SetupError("DEVSPACE_COMPAT_REPORT_INVALID")
+    if type(report.get("service_restart_required")) is not bool:
+        raise SetupError("DEVSPACE_COMPAT_REPORT_INVALID")
+    return report
 
 
 def run_interactive_checked(
@@ -437,14 +461,22 @@ def recover_service(
     popen_factory: Callable[..., Any] = subprocess.Popen,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Idempotently restore the managed DevSpace service and its exact Funnel."""
+    """Reconcile the managed service without changing app registration or roots.
+
+    A healthy local MCP 401 only proves the listener is answering.  It does not
+    prove that a just-patched package has been restarted, so every recovery runs
+    the exact package/native/compatibility validations before deciding whether a
+    single exact-service restart is required.
+    """
     local = http_probe(config.local_mcp_url, opener=opener)
     service_started = not local.get("ok")
-    if service_started:
-        run_checked(devspace_package_prepare_argv(), runner=runner)
-        run_checked(devspace_native_prepare_argv(), runner=runner)
-        run_checked(devspace_native_argv(), runner=runner)
-        run_checked(devspace_compat_argv(), runner=runner)
+    run_checked(devspace_package_prepare_argv(), runner=runner)
+    run_checked(devspace_native_prepare_argv(), runner=runner)
+    run_checked(devspace_native_argv(), runner=runner)
+    compatibility = checked_compatibility_report(runner=runner)
+    restart_required = bool(compatibility.get("service_restart_required"))
+    service_restarted = service_started or restart_required
+    if service_restarted:
         run_checked(
             devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
             runner=runner,
@@ -454,11 +486,22 @@ def recover_service(
             devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
             runner=runner,
         )
+    if service_started and restart_required:
+        reconciliation_reason = "listener-absent-and-compatibility-restart-required"
+    elif service_started:
+        reconciliation_reason = "listener-absent"
+    elif restart_required:
+        reconciliation_reason = "compatibility-restart-required"
+    else:
+        reconciliation_reason = "healthy-listener-compatible"
     readiness = wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     result = ensure_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
     return {
         **result,
         "service_started": service_started,
+        "service_restarted": service_restarted,
+        "reconciliation_reason": reconciliation_reason,
+        "compatibility": compatibility,
         "service": managed_service_evidence(locals().get("launch")),
         "local_readiness": readiness,
     }

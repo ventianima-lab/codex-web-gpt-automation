@@ -190,9 +190,18 @@ def test_pro_gate_keeps_partial_registered_app_surface_fail_closed_with_manual_r
         "RUN_POST_REGISTER_ONCE",
         "RUN_FRESH_REGULAR_NON_PRO_AUDIT_NONCE_CANARY",
     ]
-    assert "Action control > Refresh" in "\n".join(evidence["registered_app_action_snapshot_guidance"]["en"])
-    assert "Business" in "\n".join(evidence["registered_app_action_snapshot_guidance"]["en"])
-    assert "read_chunk" in "\n".join(evidence["registered_app_action_snapshot_guidance"]["ko"])
+    english = "\n".join(evidence["registered_app_action_snapshot_guidance"]["en"])
+    korean = "\n".join(evidence["registered_app_action_snapshot_guidance"]["ko"])
+    assert "Refresh or New refresh" in english
+    assert "#settings/Plugins/" in english
+    assert "Reconnect" in english
+    assert "actually absent or corrupt" in english
+    assert "Business or Refresh is unavailable" in english
+    assert "recreate and publish" not in english
+    assert "새로 고침" in korean
+    assert "다시 연결" in korean
+    assert "실제로 없거나 손상" in korean
+    assert "read_chunk" in korean
 
 
 def test_pro_gate_does_not_recommend_app_refresh_for_unrelated_or_unknown_failures(tmp_path: Path) -> None:
@@ -252,7 +261,7 @@ def test_pro_gate_without_recorded_final_gate_keeps_only_conditional_snapshot_gu
     assert "post_refresh_actions" not in evidence
     conditional = evidence["conditional_registered_app_action_snapshot_guidance"]
     assert "read_chunk" in "\n".join(conditional["ko"])
-    assert "Action control > Refresh" in "\n".join(conditional["en"])
+    assert "Refresh or New refresh" in "\n".join(conditional["en"])
 
 
 def test_first_exact_root_qualification_is_cached_until_config_changes(tmp_path: Path) -> None:

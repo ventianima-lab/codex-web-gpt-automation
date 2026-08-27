@@ -108,6 +108,15 @@ python3 doctor.py
 ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등록**하는
 절차입니다. ChatGPT 설정·앱 목록·권한·삭제·선택 UI를 자동화하지 않습니다.
 
+기존 `codex` 앱은 같은 이름과 정확한 `/mcp` URL로 보존합니다. Action이 오래되면
+앱 상세의 보이는 `Refresh`/`새로 고침`으로 갱신하고, OAuth 또는 도구 호출이 계속
+오래되면 `https://chatgpt.com/#settings/Plugins/`에서 기존 앱을 선택해
+`Reconnect`/`다시 연결`합니다. Business UI나 Refresh 부재만으로 앱을 다시 만들지
+않으며, 실제 앱 레코드가 없거나 손상된 경우에만 예외적으로 재생성합니다. 필요할 때만
+`post-register`를 정확히 한 번 실행한 후, 새 일반 비-Pro auditNonce canary로
+`open_workspace → read → read_chunk`를 확인합니다. 위젯 도메인 경고만으로
+`read_chunk`의 존재·부재를 판단하지 않습니다.
+
 새 프로젝트를 추가할 때는 기존 root를 보존한 전체 목록에 exact folder만
 추가합니다. 앱 설정은 매 작업마다 재검사하거나 자동 조작하지 않습니다.
 
