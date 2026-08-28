@@ -1,5 +1,21 @@
 # 기술 변경 기록
 
+## 1.20.15 - Verify the current GPT-5.6 Sol Pro power slider
+
+- Oracle 0.18.0 now recognizes ChatGPT's current unified `Thinking effort`
+  picker, where Pro is represented by the simple Power slider as `Pro, 5 of
+  5` instead of a separate Heavy/Pro effort row. An already-selected Pro tier
+  is accepted only when the same visible menu also proves that the checked
+  model is exactly `GPT-5.6 Sol`.
+- When the slider is below Pro, the adapter uses bounded ArrowRight input and
+  requires two consecutive post-change proofs of both Power 5/5 and the exact
+  checked model. A missing slider, changed model, unavailable control, or
+  unverified result remains a pre-submit failure; no lower effort is submitted
+  as Pro.
+- The compatibility patch is hash-gated against the exact published Oracle
+  0.18.0 package, and the regression fixture preserves the live 2026-08-28 UI
+  shape whose trigger is named `Thinking effort` rather than `Pro`.
+
 ## 1.20.14 - Select the current visible Pro effort fail-closed
 
 - New GPT-5.6 Sol Pro and read-only Pro follow-up submissions now pass Oracle

@@ -245,6 +245,11 @@ PATCHES = {
         "pristine": "312b45c44d4cd69a3a057e7bd1584b58182b4b37bc88f6ce6c7d11e216267c81",
         "patched": "f3b405464515e858c9f773d67fa0e94bca07dadff8ea49caa7859ad37e730ff7",
     },
+    "dist/src/browser/actions/thinkingTime.js": {
+        "patch": "thinkingTime.gpt56-pro-power-slider.patch",
+        "pristine": "3d9d06b08417bca3b2d646eb4d46887d26c5de7c068d1e995c73b6b6e2f61199",
+        "patched": "978f754ba4011957790530474d27d629a8d353dd449f8e2636e02a9abd27b81a",
+    },
     "dist/src/browser/actions/assistantResponse.js": {
         "patch": "../0.17.1/assistantResponse.terminal-marker-fallback.patch",
         "pristine": "93d2465ed7dce43d8093a91bada7656bc9ba7ba3729d2fcc43229fa8aa6e36de",
