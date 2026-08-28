@@ -1,0 +1,23 @@
+{
+  "schema": "codex.chatgpt.oracle-power-slider-fixture/v1",
+  "source": "live-gpt-5.6-sol-thinking-effort-diagnostic-2026-08-28",
+  "requested_model": "gpt-5.6-sol",
+  "requested_effort": "pro",
+  "model_button": {
+    "text": "Thinking effort",
+    "ariaHaspopup": "menu",
+    "ariaExpanded": "true"
+  },
+  "simple_view": {
+    "testid": "composer-model-picker-slider-simple-view",
+    "text": "Pro, 5 of 5.Use Left and Right arrow keys to adjust power."
+  },
+  "power_control": {
+    "role": "menuitem",
+    "ariaLabel": "Power"
+  },
+  "model_rows": [
+    {"role": "menuitemradio", "label": "GPT-5.6 Sol", "ariaChecked": true},
+    {"role": "menuitemradio", "label": "GPT-5.5", "ariaChecked": false}
+  ]
+}
