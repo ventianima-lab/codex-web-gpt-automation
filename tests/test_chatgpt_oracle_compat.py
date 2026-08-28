@@ -635,12 +635,13 @@ globalThis.window = globalThis;
       constructor(type, init) {{ super(type, init); this.key=init.key; this.code=init.code; }}
     }};
 
-const runCase = async (initialStep, validModel) => {{
+const runCase = async (initialStep, validModel, controlledFragment = false) => {{
   let step = initialStep;
   let keydowns = 0;
   const pill = new FakeElement(fixture.model_button.text, {{
     'aria-haspopup': fixture.model_button.ariaHaspopup,
     'aria-expanded': fixture.model_button.ariaExpanded,
+    'aria-controls': controlledFragment ? 'controlled-effort-fragment' : null,
   }});
   const view = new FakeElement(() =>
     (step === 5 ? 'Pro' : 'Extra High') + ', ' + step + ' of 5.Use Left and Right arrow keys to adjust power.',
@@ -661,6 +662,12 @@ const runCase = async (initialStep, validModel) => {{
   const menu = new FakeElement('ProPro, 5 of 5.GPT-5.6 SolGPT-5.5', {{
     role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
   }});
+  const fragment = new FakeElement('Pro, 5 of 5.', {{
+    role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
+  }});
+  fragment.queryOne = (selector) =>
+    selector.includes('composer-model-picker-slider-simple-view') ? view : null;
+  fragment.queryMany = () => [];
   menu.queryOne = (selector) =>
     selector.includes('composer-model-picker-slider-simple-view') ? view :
     selector.includes('composer-intelligence-picker-content') ? menu : null;
@@ -679,7 +686,7 @@ const runCase = async (initialStep, validModel) => {{
       selector.includes('button.__composer-pill') ? [pill] :
       selector === '[role=menu]' ? [menu] :
       selector.includes('form button[aria-haspopup="menu"]') ? [pill] : [],
-    getElementById: () => null,
+    getElementById: (id) => id === 'controlled-effort-fragment' ? fragment : null,
     dispatchEvent: () => true,
   }};
   const logs = [];
@@ -693,6 +700,7 @@ const runCase = async (initialStep, validModel) => {{
 }};
 console.log(JSON.stringify({{
   selected: await runCase(5, true),
+  controlledPortal: await runCase(5, true, true),
   switched: await runCase(4, true),
   switchedFromMedium: await runCase(2, true),
   wrongModel: await runCase(5, false),
@@ -708,6 +716,12 @@ console.log(JSON.stringify({{
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
     assert result["selected"] == {
+        "ok": True,
+        "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
+        "step": 5,
+        "keydowns": 0,
+    }
+    assert result["controlledPortal"] == {
         "ok": True,
         "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
         "step": 5,

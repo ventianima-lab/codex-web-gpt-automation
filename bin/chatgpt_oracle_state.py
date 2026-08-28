@@ -2991,6 +2991,7 @@ def _standalone_pro_attachment_no_submission_evidence(
     state_path: Path,
     *,
     allow_settled_attachment_source_drift: bool = False,
+    require_recovery_evidence: bool = True,
 ) -> dict[str, Any] | None:
     """Return bounded user-adjudication evidence for attachment upload timeout.
 
@@ -3063,19 +3064,37 @@ def _standalone_pro_attachment_no_submission_evidence(
         stdout_text = stdout_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         return None
-    expected_marker_lines = {
+    expected_attachment_marker_lines = {
         f"ERROR: {ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER}",
         f"User error (browser-automation): {ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER}",
     }
-    observed_marker_lines = {
+    observed_attachment_marker_lines = {
         line.strip()
         for line in stdout_text.splitlines()
         if ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER in line
     }
+    expected_prompt_marker_lines = {
+        f"ERROR: {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
+        f"User error (browser-automation): {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
+    }
+    observed_prompt_marker_lines = {
+        line.strip()
+        for line in stdout_text.splitlines()
+        if ORACLE_PROMPT_NOT_OBSERVED_MARKER in line
+    }
+    attachment_timeout = (
+        observed_attachment_marker_lines == expected_attachment_marker_lines
+        and stdout_text.count(ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER) == 2
+        and not observed_prompt_marker_lines
+    )
+    prompt_timeout = (
+        observed_prompt_marker_lines == expected_prompt_marker_lines
+        and stdout_text.count(ORACLE_PROMPT_NOT_OBSERVED_MARKER)
+        == len(observed_prompt_marker_lines)
+        and not observed_attachment_marker_lines
+    )
     if (
-        observed_marker_lines != expected_marker_lines
-        or stdout_text.count(ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER) != 2
-        or ORACLE_PROMPT_NOT_OBSERVED_MARKER in stdout_text
+        attachment_timeout == prompt_timeout
         or f"Session: {locator}" not in stdout_text
         or CHATGPT_CONVERSATION_URL_RE.search(stdout_text)
     ):
@@ -3198,7 +3217,7 @@ def _standalone_pro_attachment_no_submission_evidence(
             "stderr_name": recovery_stderr.name,
             "stderr_sha256": hashlib.sha256(recovery_stderr_bytes).hexdigest(),
         })
-    if not recovery_records:
+    if require_recovery_evidence and not recovery_records:
         return None
     return {
         "settlement_eligibility": "oracle-standalone-pro-attachment/v1",
@@ -3215,12 +3234,19 @@ def _standalone_pro_attachment_no_submission_evidence(
         "oracle_locator": locator,
         "oracle_version": version,
         "oracle_command": list(oracle.get("command") or []),
-        "pre_submit_marker": ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER,
+        "pre_submit_marker": (
+            ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER
+            if attachment_timeout
+            else ORACLE_PROMPT_NOT_OBSERVED_MARKER
+        ),
         "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
         "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
         "recovery_evidence": recovery_records,
         "output_absent": True,
         "conversation_url_absent": True,
+        "_pre_submit_failure_kind": (
+            "attachment-upload-timeout" if attachment_timeout else "prompt-not-observed"
+        ),
         "_source_mission_path": str(source_path),
         "_transport_mission_path": str(transport_path),
     }
@@ -3589,12 +3615,22 @@ def _bounded_task_owned_prompt_timeout_evidence(
     direct_recovery_evidence = (
         direct_evidence.get("recovery_evidence") if direct_evidence is not None else None
     )
+    attachment_evidence = _standalone_pro_attachment_no_submission_evidence(
+        state_path,
+        require_recovery_evidence=False,
+    )
     if (
         direct_evidence is not None
         and isinstance(direct_recovery_evidence, list)
         and (allow_recovery_evidence or direct_recovery_evidence == [])
     ):
         evidence = direct_evidence
+    elif (
+        attachment_evidence is not None
+        and attachment_evidence.get("_pre_submit_failure_kind") == "prompt-not-observed"
+        and attachment_evidence.get("recovery_evidence") == []
+    ):
+        evidence = attachment_evidence
     else:
         evidence = _standalone_pro_no_submission_evidence(
             state_path,
@@ -3612,7 +3648,10 @@ def _bounded_task_owned_prompt_timeout_evidence(
         )
     ):
         return None
-    if evidence.get("settlement_eligibility") == "oracle-standalone-qualified-pro/v1":
+    if evidence.get("settlement_eligibility") in {
+        "oracle-standalone-qualified-pro/v1",
+        "oracle-standalone-pro-attachment/v1",
+    }:
         if evidence.get("_pre_submit_failure_kind") != "prompt-not-observed":
             return None
     elif evidence.get("settlement_eligibility") != "oracle-direct-devspace/v1":

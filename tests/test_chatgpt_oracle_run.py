@@ -90,6 +90,10 @@ def version_0171_runner(command, **kwargs):
     return subprocess.CompletedProcess(command, 0, stdout="oracle 0.17.1\n", stderr="")
 
 
+def version_0180_runner(command, **kwargs):
+    return subprocess.CompletedProcess(command, 0, stdout="oracle 0.18.0\n", stderr="")
+
+
 def version_timeout_runner(command, **kwargs):
     raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 30))
 
@@ -3425,6 +3429,63 @@ def test_task_bound_readonly_prompt_timeout_can_harvest_without_browser_receipt(
         source_thread_id=owner,
     )
     assert [item["run_id"] for item in owners] == ["c" * 32]
+
+
+def test_task_bound_attachment_pro_prompt_timeout_can_harvest_and_user_settle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_manifest(tmp_path),
+        run_factory=version_0180_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+
+    evidence = runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+    assert evidence is not None
+    assert evidence["settlement_eligibility"] == "oracle-standalone-pro-attachment/v1"
+    assert evidence["transport"] == "pro-attachment-only"
+    assert evidence["commit_probe_turns"] == 0
+    assert evidence["conversation_url_absent"] is True
+    assert len(evidence["attachment_evidence"]) == 2
+
+    dry_run = runner.recover_run(
+        run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    assert dry_run["browser_identity_mode"] == "bounded-prompt-timeout-harvest"
+    assert "--harvest" in dry_run["argv"]
+    assert "--prompt" not in dry_run["argv"]
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user confirmed the exact zero-turn attachment-only run did not submit",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+
+    assert settled["result"]["session_authority"] == "pre_submit"
+    assert proof is not None
+    assert proof["settlement_eligibility"] == "oracle-standalone-pro-attachment/v1"
+    assert proof["pre_submit_marker"] == runner.STATE.ORACLE_PROMPT_NOT_OBSERVED_MARKER
 
 
 def test_task_bound_direct_devspace_prompt_timeout_can_harvest_without_browser_receipt(
