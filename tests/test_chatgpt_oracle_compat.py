@@ -635,12 +635,13 @@ globalThis.window = globalThis;
       constructor(type, init) {{ super(type, init); this.key=init.key; this.code=init.code; }}
     }};
 
-const runCase = async (initialStep, validModel) => {{
+const runCase = async (initialStep, validModel, controlledFragment = false) => {{
   let step = initialStep;
   let keydowns = 0;
   const pill = new FakeElement(fixture.model_button.text, {{
     'aria-haspopup': fixture.model_button.ariaHaspopup,
     'aria-expanded': fixture.model_button.ariaExpanded,
+    'aria-controls': controlledFragment ? 'controlled-effort-fragment' : null,
   }});
   const view = new FakeElement(() =>
     (step === 5 ? 'Pro' : 'Extra High') + ', ' + step + ' of 5.Use Left and Right arrow keys to adjust power.',
@@ -661,6 +662,12 @@ const runCase = async (initialStep, validModel) => {{
   const menu = new FakeElement('ProPro, 5 of 5.GPT-5.6 SolGPT-5.5', {{
     role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
   }});
+  const fragment = new FakeElement('Pro, 5 of 5.', {{
+    role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
+  }});
+  fragment.queryOne = (selector) =>
+    selector.includes('composer-model-picker-slider-simple-view') ? view : null;
+  fragment.queryMany = () => [];
   menu.queryOne = (selector) =>
     selector.includes('composer-model-picker-slider-simple-view') ? view :
     selector.includes('composer-intelligence-picker-content') ? menu : null;
@@ -679,7 +686,7 @@ const runCase = async (initialStep, validModel) => {{
       selector.includes('button.__composer-pill') ? [pill] :
       selector === '[role=menu]' ? [menu] :
       selector.includes('form button[aria-haspopup="menu"]') ? [pill] : [],
-    getElementById: () => null,
+    getElementById: (id) => id === 'controlled-effort-fragment' ? fragment : null,
     dispatchEvent: () => true,
   }};
   const logs = [];
@@ -693,6 +700,7 @@ const runCase = async (initialStep, validModel) => {{
 }};
 console.log(JSON.stringify({{
   selected: await runCase(5, true),
+  controlledPortal: await runCase(5, true, true),
   switched: await runCase(4, true),
   switchedFromMedium: await runCase(2, true),
   wrongModel: await runCase(5, false),
@@ -713,6 +721,12 @@ console.log(JSON.stringify({{
         "step": 5,
         "keydowns": 0,
     }
+    assert result["controlledPortal"] == {
+        "ok": True,
+        "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
+        "step": 5,
+        "keydowns": 0,
+    }
     assert result["switched"] == {
         "ok": True,
         "logs": ["[browser] Thinking time: Pro, 5 of 5"],
@@ -727,6 +741,49 @@ console.log(JSON.stringify({{
     }
     assert result["wrongModel"]["ok"] is False
     assert "refusing to submit without confirmed Pro" in result["wrongModel"]["message"]
+
+
+def test_published_0180_pro_power_slider_migrates_v12015_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
+        pytest.skip("published Oracle 0.18.0 package root is unavailable")
+    package = tmp_path / "oracle-pro-power-slider-legacy"
+    shutil.copytree(source, package)
+    relative = "dist/src/browser/actions/thinkingTime.js"
+    contract = compat.PATCHES[relative]
+    legacy_patch = str(contract["legacy_patch"])
+    legacy_hashes = list(contract["legacy_patched"])
+    assert legacy_hashes == [
+        "978f754ba4011957790530474d27d629a8d353dd449f8e2636e02a9abd27b81a"
+    ]
+    compat._apply_patch(package, compat.patch_root("0.18.0") / legacy_patch)
+    target = package / relative
+    assert compat.sha256_file(target) == legacy_hashes[0]
+
+    backup = tmp_path / "backup-pro-power-slider-legacy"
+    first = compat.ensure_oracle_compatibility(
+        "oracle 0.18.0", package_root=package, backup_root=backup
+    )
+    second = compat.ensure_oracle_compatibility(
+        "oracle 0.18.0", package_root=package, backup_root=backup
+    )
+
+    assert relative in first["changed"]
+    assert relative in second["already_patched"]
+    assert compat.sha256_file(target) == contract["patched"]
+    assert compat.sha256_file(backup / relative) == contract["pristine"]
+    node = shutil.which("node")
+    assert node is not None
+    syntax = subprocess.run(
+        [node, "--check", str(target)], capture_output=True, text=True, check=False
+    )
+    assert syntax.returncode == 0, syntax.stderr
 
 
 def test_oracle_session_metadata_retry_patch_is_bounded_to_windows_transient_errors() -> None:

@@ -1,6 +1,6 @@
 ---
 name: mcp-update-guard
-description: Safely update MCP servers, CGW and OpenCodex integration, frozen legacy Oracle automation, global skills, plugins, and related shared automation while preserving local customizations.
+description: Part of the current Oracle automation path, safely update MCP servers, shared harness helpers, Oracle GPT runners, global skills, plugins, and related automation while preserving local customizations.
 ---
 
 # MCP update guard
@@ -16,17 +16,21 @@ preserve unrelated local customizations.
 2. Inspect source Git status and the installed file identity before editing.
    Never overwrite credentials, browser profiles, runtime state, or unrelated
    user changes.
-3. For non-trivial GPT design or review, use web delegation only when the user
-   asked for it. OpenCodex remains the single Codex entrypoint and CGW remains
-   an external provider:
-   - ordinary requested web work uses `cgw/chatgpt-web-extra-high`;
-   - an explicit request to ask GPT Pro or Pro uses a
-     `cgw/chatgpt-web-pro` subagent with `max` reasoning;
-   - local Codex owns files, commands, tests, and deterministic verification;
-   - never fall back to Oracle, DevSpace, Web Multi, attachments, CodexPro, or
-     agbrowse when CGW is unavailable or uncertain. Those paths are frozen for
-     new work and retained only for maintenance or explicitly requested exact
-     historical recovery.
+3. For non-trivial GPT automation design or implementation, use the selected
+   current GPT workflow only when the user asked for web delegation. Every new
+   ChatGPT run uses Oracle:
+   - regular modes, Deep Research, comprehensive stages, and Web Multi use
+     Oracle plus the manually registered DevSpace app;
+    - regular web work defaults to the highest supported non-Pro reasoning tier;
+      only explicit user opt-in selects new qualified Pro with `GPT-5.6 Sol` at
+      the Pro effort and read-only DevSpace for design, advice, or review. A
+      regular `GPT-5.6` `extra-high` DevSpace stage performs file mutations and
+      commands. Explicit `pro-attachment` remains a separate read-only
+      immutable/external-evidence route and is never an automatic fallback;
+      persisted legacy `pro-devspace` write runs retain their exact authority
+      only during recovery;
+   - CodexPro/agbrowse may be used only for exact recovery of an already
+     persisted legacy run and never as a fallback.
 4. Prefer small compatibility changes over wholesale replacement. Preserve
    local ports, names, roots, tokens, routing, and hooks unless the task
    explicitly changes them.
@@ -134,8 +138,8 @@ instead of the layer that failed.
 - Do not delete or recreate credential-bearing state during a normal update.
 - Do not use resource pressure as authority to block, terminate, downgrade, or
   duplicate user-visible work.
-- Do not silently switch a CGW model, reasoning level, provider route, or a
-  persisted legacy Oracle model, transport, or browser backend.
+- Do not silently switch Oracle model, reasoning level, transport, or browser
+  backend.
 - Do not create a new legacy agbrowse/CodexPro run while repairing recovery
   code.
 - Stop and report exact dirty files when authoritative persistence, push, or CI

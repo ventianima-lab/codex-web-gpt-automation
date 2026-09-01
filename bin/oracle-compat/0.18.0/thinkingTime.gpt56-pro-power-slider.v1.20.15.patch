@@ -1,7 +1,7 @@
 diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions/thinkingTime.js
 --- a/dist/src/browser/actions/thinkingTime.js
 +++ b/dist/src/browser/actions/thinkingTime.js
-@@ -849,6 +849,107 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -849,6 +849,90 @@ function buildThinkingTimeExpression(level, desiredModel) {
        'effort', 'aufwand', '强度', '努力', '推論レベル',
        'esfuerzo', 'esforco', 'sforzo', 'inspanning', 'wysilek',
      ];
@@ -24,20 +24,6 @@ diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions
 +        if (!isVisible(item) || !optionIsSelected(item)) return false;
 +        return nodeLabel(item).replace(/\\s+/g, '') === 'gpt56sol';
 +      });
-+    const findGpt56PowerSliderMenu = (preferred) => {
-+      const candidates = [];
-+      const addCandidate = (candidate) => {
-+        if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
-+      };
-+      addCandidate(preferred);
-+      for (const candidate of document.querySelectorAll(MENU_CONTAINER_SELECTOR)) addCandidate(candidate);
-+      const matches = candidates.filter((candidate) => {
-+        if (!isVisible(candidate)) return false;
-+        const view = candidate.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR);
-+        return isVisible(view) && selectedModelIsExactGpt56Sol(candidate);
-+      });
-+      return matches.length === 1 ? matches[0] : null;
-+    };
 +    const exactGpt56ProPowerProof = (menu) => {
 +      if (!TARGET_IS_GPT56_MODEL || TARGET_LEVEL !== 'pro' || !menu) return false;
 +      const view = menu.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR);
@@ -50,10 +36,7 @@ diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions
 +    };
 +    const selectGpt56ProPowerSlider = async (trigger, initialMenu) => {
 +      if (!TARGET_IS_GPT56_MODEL || TARGET_LEVEL !== 'pro') return null;
-+      const currentMenu = () => {
-+        const preferred = findVisibleEffortMenu(trigger) || initialMenu;
-+        return findGpt56PowerSliderMenu(preferred) || preferred;
-+      };
++      const currentMenu = () => findVisibleEffortMenu(trigger) || initialMenu;
 +      let menu = currentMenu();
 +      let view = menu?.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR) ?? null;
 +      if (!isVisible(view)) return null;
@@ -109,7 +92,7 @@ diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions
      const containsAny = (label, words) => words.some((word) => label.includes(word));
      const findAdvancedToggle = (menu) => {
        for (const item of (menu || document).querySelectorAll('[role="menuitem"]')) {
-@@ -1069,6 +1170,13 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -1069,6 +1153,13 @@ function buildThinkingTimeExpression(level, desiredModel) {
        while (performance.now() < deadline) {
          const menu = findVisibleEffortMenu(composerEffortPill);
          if (menu) {
