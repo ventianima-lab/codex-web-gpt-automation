@@ -574,8 +574,24 @@ def _candidate_roots() -> list[Path]:
     override = str(os.environ.get("ORACLE_PACKAGE_ROOT") or "").strip()
     if override:
         return [Path(override).expanduser().resolve()]
-    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    roots = list((local / "npm-cache" / "_npx").glob("*/node_modules/@steipete/oracle"))
+    # Resolve the cache used by npx itself, including npmrc and environment
+    # overrides. A Windows-shaped fallback can patch an unrelated installation
+    # while the actual POSIX runner executes pristine, incompatible bytes.
+    npm = shutil.which("npm")
+    if not npm:
+        raise OracleCompatError("ORACLE_NPM_CACHE_UNRESOLVED", "npm is required to locate the active Oracle cache")
+    try:
+        result = subprocess.run(
+            [npm, "config", "get", "cache"], capture_output=True, text=True,
+            timeout=15, check=False, **_git_kwargs(),
+        )
+        value = result.stdout.strip()
+        cache = Path(value).expanduser()
+        if result.returncode != 0 or not value or "\n" in value or not cache.is_absolute():
+            raise ValueError("npm did not return one absolute cache path")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise OracleCompatError("ORACLE_NPM_CACHE_UNRESOLVED", "Cannot resolve the active npm cache") from exc
+    roots = list((cache / "_npx").glob("*/node_modules/@steipete/oracle"))
     return sorted((path.resolve() for path in roots if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True)
 
 

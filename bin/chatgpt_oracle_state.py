@@ -1876,6 +1876,29 @@ def host_uptime_ms(*, platform_name: str | None = None) -> int:
     return int(time.monotonic() * 1000)
 
 
+def _posix_browser_temp_alias_path(root: Path) -> Path:
+    # Chromium appends a Unix-domain socket basename to TMPDIR. The run path
+    # can already exceed sun_path's limit before that basename is appended.
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return Path("/tmp/Codex") / f"oracle-{os.getuid()}-{digest}" / "t"
+
+
+def _valid_posix_browser_temp_alias(root: Path, alias: Path) -> bool:
+    expected = _posix_browser_temp_alias_path(root)
+    try:
+        return (
+            alias == expected
+            and not alias.parent.is_symlink()
+            and alias.parent.stat().st_uid == os.getuid()
+            and alias.parent.stat().st_mode & 0o077 == 0
+            and alias.is_symlink()
+            and alias.resolve(strict=True) == root
+            and {entry.name for entry in alias.parent.iterdir()} == {"t"}
+        )
+    except OSError:
+        return False
+
+
 def browser_temp_environment(
     browser_temp_path: Path,
     *,
@@ -1890,9 +1913,26 @@ def browser_temp_environment(
         "host_uptime_ms": host_uptime_ms(platform_name=platform_name),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    value = str(root)
+    if (os.name if platform_name is None else platform_name) != "nt":
+        alias = _posix_browser_temp_alias_path(root)
+        base = alias.parent.parent
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if (base.is_symlink() or base.stat().st_uid != os.getuid()
+                or base.stat().st_mode & 0o022):
+            raise OracleStateError("BROWSER_TEMP_ALIAS_UNSAFE", "Oracle temp base is not privately owned")
+        alias.parent.mkdir(mode=0o700, exist_ok=True)
+        if (alias.parent.is_symlink() or alias.parent.stat().st_uid != os.getuid()
+                or alias.parent.stat().st_mode & 0o077):
+            raise OracleStateError("BROWSER_TEMP_ALIAS_UNSAFE", "Oracle temp alias directory is not private")
+        if not alias.exists() and not alias.is_symlink():
+            alias.symlink_to(root, target_is_directory=True)
+        if not _valid_posix_browser_temp_alias(root, alias):
+            raise OracleStateError("BROWSER_TEMP_ALIAS_UNSAFE", "Oracle temp alias does not bind this exact run")
+        value = str(alias)
+        marker["posix_temp_alias"] = value
     write_json_atomic(root / ".owner.json", marker)
     env = dict(os.environ if base_env is None else base_env)
-    value = str(root)
     env.update({"TEMP": value, "TMP": value, "TMPDIR": value})
     return env
 
@@ -1910,6 +1950,18 @@ def cleanup_owned_browser_temp(browser_temp_path: Path) -> bool:
         return False
     if payload.get("schema") != "codex.chatgpt.oracle-browser-temp-owner/v1":
         return False
+    alias_value = payload.get("posix_temp_alias")
+    if alias_value is not None:
+        if os.name == "nt" or not isinstance(alias_value, str):
+            return False
+        alias = Path(alias_value)
+        if not _valid_posix_browser_temp_alias(root, alias):
+            return False
+        try:
+            alias.unlink()
+            alias.parent.rmdir()
+        except OSError:
+            return False
     try:
         shutil.rmtree(root)
     except OSError:
