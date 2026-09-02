@@ -1431,12 +1431,13 @@ def proven_ownership_receipt(state_path: Path) -> dict[str, Any] | None:
 
 
 def _receipt_runtime_profile_path(state_path: Path, value: Any) -> str:
-    """Recover this run's profile path after its deterministic POSIX temp alias was cleaned."""
     profile = Path(str(value or "")).expanduser()
     if os.name != "nt":
+        # Cleanup removes the short TMPDIR alias, but Oracle retains its
+        # spelling in meta.json. Reconstruct only this exact run's deterministic
+        # alias; the immutable receipt must still match every identity field.
         browser_temp = state_path.parent.resolve() / "browser-temp"
-        digest = hashlib.sha256(str(browser_temp).encode("utf-8")).hexdigest()[:16]
-        alias = Path("/tmp/Codex") / f"oracle-{os.getuid()}-{digest}" / "t"
+        alias = _posix_browser_temp_alias_path(browser_temp)
         if not alias.parent.exists() and not alias.parent.is_symlink():
             try:
                 relative = profile.relative_to(alias)

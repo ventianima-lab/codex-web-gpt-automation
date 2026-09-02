@@ -1052,9 +1052,11 @@ def test_task_scoped_owners_do_not_block_other_tasks_and_foreign_is_explicit(
     )
 
 
+@pytest.mark.parametrize("use_temp_alias", [False, pytest.param(True, marks=pytest.mark.skipif(os.name == "nt", reason="POSIX temp alias"))])
 def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_url(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    use_temp_alias: bool,
 ) -> None:
     state = load_state()
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
@@ -1072,7 +1074,8 @@ def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_u
     state.persist_ownership_receipt(layout.state_path, oracle_process_pid=101)
     session_root = tmp_path / "oracle-sessions"
     monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
-    profile = layout.browser_temp_path / "oracle-browser-isolated"
+    alias = Path(state.browser_temp_environment(layout.browser_temp_path)["TMPDIR"]) if use_temp_alias else None
+    profile = (alias or layout.browser_temp_path) / "oracle-browser-isolated"
     meta = {"browser": {"runtime": {
         "chromePid": 102,
         "controllerPid": 101,
@@ -1094,6 +1097,28 @@ def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_u
     assert captured["payload"]["conversation_url"] == "https://chatgpt.com/c/exact-conversation"
     assert re.fullmatch(r"[a-f0-9]{64}", captured["payload"]["oracle_runtime_identity_sha256"])
     assert state.proven_browser_identity_receipt(layout.state_path) is not None
+
+    if use_temp_alias:
+        assert state.cleanup_owned_browser_temp(layout.browser_temp_path)
+        assert not alias.parent.exists()
+        assert state.proven_browser_identity_receipt(layout.state_path) is not None
+        # Neither another run's alias nor a retargeted surviving alias can
+        # acquire the captured browser's authority after profile cleanup.
+        changed = json.loads(meta_path.read_text(encoding="utf-8"))
+        foreign = tmp_path / "other-run" / "browser-temp"
+        foreign_alias = state._posix_browser_temp_alias_path(foreign)
+        changed["browser"]["runtime"]["userDataDir"] = str(foreign_alias / profile.name)
+        meta_path.write_text(json.dumps(changed), encoding="utf-8")
+        assert state.proven_browser_identity_receipt(layout.state_path) is None
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        alias.parent.mkdir(mode=0o700)
+        alias.symlink_to(foreign, target_is_directory=True)
+        try:
+            assert state.proven_browser_identity_receipt(layout.state_path) is None
+        finally:
+            alias.unlink()
+            alias.parent.rmdir()
+        assert state.proven_browser_identity_receipt(layout.state_path) is not None
 
     terminal_meta = json.loads(meta_path.read_text(encoding="utf-8"))
     terminal_meta["browser"]["runtime"]["promptSubmitted"] = True
