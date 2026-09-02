@@ -2537,6 +2537,102 @@ def test_current_pro_selector_failures_are_proven_pre_submit_and_release_project
     ) == []
 
 
+def test_prior_pro_app_read_gate_url_does_not_block_thinking_time_pre_submit_settlement(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+    seed = tmp_path.parent / f"{tmp_path.name}-profile"
+    seed.mkdir(parents=True)
+
+    def prior_gate(root: Path, app_name: str) -> dict:
+        return {
+            "schema": "codex.chatgpt.pro-devspace-app-read-gate/v1",
+            "qualified": True,
+            "project_root": str(root),
+            "app_name": app_name,
+            "run_id": "prior-canary-run",
+            "conversation_url": "https://chatgpt.com/c/prior-canary-conversation",
+        }
+
+    result = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="4" * 32, copy_profile=str(seed)),
+        run_factory=version_0171_runner,
+        popen_factory=thinking_time_selection_unverified_popen,
+        pro_app_read_gate_factory=prior_gate,
+    )
+    persisted = runner.STATE.load_state(Path(result["run_dir"]) / "state.json")
+
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert persisted["session_authority"] == "pre_submit"
+    assert persisted["pre_submit_failure"]["code"] == "ORACLE_PRO_TIER_NOT_SELECTED"
+    assert persisted["pro_app_read_gate"]["conversation_url"].endswith("prior-canary-conversation")
+
+
+@pytest.mark.parametrize("current_url_location", ["oracle", "provider_session"])
+def test_current_run_conversation_url_blocks_thinking_time_pre_submit_settlement(
+    tmp_path: Path,
+    current_url_location: str,
+) -> None:
+    runner = load_runner()
+    seed = tmp_path.parent / f"{tmp_path.name}-profile"
+    seed.mkdir(parents=True)
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="5" * 32, copy_profile=str(seed)),
+        run_factory=version_0171_runner,
+        popen_factory=thinking_time_selection_unverified_popen,
+    )
+    state_path = Path(initial["run_dir"]) / "state.json"
+    persisted = runner.STATE.load_state(state_path)
+    persisted["session_authority"] = "submitted_unknown"
+    persisted.pop("pre_submit_failure", None)
+    if current_url_location == "oracle":
+        persisted["oracle"]["conversation_url"] = "https://chatgpt.com/c/current-oracle-conversation"
+    else:
+        persisted["provider_session"]["observed_conversation_url"] = (
+            "https://chatgpt.com/c/current-provider-conversation"
+        )
+    runner.STATE.write_json_atomic(state_path, persisted)
+
+    assert runner.STATE.proven_pre_submit_thinking_time_failure(state_path) is None
+    assert runner.STATE.settle_proven_pre_submit_failure(state_path) is None
+    assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
+
+
+def test_prior_pro_app_read_gate_url_does_not_change_other_pre_submit_failure_settlement(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+    seed = tmp_path.parent / f"{tmp_path.name}-profile"
+    seed.mkdir(parents=True)
+
+    def prior_gate(root: Path, app_name: str) -> dict:
+        return {
+            "schema": "codex.chatgpt.pro-devspace-app-read-gate/v1",
+            "qualified": True,
+            "project_root": str(root),
+            "app_name": app_name,
+            "run_id": "prior-canary-run",
+            "conversation_url": "https://chatgpt.com/c/prior-canary-conversation",
+        }
+
+    result = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="6" * 32, copy_profile=str(seed)),
+        run_factory=version_0171_runner,
+        popen_factory=model_switcher_no_cookie_popen,
+        pro_app_read_gate_factory=prior_gate,
+    )
+    persisted = runner.STATE.load_state(Path(result["run_dir"]) / "state.json")
+
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert persisted["session_authority"] == "pre_submit"
+    assert persisted["pre_submit_failure"]["code"] == "ORACLE_MODEL_SWITCHER_PRE_SUBMIT_FAILED"
+
+
 def test_profile_copy_ebusy_is_proven_pre_submit_and_releases_project(tmp_path: Path) -> None:
     runner = load_runner()
     seed = tmp_path.parent / f"{tmp_path.name}-profile"

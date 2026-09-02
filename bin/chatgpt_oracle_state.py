@@ -2544,21 +2544,55 @@ def proven_terminal_devspace_read_route_refresh_fresh_run_authority(
 
 
 def _state_has_conversation_url(state: dict[str, Any]) -> bool:
-    """Recognize only explicit persisted conversation URL fields."""
-    url_keys = {"conversation_url", "conversationUrl", "canonical_url", "canonicalUrl"}
+    """Recognize URLs that belong to the current Oracle run.
 
-    def walk(value: Any) -> bool:
-        if isinstance(value, dict):
-            for key, nested in value.items():
-                if key in url_keys and str(nested or "").strip():
-                    return True
-                if isinstance(nested, (dict, list)) and walk(nested):
-                    return True
-        elif isinstance(value, list):
-            return any(walk(item) for item in value)
-        return False
+    Qualification, canary, parent, and provenance receipts can legitimately
+    preserve URLs from earlier conversations.  Those records are evidence
+    inputs, not current-session ownership, so searching the entire state tree
+    recursively can retain a false project lock.  Keep this list explicit and
+    fail closed for every current provider/oracle URL surface instead.
+    """
+    current_url_paths = (
+        # Legacy top-level current-session fields.
+        ("conversation_url",),
+        ("conversationUrl",),
+        ("canonical_url",),
+        ("canonicalUrl",),
+        # Canonical Oracle binding and unconfirmed current-run candidates.
+        ("oracle", "conversation_url"),
+        ("oracle", "conversationUrl"),
+        ("oracle", "canonical_url"),
+        ("oracle", "canonicalUrl"),
+        ("oracle", "conversation_url_candidate"),
+        ("oracle", "conversationUrlCandidate"),
+        # Current provider observation/binding surfaces.
+        ("provider_session", "conversation_url"),
+        ("provider_session", "conversationUrl"),
+        ("provider_session", "canonical_url"),
+        ("provider_session", "canonicalUrl"),
+        ("provider_session", "observed_conversation_url"),
+        ("provider_session", "bound_conversation_url"),
+        # A disagreement still proves that this run observed a conversation.
+        ("conversation_url_conflict", "persisted"),
+        ("conversation_url_conflict", "observed"),
+        # Port-mismatch evidence is unconfirmed for recovery, but is enough to
+        # prevent a claim that no current-run conversation URL was observed.
+        ("browser_identity", "conversation_url"),
+        ("browser_identity", "conversationUrl"),
+        ("browser_identity", "conversation_url_candidate"),
+        ("browser_identity", "port_mismatch", "conversation_url_candidate"),
+    )
 
-    return walk(state)
+    for path in current_url_paths:
+        value: Any = state
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        if str(value or "").strip():
+            return True
+    return False
 
 
 def _artifact_bytes(state: dict[str, Any], name: str) -> tuple[Path, bytes] | None:
