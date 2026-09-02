@@ -44,6 +44,33 @@
   surface, workspace type, developer-mode toggle, and Apps/Plugins UI before
   ever concluding that a plan upgrade is required.
 
+## Explicit legacy Oracle lock retirement
+
+- An explicit user instruction to release an identified legacy Oracle lock is
+  authority to retire that exact local lock. No special administrator phrase or
+  repeated confirmation is required when the target and scope are clear. This
+  is a local administrative cancellation, not proof of non-submission or an
+  assignment of the historical run to the current task.
+- Use `scripts/retire_legacy_oracle_lock.py` from this authoritative checkout.
+  Its supported case is a direct `legacy-unbound` run left `submitted_unknown`
+  after the exact recorded CDP connection-refused launch failure: matching
+  state/metadata hashes and ownership evidence, stopped run-owned processes,
+  a refusing CDP endpoint, no output or conversation binding, and an existing
+  exact harvest proving no live tab and no recoverable conversation URL.
+- Preview with `--dry-run`, then apply the same arguments under the existing
+  user authorization. Preserve the entire run in `retired-runs` and the
+  append-only intent/completion receipts. Do not edit `state.json`, invent a
+  successful or non-executed outcome, infer an owner, or authorize a new prompt.
+  Bound foreign tasks and live or uncertain processes remain protected.
+- Verify that the exact run is absent from `unresolved_project_sessions`
+  **without** a task-ID filter and that archived evidence hashes still match.
+  A task-scoped dry-run alone is not lock release. Preserve other active runs;
+  report the actual remaining lock count. Routine retirement needs only the
+  helper preview and these postchecks, not new code or a broad test suite.
+- Follow the detailed authority and command procedure in
+  `skills/mcp-update-guard/SKILL.md` under "Explicit legacy lock retirement".
+  Report local retirement separately from source commit/push/CI status.
+
 ## Comprehensive-mode ownership
 
 - Oracle ownership is task scoped, not project scoped. Two different Codex

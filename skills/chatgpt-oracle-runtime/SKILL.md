@@ -99,6 +99,17 @@ exact slug, process liveness, artifact progress, known conversation binding,
 and terminal evidence, then keeps waiting on the same process. It never kills,
 fails, releases, or replaces a run because that threshold elapsed.
 
+## Explicit legacy lock retirement
+
+When the user explicitly asks to release an identified legacy Oracle lock, use
+the [mcp-update-guard retirement procedure](../mcp-update-guard/SKILL.md#explicit-legacy-lock-retirement).
+The existing user instruction authorizes the bounded local retirement; no
+special administrator phrase or repeated approval is required. The helper must
+prove its stopped, unbound CDP-failure case and preserve the run in an archive
+with receipts. This grants neither historical task ownership nor a replacement
+submission. Verify disappearance from the task-unfiltered active-lock list;
+a successful task-scoped preview is not release of the legacy lock itself.
+
 ## Read-only Pro follow-up round
 
 When the user explicitly asks to continue one already-terminal read-only Pro

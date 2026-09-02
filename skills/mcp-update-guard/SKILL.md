@@ -1,6 +1,6 @@
 ---
 name: mcp-update-guard
-description: Part of the current Oracle automation path, safely update MCP servers, shared harness helpers, Oracle GPT runners, global skills, plugins, and related automation while preserving local customizations.
+description: Part of the current Oracle automation path, safely update MCP servers, shared harness helpers, Oracle GPT runners, global skills, plugins, and related automation while preserving local customizations. Also handles explicit user requests to retire an identified legacy Oracle lock.
 ---
 
 # MCP update guard
@@ -111,6 +111,10 @@ or their tests. Cross-session patching previously produced duplicate fixes,
 conflicting state rules, and repairs aimed at the layer that reported the symptom
 instead of the layer that failed.
 
+An explicit user request to retire an identified legacy Oracle lock uses the
+bounded maintenance procedure below in the current task; it does not require
+adopting the historical run or handing routine retirement to another task.
+
 - Build the handover with
   `python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_incident.py" report --run-dir <exact-run-dir>`.
   The packet carries the exact run directory, the classified bucket, the
@@ -132,6 +136,62 @@ instead of the layer that failed.
   submission.
 - Treat `safe_for_fresh_run: false` as binding. Do not resubmit, stop, or close
   another session's work while repairing code.
+
+## Explicit legacy lock retirement
+
+An explicit request such as "기존 legacy Oracle lock을 풀어줘" supplies authority
+to retire the identified local lock. Resolve its exact run ID, slug, and root
+from the request and read-only evidence. Ask only if the target is ambiguous;
+do not demand special administrator wording or repeat an already explicit
+approval. This authority is limited to the requested run, not future locks.
+
+The basis is **user-authorized local cancellation plus verified stopped-run
+evidence**, not elapsed time, a stale PID, or an inferred successful/non-submitted
+web request. A legacy incident's `action=none` means there is no ordinary task
+recovery authority. It does not forbid this separately authorized retirement
+when the maintenance helper accepts the exact evidence. `safe_for_fresh_run:
+false` still forbids automatic replacement submission.
+
+Use `scripts/retire_legacy_oracle_lock.py` from the authoritative automation
+checkout. This helper is currently checkout-only; locate that source rather
+than expecting it under the installed `.codex/scripts`. Its accepted case is:
+
+- A direct run whose state and ownership receipt consistently say
+  `legacy-unbound`, with `attention_required` / `submitted_unknown` and no
+  parallel-parent or follow-up evidence.
+- Matching run/root/slug, mission and ownership bindings, current SHA-256 values
+  for `state.json` and the exact Oracle `meta.json`, and the recorded CDP
+  `ECONNREFUSED` launch failure. The controller metadata records an ended error;
+  it has no browser runtime, harvest, archive, or conversation binding.
+- All recorded run-owned processes are stopped, the exact CDP endpoint refuses
+  connections, there is no output or browser identity receipt, and existing
+  exact-slug harvest logs prove no live tab and no recoverable conversation URL.
+
+Preview the existing helper with the current hashes and a reason recording the
+user instruction and exact scope:
+
+```text
+python "<automation-repository>/scripts/retire_legacy_oracle_lock.py" --run-dir "<absolute-run-dir>" --expected-state-sha256 <state-sha256> --expected-meta-sha256 <meta-sha256> --confirmation user-authorized-legacy-lock-retirement --reason "<user instruction and exact scope>" --dry-run
+```
+
+If the preview accepts the evidence, remove only `--dry-run` and apply under the
+same user authorization. The helper rechecks evidence under the exact-run and
+legacy submit mutexes, preserves the whole directory in `retired-runs`, and
+writes append-only intent/completion receipts in `retired-lock-receipts`.
+It leaves the original state and provider outcome unchanged (`unknown`), records
+the evaluating task with `target_source_thread_id: null`, and authorizes no new
+prompt. Never clear `CODEX_THREAD_ID`, rewrite ownership/state, manually delete
+the lock, or weaken the helper to make an ineligible run pass. A bound foreign
+run, live/uncertain process, or missing proof remains a concrete blocker.
+
+For routine use of the unchanged helper, perform only its preview and required
+postchecks: the exact run must disappear from the task-unfiltered
+`unresolved_project_sessions` result, archived hashes must match, and other runs
+must remain untouched. Task-scoped success alone is not evidence of release.
+Report the remaining lock count and completion receipt; keep source publication
+status separate. An existing completed retirement is verified from its receipts,
+not replayed. No new tests, broad regression run, or automation edit is needed
+for a routine eligible retirement.
 
 ## Safety boundaries
 
