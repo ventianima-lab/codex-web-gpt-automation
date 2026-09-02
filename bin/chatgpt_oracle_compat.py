@@ -248,10 +248,15 @@ PATCHES = {
     "dist/src/browser/actions/thinkingTime.js": {
         "patch": "thinkingTime.gpt56-pro-power-slider.patch",
         "pristine": "3d9d06b08417bca3b2d646eb4d46887d26c5de7c068d1e995c73b6b6e2f61199",
-        "patched": "a19ce77fe57b4fa1a290e130da323377ed69b6e51b1ad133b1ab5355ead59345",
+        "patched": "1aa1a216f71e1213c2056efb0db4c4de7c2b2c505311e1be98c2b6a2784521dd",
         "legacy_patched": [
             "978f754ba4011957790530474d27d629a8d353dd449f8e2636e02a9abd27b81a",
+            "a19ce77fe57b4fa1a290e130da323377ed69b6e51b1ad133b1ab5355ead59345",
         ],
+        "legacy_patches": {
+            "a19ce77fe57b4fa1a290e130da323377ed69b6e51b1ad133b1ab5355ead59345":
+                "thinkingTime.gpt56-pro-power-slider.pre-aria-range.patch",
+        },
         "legacy_patch": "thinkingTime.gpt56-pro-power-slider.v1.20.15.patch",
     },
     "dist/src/browser/actions/assistantResponse.js": {

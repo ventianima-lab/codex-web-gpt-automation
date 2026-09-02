@@ -343,6 +343,10 @@ ORACLE_COPY_PROFILE_MANUAL_LOGIN_CONFLICT = (
 ORACLE_PROFILE_COPY_RSYNC_MISSING = (
     "--copy-profile requires rsync on PATH (spawn failed): spawn rsync ENOENT"
 )
+PROJECT_SESSION_STILL_LIVE_PRELAUNCH_ERROR = (
+    "Oracle launch/run failed: PROJECT_SESSION_STILL_LIVE: "
+    "an exact Oracle session still owns this project; recover it before submitting\n"
+)
 ORACLE_MANUAL_LOGIN_PROFILE_UNINITIALIZED_RE = re.compile(
     r"(?m)^(?P<prefix>ERROR|User error \(browser-automation\)):\s+"
     r"ChatGPT browser manual-login profile is not initialized\. "
@@ -2544,21 +2548,55 @@ def proven_terminal_devspace_read_route_refresh_fresh_run_authority(
 
 
 def _state_has_conversation_url(state: dict[str, Any]) -> bool:
-    """Recognize only explicit persisted conversation URL fields."""
-    url_keys = {"conversation_url", "conversationUrl", "canonical_url", "canonicalUrl"}
+    """Recognize URLs that belong to the current Oracle run.
 
-    def walk(value: Any) -> bool:
-        if isinstance(value, dict):
-            for key, nested in value.items():
-                if key in url_keys and str(nested or "").strip():
-                    return True
-                if isinstance(nested, (dict, list)) and walk(nested):
-                    return True
-        elif isinstance(value, list):
-            return any(walk(item) for item in value)
-        return False
+    Qualification, canary, parent, and provenance receipts can legitimately
+    preserve URLs from earlier conversations.  Those records are evidence
+    inputs, not current-session ownership, so searching the entire state tree
+    recursively can retain a false project lock.  Keep this list explicit and
+    fail closed for every current provider/oracle URL surface instead.
+    """
+    current_url_paths = (
+        # Legacy top-level current-session fields.
+        ("conversation_url",),
+        ("conversationUrl",),
+        ("canonical_url",),
+        ("canonicalUrl",),
+        # Canonical Oracle binding and unconfirmed current-run candidates.
+        ("oracle", "conversation_url"),
+        ("oracle", "conversationUrl"),
+        ("oracle", "canonical_url"),
+        ("oracle", "canonicalUrl"),
+        ("oracle", "conversation_url_candidate"),
+        ("oracle", "conversationUrlCandidate"),
+        # Current provider observation/binding surfaces.
+        ("provider_session", "conversation_url"),
+        ("provider_session", "conversationUrl"),
+        ("provider_session", "canonical_url"),
+        ("provider_session", "canonicalUrl"),
+        ("provider_session", "observed_conversation_url"),
+        ("provider_session", "bound_conversation_url"),
+        # A disagreement still proves that this run observed a conversation.
+        ("conversation_url_conflict", "persisted"),
+        ("conversation_url_conflict", "observed"),
+        # Port-mismatch evidence is unconfirmed for recovery, but is enough to
+        # prevent a claim that no current-run conversation URL was observed.
+        ("browser_identity", "conversation_url"),
+        ("browser_identity", "conversationUrl"),
+        ("browser_identity", "conversation_url_candidate"),
+        ("browser_identity", "port_mismatch", "conversation_url_candidate"),
+    )
 
-    return walk(state)
+    for path in current_url_paths:
+        value: Any = state
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        if str(value or "").strip():
+            return True
+    return False
 
 
 def _artifact_bytes(state: dict[str, Any], name: str) -> tuple[Path, bytes] | None:
@@ -5864,6 +5902,149 @@ def proven_pre_submit_oracle_metadata_rename_failure(
     }
 
 
+def proven_pre_submit_project_session_still_live(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Prove a same-task owner blocked this run before Oracle could launch.
+
+    The controller emits this exact error while it still holds ``pre_submit``
+    authority and before creating either an Oracle process or browser receipt.
+    The blocked run is releasable only after the exact task has no remaining
+    submitted owner; until then the older run, not this failed attempt, retains
+    fresh-submission authority.
+    """
+    state = load_state(state_path)
+    run_id = str(state.get("run_id") or "")
+    owner_thread = source_thread_id_from_state(state)
+    try:
+        run_dir = state_path.parent.resolve(strict=True)
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+    except OSError:
+        return None
+    lifecycle_shape = (
+        str(state.get("status") or ""),
+        str(state.get("transport_status") or ""),
+        str(state.get("task_outcome") or ""),
+    )
+    if (
+        state_path.is_symlink()
+        or state_path.resolve() != run_dir / "state.json"
+        or not run_id
+        or run_dir.name != run_id
+        or owner_thread is None
+        or not project_root.is_dir()
+        or str(state.get("session_authority") or "") != "pre_submit"
+        or state.get("terminal_harvested") is not False
+        or state.get("artifact_sha256") is not None
+        or lifecycle_shape
+        not in {
+            ("failed", "prepared", "pending"),
+            ("attention_required", "failed_pre_submit", "not_executed"),
+        }
+        or _state_has_conversation_url(state)
+    ):
+        return None
+
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    canonical = {
+        "output": run_dir / "output.md",
+        "stdout": run_dir / "stdout.log",
+        "stderr": run_dir / "stderr.log",
+        "transcript": run_dir / "transcript.md",
+        "browser_temp": run_dir / "browser-temp",
+    }
+    resolved: dict[str, Path] = {}
+    try:
+        for name, expected in canonical.items():
+            path = Path(str(artifacts.get(name) or ""))
+            if not path.is_absolute() or path.is_symlink() or path.resolve() != expected:
+                return None
+            resolved[name] = path
+        if resolved["output"].exists() or resolved["browser_temp"].exists():
+            return None
+        stdout_bytes = resolved["stdout"].read_bytes()
+        stderr_bytes = resolved["stderr"].read_bytes()
+        transcript_bytes = resolved["transcript"].read_bytes()
+    except OSError:
+        return None
+    if (
+        stdout_bytes
+        or stderr_bytes != PROJECT_SESSION_STILL_LIVE_PRELAUNCH_ERROR.encode("utf-8")
+        or transcript_bytes != stderr_bytes
+        or ownership_receipt_path(run_dir).exists()
+        or browser_identity_receipt_path(run_dir).exists()
+        or any(run_dir.glob("recovery-*.log"))
+    ):
+        return None
+
+    browser = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    provider = state.get("provider_session") if isinstance(state.get("provider_session"), dict) else {}
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    if (
+        not locator
+        or str(oracle.get("resolved_version") or "").strip() in {"", "unresolved"}
+        or browser.get("receipt_path") is not None
+        or browser.get("receipt_sha256") is not None
+        or provider.get("status") != "unobserved"
+        or provider.get("terminal_confirmed") is not False
+        or provider.get("binding") != "none"
+        or provider.get("reason") != "oracle-runtime-not-yet-observed"
+    ):
+        return None
+
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    mission_path = Path(str(mission.get("transport_path") or ""))
+    mission_sha256 = str(mission.get("sha256") or "").casefold()
+    try:
+        mission_bytes = mission_path.read_bytes()
+    except OSError:
+        return None
+    if (
+        not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
+        or not mission_path.is_absolute()
+        or mission_path.is_symlink()
+        or mission_path.resolve() != run_dir / "mission.md"
+        or hashlib.sha256(mission_bytes).hexdigest() != mission_sha256
+        or ownership.get("schema") != "codex.chatgpt.oracle-ownership/v1"
+        or ownership.get("binding") != "bound"
+        or str(ownership.get("source_thread_id") or "").casefold() != owner_thread
+        or ownership.get("run_id") != run_id
+        or ownership.get("mission_sha256") != mission_sha256
+        or ownership.get("slug") != locator
+        or ownership.get("project_root_sha256")
+        != hashlib.sha256(str(project_root).casefold().encode("utf-8")).hexdigest()
+    ):
+        return None
+
+    owners = unresolved_project_sessions(
+        run_dir.parent,
+        project_root,
+        parallel_parent_id=str(state.get("parallel_parent_id") or "") or None,
+        exclude_run_id=run_id,
+        source_thread_id=owner_thread,
+    )
+    if owners:
+        return None
+    return {
+        "schema": "codex.chatgpt.oracle-pre-submit-ownership-conflict/v1",
+        "code": "PROJECT_SESSION_STILL_LIVE_PRELAUNCH_FAILED",
+        "project_root": str(project_root),
+        "run_id": run_id,
+        "source_thread_id": owner_thread,
+        "oracle_locator": locator,
+        "mission_sha256": mission_sha256,
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "cleared_owner_count": 0,
+        "failure_reason": "same-task-project-session-still-live-before-oracle-launch",
+    }
+
+
 def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
     """Prove a host failure happened before Oracle/browser launch.
 
@@ -5871,6 +6052,9 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
     process is created.  The additional immutable-state checks keep this from
     reclassifying a real submitted or live session.
     """
+    ownership_conflict = proven_pre_submit_project_session_still_live(state_path)
+    if ownership_conflict is not None:
+        return ownership_conflict
     metadata_rename = proven_pre_submit_oracle_metadata_rename_failure(state_path)
     if metadata_rename is not None:
         return metadata_rename
@@ -6486,6 +6670,7 @@ def settle_proven_pre_submit_failure(state_path: Path) -> dict[str, Any] | None:
                 "ORACLE_PROFILE_COPY_RSYNC_PRELAUNCH_FAILED",
                 "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED",
                 "ORACLE_PRO_TIER_NOT_SELECTED",
+                "PROJECT_SESSION_STILL_LIVE_PRELAUNCH_FAILED",
                 "ORACLE_LAUNCH_FLAGS_MUTUALLY_EXCLUSIVE_PRELAUNCH_FAILED",
                 "ORACLE_MANUAL_LOGIN_PROFILE_UNINITIALIZED_PRELAUNCH_FAILED",
                 "ORACLE_CDP_DISCONNECT_PRE_SUBMIT_FAILED",
@@ -6502,6 +6687,8 @@ def settle_proven_pre_submit_failure(state_path: Path) -> dict[str, Any] | None:
             if evidence["code"] == "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED"
             else "oracle-pro-tier-not-selected-pre-submit"
             if evidence["code"] == "ORACLE_PRO_TIER_NOT_SELECTED"
+            else "project-session-still-live-pre-submit"
+            if evidence["code"] == "PROJECT_SESSION_STILL_LIVE_PRELAUNCH_FAILED"
             else "oracle-launch-flags-mutually-exclusive-pre-submit"
             if evidence["code"] == "ORACLE_LAUNCH_FLAGS_MUTUALLY_EXCLUSIVE_PRELAUNCH_FAILED"
             else "oracle-manual-login-profile-uninitialized-pre-submit"

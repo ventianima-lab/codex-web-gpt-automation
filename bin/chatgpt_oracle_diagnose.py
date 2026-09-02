@@ -94,7 +94,10 @@ SIGNATURE_RULES: tuple[tuple[str, str, str], ...] = (
 REMEDIATION = {
     PRE_SUBMIT_HOST: "Fix the local launch contract; no web submission occurred, so a fresh run is safe.",
     PRE_SUBMIT_UI: "Relax or realign the ChatGPT UI contract; no web submission occurred, so a fresh run is safe.",
-    OWNERSHIP_CONFLICT: "Another run owns the task or submit mutex; inspect and resolve that exact owner before any fresh run.",
+    OWNERSHIP_CONFLICT: (
+        "This run was blocked by another task owner or submit mutex; resolve that exact owner, "
+        "then retry only after no unresolved owner remains."
+    ),
     BROWSER_LIFETIME: "Keep the Oracle-owned browser alive for the run; recover the exact slug before any retry.",
     PROVIDER_INCOMPLETE: "Resume the exact slug with live recovery; never resubmit.",
     RECOVERY_BINDING: "Reopen only the persisted exact conversation URL; never resubmit.",
@@ -202,8 +205,16 @@ def classify_run(
             return {"bucket": PRE_SUBMIT_HOST, "signature": "oracle-attachment-size-prelaunch-limit"}
         if code == "ORACLE_MODEL_SWITCHER_PRE_SUBMIT_FAILED":
             return {"bucket": PRE_SUBMIT_UI, "signature": "model-option-label-missing"}
-        if code == "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED":
+        if code in {
+            "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED",
+            "ORACLE_PRO_TIER_NOT_SELECTED",
+        }:
             return {"bucket": PRE_SUBMIT_UI, "signature": "thinking-time-selection-unverified"}
+        if code == "PROJECT_SESSION_STILL_LIVE_PRELAUNCH_FAILED":
+            return {
+                "bucket": OWNERSHIP_CONFLICT,
+                "signature": "same-task-project-session-still-live",
+            }
         if code == "ORACLE_CDP_DISCONNECT_PRE_SUBMIT_FAILED":
             return {"bucket": PRE_SUBMIT_UI, "signature": "cdp-disconnected-before-prompt-submit"}
         if code == "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -70,6 +71,94 @@ def write_run(
             "schema": "codex.chatgpt.oracle-task-owner/v1",
             "source_thread_id": source_thread_id,
         }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return run_dir
+
+
+def write_project_session_conflict(
+    root: Path,
+    run_id: str,
+    *,
+    source_thread_id: str,
+) -> Path:
+    run_dir = root / "projects" / "projectkey" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    project_root = root / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
+    mission_path = run_dir / "mission.md"
+    mission_path.write_text("read only", encoding="utf-8")
+    mission_sha256 = hashlib.sha256(mission_path.read_bytes()).hexdigest()
+    stdout_path = run_dir / "stdout.log"
+    stderr_path = run_dir / "stderr.log"
+    transcript_path = run_dir / "transcript.md"
+    stdout_path.write_bytes(b"")
+    error = (
+        "Oracle launch/run failed: PROJECT_SESSION_STILL_LIVE: "
+        "an exact Oracle session still owns this project; recover it before submitting\n"
+    ).encode()
+    stderr_path.write_bytes(error)
+    transcript_path.write_bytes(error)
+    slug = f"oracle-project-{run_id[:10]}"
+    state = {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "status": "failed",
+        "run_id": run_id,
+        "project_root": str(project_root.resolve()),
+        "mode": "browser",
+        "transport": "pro-devspace-readonly",
+        "transport_status": "prepared",
+        "task_outcome": "pending",
+        "session_authority": "pre_submit",
+        "terminal_harvested": False,
+        "artifact_sha256": None,
+        "originating_task": {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": source_thread_id,
+            "binding": "bound",
+        },
+        "ownership": {
+            "schema": "codex.chatgpt.oracle-ownership/v1",
+            "source_thread_id": source_thread_id,
+            "binding": "bound",
+            "project_root_sha256": hashlib.sha256(
+                str(project_root.resolve()).casefold().encode("utf-8")
+            ).hexdigest(),
+            "run_id": run_id,
+            "mission_sha256": mission_sha256,
+            "slug": slug,
+        },
+        "mission": {
+            "path": str(mission_path),
+            "transport_path": str(mission_path),
+            "sha256": mission_sha256,
+        },
+        "oracle": {
+            "resolved_version": "0.17.1",
+            "command": ["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+            "slug": slug,
+            "session_locator": slug,
+        },
+        "provider_session": {
+            "schema": "codex.chatgpt.oracle-provider-session/v1",
+            "status": "unobserved",
+            "terminal_confirmed": False,
+            "binding": "none",
+            "reason": "oracle-runtime-not-yet-observed",
+        },
+        "browser_identity": {
+            "schema": "codex.chatgpt.oracle-browser-identity/v1",
+            "expected_cdp_port": 43102,
+            "receipt_path": None,
+            "receipt_sha256": None,
+        },
+        "artifacts": {
+            "output": str(run_dir / "output.md"),
+            "transcript": str(transcript_path),
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "browser_temp": str(run_dir / "browser-temp"),
+        },
+    }
     (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
     return run_dir
 
@@ -429,6 +518,38 @@ def test_packet_never_marks_fresh_run_safe_while_another_session_owns_project(tm
 
     assert packet["safe_for_fresh_run"] is False
     assert [item["run_id"] for item in packet["unresolved_owners"]] == [owner.name]
+
+
+def test_settled_project_session_conflict_is_safe_only_for_the_exact_owner_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load()
+    owner = "11111111-1111-4111-8111-111111111111"
+    foreign = "22222222-2222-4222-8222-222222222222"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    run_dir = write_project_session_conflict(
+        tmp_path,
+        "ownership-blocked",
+        source_thread_id=owner,
+    )
+
+    owner_packet = module.validate_packet(module.build_packet(run_dir))
+
+    assert owner_packet["bucket"] == "submission-ownership-conflict"
+    assert owner_packet["signature"] == "same-task-project-session-still-live"
+    assert owner_packet["safe_for_fresh_run"] is True
+    assert owner_packet["fresh_run_authority"]["code"] == (
+        "PROJECT_SESSION_STILL_LIVE_PRELAUNCH_FAILED"
+    )
+    assert owner_packet["unresolved_owners"] == []
+
+    monkeypatch.setenv("CODEX_THREAD_ID", foreign)
+    foreign_packet = module.validate_packet(module.build_packet(run_dir))
+
+    assert foreign_packet["ownership_scope"] == "foreign-task"
+    assert foreign_packet["safe_for_fresh_run"] is False
+    assert foreign_packet["operational_instruction"]["action"] == "route-to-owner-task"
 
 
 def test_reporter_is_never_the_repair_owner(tmp_path: Path) -> None:

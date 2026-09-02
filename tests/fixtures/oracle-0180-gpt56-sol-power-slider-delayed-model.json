@@ -1,0 +1,7 @@
+{
+  "schema": "codex.chatgpt.oracle-power-slider-fixture/v1",
+  "source": "controlled-fragment-before-model-rows-contrast",
+  "requested_model": "gpt-5.6-sol",
+  "requested_effort": "pro",
+  "model_rows_mount_after_queries": 4
+}
