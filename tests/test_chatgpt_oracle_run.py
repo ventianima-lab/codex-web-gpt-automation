@@ -213,6 +213,49 @@ def test_fresh_execution_binds_runtime_task_but_plain_manifest_loading_stays_unb
     assert int(captured["command"][captured["command"].index("--browser-port") + 1]) != 9222
 
 
+@pytest.mark.parametrize("task_binding", ["environment", "manifest"])
+def test_fresh_task_launch_preserves_unresolved_legacy_run_on_same_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_binding: str
+) -> None:
+    runner = load_runner()
+    path = manifest(tmp_path)
+    config = runner.STATE.load_manifest(path)
+    legacy = runner.STATE.create_layout(config, run_id="legacy-run-12345678")
+    legacy.run_dir.mkdir(parents=True)
+    payload = runner.STATE.state_payload(
+        config, legacy, status="attention_required", resolved_version="0.18.0", cdp_port=43101
+    )
+    payload["session_authority"] = "submitted_unknown"
+    runner.STATE.write_json_atomic(legacy.state_path, payload)
+    original_state = legacy.state_path.read_bytes()
+    assert [owner["run_id"] for owner in runner.STATE.unresolved_project_sessions(
+        config.run_root, tmp_path
+    )] == [legacy.run_id]
+
+    task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    if task_binding == "environment":
+        monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    else:
+        path = manifest(tmp_path, source_thread_id=task_id)
+    captured: dict = {}
+    result = execute_run(
+        runner, path, run_factory=version_runner,
+        popen_factory=popen_for(1, None, captured, []),
+    )
+    fresh = runner.STATE.load_state(Path(result["run_dir"]) / "state.json")
+
+    assert captured["command"]
+    assert fresh["originating_task"]["source_thread_id"] == task_id
+    assert fresh["ownership"]["binding"] == "bound"
+    assert legacy.state_path.read_bytes() == original_state
+    foreign = runner.STATE.foreign_project_sessions(
+        config.run_root, tmp_path, source_thread_id=task_id
+    )
+    assert [(owner["run_id"], owner["source_thread_id"]) for owner in foreign] == [
+        (legacy.run_id, "legacy-unbound")
+    ]
+
+
 def test_task_outcome_terminal_watchdog_is_exactly_v1_and_scrubs_inherited_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
