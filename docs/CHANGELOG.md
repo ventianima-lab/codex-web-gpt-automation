@@ -13,8 +13,16 @@
   unverified result remains a pre-submit failure; no lower effort is submitted
   as Pro.
 - The compatibility patch is hash-gated against the exact published Oracle
-  0.18.0 package, and the regression fixture preserves the live 2026-08-28 UI
+  0.18.0 package, and the regression fixture preserves the live 2026-09-02 UI
   shape whose trigger is named `Thinking effort` rather than `Pro`.
+- The live slider's accessibility range is zero-based (`0..4`) even though its
+  visible position is one-based (`5 of 5`). The verifier now derives the
+  ordinal from `aria-valuemin`, `aria-valuemax`, and `aria-valuenow`, then
+  requires it to match the visible `N of M` position before accepting Pro.
+- Model rows that mount after the controlled slider fragment are observed with
+  a bounded two-sample stability check. Conflicting ranges, wrong models, and
+  duplicate explicit picker menus remain fail-closed, and the immediately
+  preceding exact patch can be migrated through its hash-bound legacy patch.
 
 ## 1.20.14 - Select the current visible Pro effort fail-closed
 

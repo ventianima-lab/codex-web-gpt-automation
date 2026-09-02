@@ -1,6 +1,6 @@
 {
   "schema": "codex.chatgpt.oracle-power-slider-fixture/v1",
-  "source": "live-gpt-5.6-sol-thinking-effort-diagnostic-2026-09-02",
+  "source": "one-based-accessibility-range-contrast",
   "requested_model": "gpt-5.6-sol",
   "requested_effort": "pro",
   "model_button": {
@@ -10,12 +10,12 @@
   },
   "simple_view": {
     "testid": "composer-model-picker-slider-simple-view",
-    "text": "Pro, 5 of 5.Use Left and Right arrow keys to adjust power."
+    "text": "Extra High, 4 of 5.Use Left and Right arrow keys to adjust power."
   },
   "slider_control": {
     "role": "slider",
-    "ariaValueMin": 0,
-    "ariaValueMax": 4,
+    "ariaValueMin": 1,
+    "ariaValueMax": 5,
     "ariaValueNow": 4
   },
   "power_control": {

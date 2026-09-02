@@ -578,8 +578,28 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
         (Path(__file__).parent / "fixtures" / "oracle-0180-gpt56-sol-power-slider.json")
         .read_text(encoding="utf-8")
     )
+    one_based_fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "oracle-0180-gpt56-sol-power-slider-one-based.json")
+        .read_text(encoding="utf-8")
+    )
+    delayed_model_fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "oracle-0180-gpt56-sol-power-slider-delayed-model.json")
+        .read_text(encoding="utf-8")
+    )
     assert fixture["model_button"]["text"] == "Thinking effort"
     assert fixture["simple_view"]["text"].startswith("Pro, 5 of 5")
+    assert fixture["slider_control"] == {
+        "role": "slider",
+        "ariaValueMin": 0,
+        "ariaValueMax": 4,
+        "ariaValueNow": 4,
+    }
+    assert one_based_fixture["slider_control"] == {
+        "role": "slider",
+        "ariaValueMin": 1,
+        "ariaValueMax": 5,
+        "ariaValueNow": 4,
+    }
     assert fixture["model_rows"][0] == {
         "role": "menuitemradio",
         "label": "GPT-5.6 Sol",
@@ -590,6 +610,10 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
     source_text = target.read_text(encoding="utf-8")
     assert "selectGpt56ProPowerSlider" in source_text
     assert "selectedModelIsExactGpt56Sol" in source_text
+    assert "readPowerState" in source_text
+    assert "aria-valuemin" in source_text and "aria-valuemax" in source_text
+    assert "displayOrdinal !== ordinal || displayTotal !== total" in source_text
+    assert "waitForStableReadyState" in source_text
     assert "TARGET_LEVEL !== 'pro'" in source_text
     source_text = source_text.replace(
         'import { MENU_CONTAINER_SELECTOR, MENU_ITEM_SELECTOR, MODEL_BUTTON_SELECTOR, } from "../constants.js";',
@@ -609,16 +633,24 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
     test_module = tmp_path / "thinkingTime-power-slider-contract.mjs"
     test_module.write_text(source_text, encoding="utf-8")
     fixture_literal = json.dumps(fixture)
+    one_based_fixture_literal = json.dumps(one_based_fixture)
+    delayed_model_fixture_literal = json.dumps(delayed_model_fixture)
     script = f"""
 import {{ ensureThinkingTime }} from {json.dumps(test_module.as_uri())};
 const fixture = {fixture_literal};
+const oneBasedFixture = {one_based_fixture_literal};
+const delayedModelFixture = {delayed_model_fixture_literal};
 class FakeElement extends EventTarget {{
   constructor(text, attrs = {{}}, visible = true) {{
     super(); this._text = text; this.attrs = attrs; this.visible = visible;
     this.queryOne = () => null; this.queryMany = () => [];
   }}
   get textContent() {{ return typeof this._text === 'function' ? this._text() : this._text; }}
-  getAttribute(name) {{ return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null; }}
+  getAttribute(name) {{
+    if (!Object.prototype.hasOwnProperty.call(this.attrs, name)) return null;
+    const value = this.attrs[name];
+    return typeof value === 'function' ? value() : value;
+  }}
   getBoundingClientRect() {{ return this.visible ? {{width: 240, height: 40}} : {{width: 0, height: 0}}; }}
   querySelector(selector) {{ return this.queryOne(selector); }}
   querySelectorAll(selector) {{ return this.queryMany(selector); }}
@@ -635,21 +667,38 @@ globalThis.window = globalThis;
       constructor(type, init) {{ super(type, init); this.key=init.key; this.code=init.code; }}
     }};
 
-const runCase = async (initialStep, validModel, controlledFragment = false) => {{
-  let step = initialStep;
+const runCase = async ({{rangeFixture = fixture, validModel = true, controlledFragment = false,
+  modelRowsMountAfter = 0, contradictoryDisplay = false, duplicateExplicitMenu = false}} = {{}}) => {{
+  const sliderFixture = rangeFixture.slider_control;
+  let rawValue = sliderFixture.ariaValueNow;
   let keydowns = 0;
+  let modelReads = 0;
+  const ordinal = () => rawValue - sliderFixture.ariaValueMin + 1;
+  const total = sliderFixture.ariaValueMax - sliderFixture.ariaValueMin + 1;
   const pill = new FakeElement(fixture.model_button.text, {{
     'aria-haspopup': fixture.model_button.ariaHaspopup,
     'aria-expanded': fixture.model_button.ariaExpanded,
     'aria-controls': controlledFragment ? 'controlled-effort-fragment' : null,
   }});
   const view = new FakeElement(() =>
-    (step === 5 ? 'Pro' : 'Extra High') + ', ' + step + ' of 5.Use Left and Right arrow keys to adjust power.',
+    (rawValue === sliderFixture.ariaValueMax || contradictoryDisplay ? 'Pro' : 'Extra High') + ', ' +
+      (contradictoryDisplay ? total : ordinal()) + ' of ' + total +
+      '.Use Left and Right arrow keys to adjust power.',
     {{'data-testid': fixture.simple_view.testid}},
   );
+  const slider = new FakeElement('', {{
+    role: 'slider',
+    'aria-valuemin': String(sliderFixture.ariaValueMin),
+    'aria-valuemax': String(sliderFixture.ariaValueMax),
+    'aria-valuenow': () => String(rawValue),
+  }});
+  view.queryOne = (selector) => selector.includes('[role="slider"]') ? slider : null;
   const power = new FakeElement('', {{role: 'menuitem', 'aria-label': fixture.power_control.ariaLabel}});
-  power.addEventListener('keydown', (event) => {{
-    if (event.key === 'ArrowRight') {{ step = Math.min(5, step + 1); keydowns += 1; }}
+  slider.addEventListener('keydown', (event) => {{
+    if (event.key === 'ArrowRight') {{
+      rawValue = Math.min(sliderFixture.ariaValueMax, rawValue + 1);
+      keydowns += 1;
+    }}
   }});
   const model56 = new FakeElement(fixture.model_rows[0].label, {{
     role: 'menuitemradio', 'aria-checked': validModel ? 'true' : 'false',
@@ -672,11 +721,17 @@ const runCase = async (initialStep, validModel, controlledFragment = false) => {
     selector.includes('composer-model-picker-slider-simple-view') ? view :
     selector.includes('composer-intelligence-picker-content') ? menu : null;
   menu.queryMany = (selector) =>
-    selector === '[role="menuitemradio"]' ? [model56, model55] :
+    selector === '[role="menuitemradio"]' ?
+      (++modelReads <= modelRowsMountAfter ? [] : [model56, model55]) :
     selector.includes('[role="menuitem"], button') ? [power] :
     selector.includes('[role="menuitem"]') ? [power] :
     selector.includes('[role="menuitemradio"]') ? [model56, model55] :
     selector.includes('[data-testid]') ? [view] : [];
+  const duplicateMenu = new FakeElement(menu.textContent, {{
+    role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
+  }});
+  duplicateMenu.queryOne = menu.queryOne;
+  duplicateMenu.queryMany = menu.queryMany;
   globalThis.document = {{
     body: new FakeElement('body'),
     querySelector: (selector) =>
@@ -684,7 +739,7 @@ const runCase = async (initialStep, validModel, controlledFragment = false) => {
       selector.includes('composer-intelligence-picker-content') ? menu : null,
     querySelectorAll: (selector) =>
       selector.includes('button.__composer-pill') ? [pill] :
-      selector === '[role=menu]' ? [menu] :
+      selector === '[role=menu]' ? (duplicateExplicitMenu ? [menu, duplicateMenu] : [menu]) :
       selector.includes('form button[aria-haspopup="menu"]') ? [pill] : [],
     getElementById: (id) => id === 'controlled-effort-fragment' ? fragment : null,
     dispatchEvent: () => true,
@@ -693,17 +748,27 @@ const runCase = async (initialStep, validModel, controlledFragment = false) => {
   const Runtime = {{evaluate: async ({{expression}}) => ({{result: {{value: await eval(expression)}}}})}};
   try {{
     await ensureThinkingTime(Runtime, 'pro', (message) => logs.push(message), 'gpt-5.6-sol');
-    return {{ok: true, logs, step, keydowns}};
+    return {{ok: true, logs, rawValue, ordinal: ordinal(), keydowns}};
   }} catch (error) {{
-    return {{ok: false, message: error.message, logs, step, keydowns}};
+    return {{ok: false, message: error.message, logs, rawValue, ordinal: ordinal(), keydowns}};
   }}
 }};
 console.log(JSON.stringify({{
-  selected: await runCase(5, true),
-  controlledPortal: await runCase(5, true, true),
-  switched: await runCase(4, true),
-  switchedFromMedium: await runCase(2, true),
-  wrongModel: await runCase(5, false),
+  selectedZeroBased: await runCase(),
+  controlledPortal: await runCase({{controlledFragment: true}}),
+  delayedModelRows: await runCase({{
+    modelRowsMountAfter: delayedModelFixture.model_rows_mount_after_queries,
+  }}),
+  switchedOneBased: await runCase({{rangeFixture: oneBasedFixture}}),
+  switchedFromMedium: await runCase({{
+    rangeFixture: {{...fixture, slider_control: {{...fixture.slider_control, ariaValueNow: 1}}}},
+  }}),
+  contradictoryRangeLabel: await runCase({{
+    rangeFixture: {{...fixture, slider_control: {{...fixture.slider_control, ariaValueNow: 3}}}},
+    contradictoryDisplay: true,
+  }}),
+  duplicateExplicitMenu: await runCase({{duplicateExplicitMenu: true}}),
+  wrongModel: await runCase({{validModel: false}}),
 }}));
 """
     completed = subprocess.run(
@@ -715,35 +780,49 @@ console.log(JSON.stringify({{
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["selected"] == {
+    assert result["selectedZeroBased"] == {
         "ok": True,
         "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
-        "step": 5,
+        "rawValue": 4,
+        "ordinal": 5,
         "keydowns": 0,
     }
     assert result["controlledPortal"] == {
         "ok": True,
         "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
-        "step": 5,
+        "rawValue": 4,
+        "ordinal": 5,
         "keydowns": 0,
     }
-    assert result["switched"] == {
+    assert result["delayedModelRows"] == {
+        "ok": True,
+        "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
+        "rawValue": 4,
+        "ordinal": 5,
+        "keydowns": 0,
+    }
+    assert result["switchedOneBased"] == {
         "ok": True,
         "logs": ["[browser] Thinking time: Pro, 5 of 5"],
-        "step": 5,
+        "rawValue": 5,
+        "ordinal": 5,
         "keydowns": 1,
     }
     assert result["switchedFromMedium"] == {
         "ok": True,
         "logs": ["[browser] Thinking time: Pro, 5 of 5"],
-        "step": 5,
+        "rawValue": 4,
+        "ordinal": 5,
         "keydowns": 3,
     }
     assert result["wrongModel"]["ok"] is False
     assert "refusing to submit without confirmed Pro" in result["wrongModel"]["message"]
+    for case in ("contradictoryRangeLabel", "duplicateExplicitMenu"):
+        assert result[case]["ok"] is False
+        assert "refusing to submit without confirmed Pro" in result[case]["message"]
 
 
-def test_published_0180_pro_power_slider_migrates_v12015_exact_bytes(
+def test_published_0180_pro_power_slider_migrates_known_exact_bytes(
     tmp_path: Path,
 ) -> None:
     compat = load_compat()
@@ -753,37 +832,61 @@ def test_published_0180_pro_power_slider_migrates_v12015_exact_bytes(
         if os.environ.get("CI"):
             pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
         pytest.skip("published Oracle 0.18.0 package root is unavailable")
-    package = tmp_path / "oracle-pro-power-slider-legacy"
-    shutil.copytree(source, package)
     relative = "dist/src/browser/actions/thinkingTime.js"
     contract = compat.PATCHES[relative]
-    legacy_patch = str(contract["legacy_patch"])
     legacy_hashes = list(contract["legacy_patched"])
     assert legacy_hashes == [
-        "978f754ba4011957790530474d27d629a8d353dd449f8e2636e02a9abd27b81a"
+        "978f754ba4011957790530474d27d629a8d353dd449f8e2636e02a9abd27b81a",
+        "a19ce77fe57b4fa1a290e130da323377ed69b6e51b1ad133b1ab5355ead59345",
     ]
-    compat._apply_patch(package, compat.patch_root("0.18.0") / legacy_patch)
-    target = package / relative
-    assert compat.sha256_file(target) == legacy_hashes[0]
-
-    backup = tmp_path / "backup-pro-power-slider-legacy"
-    first = compat.ensure_oracle_compatibility(
-        "oracle 0.18.0", package_root=package, backup_root=backup
-    )
-    second = compat.ensure_oracle_compatibility(
-        "oracle 0.18.0", package_root=package, backup_root=backup
+    legacy_patches = {
+        legacy_hash: str(contract.get("legacy_patches", {}).get(legacy_hash) or contract["legacy_patch"])
+        for legacy_hash in legacy_hashes
+    }
+    assert legacy_patches[legacy_hashes[1]] == (
+        "thinkingTime.gpt56-pro-power-slider.pre-aria-range.patch"
     )
 
-    assert relative in first["changed"]
-    assert relative in second["already_patched"]
-    assert compat.sha256_file(target) == contract["patched"]
-    assert compat.sha256_file(backup / relative) == contract["pristine"]
-    node = shutil.which("node")
-    assert node is not None
-    syntax = subprocess.run(
-        [node, "--check", str(target)], capture_output=True, text=True, check=False
-    )
-    assert syntax.returncode == 0, syntax.stderr
+    for index, legacy_hash in enumerate(legacy_hashes):
+        package = tmp_path / f"oracle-pro-power-slider-legacy-{index}"
+        shutil.copytree(source, package)
+        target = package / relative
+        current = compat.sha256_file(target)
+        if current != contract["pristine"]:
+            if current == contract["patched"]:
+                source_patch = str(contract["patch"])
+            elif current in legacy_patches:
+                source_patch = legacy_patches[current]
+            else:
+                pytest.fail(f"unexpected published Oracle thinkingTime.js hash: {current}")
+            compat._apply_patch(
+                package, compat.patch_root("0.18.0") / source_patch, reverse=True
+            )
+        assert compat.sha256_file(target) == contract["pristine"]
+
+        compat._apply_patch(
+            package, compat.patch_root("0.18.0") / legacy_patches[legacy_hash]
+        )
+        assert compat.sha256_file(target) == legacy_hash
+
+        backup = tmp_path / f"backup-pro-power-slider-legacy-{index}"
+        first = compat.ensure_oracle_compatibility(
+            "oracle 0.18.0", package_root=package, backup_root=backup
+        )
+        second = compat.ensure_oracle_compatibility(
+            "oracle 0.18.0", package_root=package, backup_root=backup
+        )
+
+        assert relative in first["changed"]
+        assert relative in second["already_patched"]
+        assert compat.sha256_file(target) == contract["patched"]
+        assert compat.sha256_file(backup / relative) == contract["pristine"]
+        node = shutil.which("node")
+        assert node is not None
+        syntax = subprocess.run(
+            [node, "--check", str(target)], capture_output=True, text=True, check=False
+        )
+        assert syntax.returncode == 0, syntax.stderr
 
 
 def test_oracle_session_metadata_retry_patch_is_bounded_to_windows_transient_errors() -> None:

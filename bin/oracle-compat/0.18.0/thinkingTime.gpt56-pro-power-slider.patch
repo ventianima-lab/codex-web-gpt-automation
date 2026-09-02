@@ -1,83 +1,167 @@
 diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions/thinkingTime.js
 --- a/dist/src/browser/actions/thinkingTime.js
 +++ b/dist/src/browser/actions/thinkingTime.js
-@@ -849,6 +849,107 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -849,6 +849,203 @@ function buildThinkingTimeExpression(level, desiredModel) {
        'effort', 'aufwand', '强度', '努力', '推論レベル',
        'esfuerzo', 'esforco', 'sforzo', 'inspanning', 'wysilek',
      ];
 +    const POWER_SIMPLE_VIEW_SELECTOR =
 +      '[data-testid="composer-model-picker-slider-simple-view"]';
-+    const readPowerStep = (view) => {
-+      const control = view?.querySelector?.('[role="slider"], input[type="range"]');
-+      const ariaValue = Number(control?.getAttribute?.('aria-valuenow') ?? '');
-+      if (Number.isInteger(ariaValue) && ariaValue >= 1 && ariaValue <= 5) {
-+        return ariaValue;
-+      }
-+      const compact = nodeLabel(view).replace(/\\s+/g, '');
-+      for (let candidate = 1; candidate <= 5; candidate += 1) {
-+        if (compact.includes(String(candidate) + 'of5')) return candidate;
-+      }
-+      return null;
++    const parsePowerInteger = (value) => {
++      const text = String(value ?? '').trim();
++      return /^-?\\d+$/.test(text) ? Number(text) : null;
 +    };
-+    const selectedModelIsExactGpt56Sol = (menu) =>
-+      Array.from(menu?.querySelectorAll?.('[role="menuitemradio"]') ?? []).some((item) => {
-+        if (!isVisible(item) || !optionIsSelected(item)) return false;
-+        return nodeLabel(item).replace(/\\s+/g, '') === 'gpt56sol';
-+      });
-+    const findGpt56PowerSliderMenu = (preferred) => {
++    const readPowerState = (view) => {
++      const control = view?.querySelector?.('[role="slider"], input[type="range"]');
++      if (!control) return null;
++      const minimum = parsePowerInteger(
++        control.getAttribute?.('aria-valuemin') ?? control.getAttribute?.('min'),
++      );
++      const maximum = parsePowerInteger(
++        control.getAttribute?.('aria-valuemax') ?? control.getAttribute?.('max'),
++      );
++      const current = parsePowerInteger(
++        control.getAttribute?.('aria-valuenow') ?? control.getAttribute?.('value'),
++      );
++      if (
++        minimum === null || maximum === null || current === null ||
++        maximum <= minimum || current < minimum || current > maximum
++      ) return null;
++      const ordinal = current - minimum + 1;
++      const total = maximum - minimum + 1;
++      const position = nodeLabel(view).match(/(?:^|\\s)(\\d+)\\s+of\\s+(\\d+)(?:\\s|$)/);
++      const displayOrdinal = position ? Number(position[1]) : null;
++      const displayTotal = position ? Number(position[2]) : null;
++      if (displayOrdinal !== ordinal || displayTotal !== total) {
++        return null;
++      }
++      return {
++        control, minimum, maximum, current, ordinal, total, displayOrdinal, displayTotal,
++        atMaximum: current === maximum,
++      };
++    };
++    const selectedModelState = (menu) => {
++      const selected = Array.from(
++        menu?.querySelectorAll?.('[role="menuitemradio"]') ?? [],
++      ).filter((item) => isVisible(item) && optionIsSelected(item));
++      if (selected.length === 0) return 'pending';
++      if (selected.length !== 1) return 'conflicting';
++      return nodeLabel(selected[0]).replace(/\\s+/g, '') === 'gpt56sol'
++        ? 'exact'
++        : 'wrong';
++    };
++    const selectedModelIsExactGpt56Sol = (menu) => selectedModelState(menu) === 'exact';
++    const listGpt56PowerSliderMenus = (preferred) => {
 +      const candidates = [];
 +      const addCandidate = (candidate) => {
 +        if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
 +      };
 +      addCandidate(preferred);
 +      for (const candidate of document.querySelectorAll(MENU_CONTAINER_SELECTOR)) addCandidate(candidate);
-+      const matches = candidates.filter((candidate) => {
++      return candidates.filter((candidate) => {
 +        if (!isVisible(candidate)) return false;
-+        const view = candidate.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR);
-+        return isVisible(view) && selectedModelIsExactGpt56Sol(candidate);
++        return isVisible(candidate.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR));
 +      });
++    };
++    const findGpt56PowerSliderMenu = (preferred) => {
++      const matches = listGpt56PowerSliderMenus(preferred);
++      const exact = matches.filter((candidate) => selectedModelState(candidate) === 'exact');
++      const explicit = matches.filter((candidate) => selectedModelState(candidate) !== 'pending');
++      if (exact.length === 1 && explicit.length === 1) return exact[0];
++      if (exact.length > 0) return null;
++      if (explicit.length === 1) return explicit[0];
 +      return matches.length === 1 ? matches[0] : null;
 +    };
-+    const exactGpt56ProPowerProof = (menu) => {
-+      if (!TARGET_IS_GPT56_MODEL || TARGET_LEVEL !== 'pro' || !menu) return false;
-+      const view = menu.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR);
-+      return Boolean(
-+        isVisible(view) &&
-+        readPowerStep(view) === 5 &&
-+        hasToken(nodeLabel(view), 'pro') &&
-+        selectedModelIsExactGpt56Sol(menu)
-+      );
++    const evaluateGpt56ProPowerProof = (menu) => {
++      const view = menu?.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR) ?? null;
++      const power = readPowerState(view);
++      const modelState = selectedModelState(menu);
++      const proLabel = isVisible(view) && hasToken(nodeLabel(view), 'pro');
++      return {
++        menu, view, power, modelState, proLabel,
++        exact: Boolean(
++          TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'pro' && isVisible(menu) &&
++          isVisible(view) && power?.atMaximum && proLabel && modelState === 'exact'
++        ),
++      };
 +    };
++    const powerProofEvidence = (proof) => ({
++      menuVisible: isVisible(proof?.menu),
++      viewVisible: isVisible(proof?.view),
++      modelState: proof?.modelState ?? 'pending',
++      proLabel: Boolean(proof?.proLabel),
++      range: proof?.power ? {
++        minimum: proof.power.minimum,
++        maximum: proof.power.maximum,
++        current: proof.power.current,
++        ordinal: proof.power.ordinal,
++        total: proof.power.total,
++        displayOrdinal: proof.power.displayOrdinal,
++        displayTotal: proof.power.displayTotal,
++        atMaximum: proof.power.atMaximum,
++      } : null,
++      exact: Boolean(proof?.exact),
++    });
++    const exactGpt56ProPowerProof = (menu) => evaluateGpt56ProPowerProof(menu).exact;
 +    const selectGpt56ProPowerSlider = async (trigger, initialMenu) => {
 +      if (!TARGET_IS_GPT56_MODEL || TARGET_LEVEL !== 'pro') return null;
-+      const currentMenu = () => {
-+        const preferred = findVisibleEffortMenu(trigger) || initialMenu;
-+        return findGpt56PowerSliderMenu(preferred) || preferred;
-+      };
-+      let menu = currentMenu();
-+      let view = menu?.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR) ?? null;
-+      if (!isVisible(view)) return null;
-+      if (exactGpt56ProPowerProof(menu)) {
-+        closeOpenMenus();
-+        return { status: 'already-selected', label: 'Pro, 5 of 5' };
-+      }
-+      if (!selectedModelIsExactGpt56Sol(menu)) {
-+        return failure('selection-unverified', { modelKind: 'gpt56' });
-+      }
-+      for (let attempt = 0; attempt < 5; attempt += 1) {
-+        menu = currentMenu();
-+        view = menu?.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR) ?? null;
-+        const current = readPowerStep(view);
-+        if (current === 5) break;
-+        if (current === null) {
-+          return failure('selection-unverified', { modelKind: 'gpt56' });
++      const preferredMenu = () => findVisibleEffortMenu(trigger) || initialMenu;
++      const currentMenu = () => findGpt56PowerSliderMenu(preferredMenu());
++      const initialCandidates = listGpt56PowerSliderMenus(preferredMenu());
++      if (initialCandidates.length === 0) return null;
++      const waitForStableReadyState = async () => {
++        let lastMenu = null;
++        let lastCurrent = null;
++        let readyConsecutive = 0;
++        let wrongConsecutive = 0;
++        let lastProof = evaluateGpt56ProPowerProof(currentMenu());
++        const deadline = performance.now() + INTELLIGENCE_WAIT_MS;
++        while (performance.now() < deadline) {
++          const proof = evaluateGpt56ProPowerProof(currentMenu());
++          lastProof = proof;
++          if (proof.modelState === 'wrong' || proof.modelState === 'conflicting') {
++            wrongConsecutive += 1;
++            if (wrongConsecutive >= 2) return { status: 'wrong', proof };
++          } else {
++            wrongConsecutive = 0;
++          }
++          if (proof.modelState === 'exact' && proof.power) {
++            const stable = proof.menu === lastMenu && proof.power.current === lastCurrent;
++            readyConsecutive = stable ? readyConsecutive + 1 : 1;
++            lastMenu = proof.menu;
++            lastCurrent = proof.power.current;
++            if (readyConsecutive >= 2) return { status: 'ready', proof };
++          } else {
++            readyConsecutive = 0;
++            lastMenu = null;
++            lastCurrent = null;
++          }
++          await sleep(100);
 +        }
-+        const control =
-+          view.querySelector?.('[role="slider"], input[type="range"]') ||
-+          Array.from(menu.querySelectorAll?.('[role="menuitem"], button') ?? []).find(
-+            (item) => isVisible(item) && normalize(item.getAttribute?.('aria-label') ?? '') === 'power',
-+          ) ||
-+          view;
++        return { status: 'unverified', proof: lastProof };
++      };
++      let readiness = await waitForStableReadyState();
++      if (readiness.status !== 'ready') {
++        return failure('selection-unverified', {
++          modelKind: 'gpt56', powerEvidence: powerProofEvidence(readiness.proof),
++        });
++      }
++      let proof = readiness.proof;
++      if (proof.exact) {
++        closeOpenMenus();
++        return {
++          status: 'already-selected', label: 'Pro, 5 of 5',
++          powerEvidence: powerProofEvidence(proof),
++        };
++      }
++      const moveLimit = proof.power.maximum - proof.power.minimum;
++      if (!Number.isInteger(moveLimit) || moveLimit < 1 || moveLimit > 16) {
++        return failure('selection-unverified', {
++          modelKind: 'gpt56', powerEvidence: powerProofEvidence(proof),
++        });
++      }
++      for (let attempt = 0; attempt < moveLimit && !proof.power.atMaximum; attempt += 1) {
++        const control = proof.power.control;
 +        try { control.focus?.(); } catch {}
 +        control.dispatchEvent(
 +          new KeyboardEvent('keydown', {
@@ -90,26 +174,38 @@ diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions
 +          }),
 +        );
 +        await sleep(STEP_WAIT_MS);
++        readiness = await waitForStableReadyState();
++        if (readiness.status !== 'ready') {
++          return failure('selection-unverified', {
++            modelKind: 'gpt56', powerEvidence: powerProofEvidence(readiness.proof),
++          });
++        }
++        proof = readiness.proof;
 +      }
 +      let consecutive = 0;
 +      const deadline = performance.now() + INTELLIGENCE_WAIT_MS;
 +      while (performance.now() < deadline) {
-+        menu = currentMenu();
-+        consecutive = exactGpt56ProPowerProof(menu) ? consecutive + 1 : 0;
++        proof = evaluateGpt56ProPowerProof(currentMenu());
++        consecutive = proof.exact ? consecutive + 1 : 0;
 +        if (consecutive >= 2) {
 +          closeOpenMenus();
-+          return { status: 'switched', label: 'Pro, 5 of 5' };
++          return {
++            status: 'switched', label: 'Pro, 5 of 5',
++            powerEvidence: powerProofEvidence(proof),
++          };
 +        }
 +        await sleep(100);
 +      }
-+      const result = failure('selection-unverified', { modelKind: 'gpt56' });
++      const result = failure('selection-unverified', {
++        modelKind: 'gpt56', powerEvidence: powerProofEvidence(proof),
++      });
 +      closeOpenMenus();
 +      return result;
 +    };
      const containsAny = (label, words) => words.some((word) => label.includes(word));
      const findAdvancedToggle = (menu) => {
        for (const item of (menu || document).querySelectorAll('[role="menuitem"]')) {
-@@ -1069,6 +1170,13 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -1069,6 +1266,13 @@ function buildThinkingTimeExpression(level, desiredModel) {
        while (performance.now() < deadline) {
          const menu = findVisibleEffortMenu(composerEffortPill);
          if (menu) {

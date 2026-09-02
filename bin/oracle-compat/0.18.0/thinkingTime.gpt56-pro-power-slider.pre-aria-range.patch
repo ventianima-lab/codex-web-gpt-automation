@@ -1,0 +1,125 @@
+diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions/thinkingTime.js
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -849,6 +849,107 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       'effort', 'aufwand', '强度', '努力', '推論レベル',
+       'esfuerzo', 'esforco', 'sforzo', 'inspanning', 'wysilek',
+     ];
++    const POWER_SIMPLE_VIEW_SELECTOR =
++      '[data-testid="composer-model-picker-slider-simple-view"]';
++    const readPowerStep = (view) => {
++      const control = view?.querySelector?.('[role="slider"], input[type="range"]');
++      const ariaValue = Number(control?.getAttribute?.('aria-valuenow') ?? '');
++      if (Number.isInteger(ariaValue) && ariaValue >= 1 && ariaValue <= 5) {
++        return ariaValue;
++      }
++      const compact = nodeLabel(view).replace(/\\s+/g, '');
++      for (let candidate = 1; candidate <= 5; candidate += 1) {
++        if (compact.includes(String(candidate) + 'of5')) return candidate;
++      }
++      return null;
++    };
++    const selectedModelIsExactGpt56Sol = (menu) =>
++      Array.from(menu?.querySelectorAll?.('[role="menuitemradio"]') ?? []).some((item) => {
++        if (!isVisible(item) || !optionIsSelected(item)) return false;
++        return nodeLabel(item).replace(/\\s+/g, '') === 'gpt56sol';
++      });
++    const findGpt56PowerSliderMenu = (preferred) => {
++      const candidates = [];
++      const addCandidate = (candidate) => {
++        if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
++      };
++      addCandidate(preferred);
++      for (const candidate of document.querySelectorAll(MENU_CONTAINER_SELECTOR)) addCandidate(candidate);
++      const matches = candidates.filter((candidate) => {
++        if (!isVisible(candidate)) return false;
++        const view = candidate.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR);
++        return isVisible(view) && selectedModelIsExactGpt56Sol(candidate);
++      });
++      return matches.length === 1 ? matches[0] : null;
++    };
++    const exactGpt56ProPowerProof = (menu) => {
++      if (!TARGET_IS_GPT56_MODEL || TARGET_LEVEL !== 'pro' || !menu) return false;
++      const view = menu.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR);
++      return Boolean(
++        isVisible(view) &&
++        readPowerStep(view) === 5 &&
++        hasToken(nodeLabel(view), 'pro') &&
++        selectedModelIsExactGpt56Sol(menu)
++      );
++    };
++    const selectGpt56ProPowerSlider = async (trigger, initialMenu) => {
++      if (!TARGET_IS_GPT56_MODEL || TARGET_LEVEL !== 'pro') return null;
++      const currentMenu = () => {
++        const preferred = findVisibleEffortMenu(trigger) || initialMenu;
++        return findGpt56PowerSliderMenu(preferred) || preferred;
++      };
++      let menu = currentMenu();
++      let view = menu?.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR) ?? null;
++      if (!isVisible(view)) return null;
++      if (exactGpt56ProPowerProof(menu)) {
++        closeOpenMenus();
++        return { status: 'already-selected', label: 'Pro, 5 of 5' };
++      }
++      if (!selectedModelIsExactGpt56Sol(menu)) {
++        return failure('selection-unverified', { modelKind: 'gpt56' });
++      }
++      for (let attempt = 0; attempt < 5; attempt += 1) {
++        menu = currentMenu();
++        view = menu?.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR) ?? null;
++        const current = readPowerStep(view);
++        if (current === 5) break;
++        if (current === null) {
++          return failure('selection-unverified', { modelKind: 'gpt56' });
++        }
++        const control =
++          view.querySelector?.('[role="slider"], input[type="range"]') ||
++          Array.from(menu.querySelectorAll?.('[role="menuitem"], button') ?? []).find(
++            (item) => isVisible(item) && normalize(item.getAttribute?.('aria-label') ?? '') === 'power',
++          ) ||
++          view;
++        try { control.focus?.(); } catch {}
++        control.dispatchEvent(
++          new KeyboardEvent('keydown', {
++            key: 'ArrowRight', code: 'ArrowRight', bubbles: true, cancelable: true,
++          }),
++        );
++        control.dispatchEvent(
++          new KeyboardEvent('keyup', {
++            key: 'ArrowRight', code: 'ArrowRight', bubbles: true, cancelable: true,
++          }),
++        );
++        await sleep(STEP_WAIT_MS);
++      }
++      let consecutive = 0;
++      const deadline = performance.now() + INTELLIGENCE_WAIT_MS;
++      while (performance.now() < deadline) {
++        menu = currentMenu();
++        consecutive = exactGpt56ProPowerProof(menu) ? consecutive + 1 : 0;
++        if (consecutive >= 2) {
++          closeOpenMenus();
++          return { status: 'switched', label: 'Pro, 5 of 5' };
++        }
++        await sleep(100);
++      }
++      const result = failure('selection-unverified', { modelKind: 'gpt56' });
++      closeOpenMenus();
++      return result;
++    };
+     const containsAny = (label, words) => words.some((word) => label.includes(word));
+     const findAdvancedToggle = (menu) => {
+       for (const item of (menu || document).querySelectorAll('[role="menuitem"]')) {
+@@ -1069,6 +1170,13 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       while (performance.now() < deadline) {
+         const menu = findVisibleEffortMenu(composerEffortPill);
+         if (menu) {
++          const powerSliderResult = await selectGpt56ProPowerSlider(
++            composerEffortPill,
++            menu,
++          );
++          if (powerSliderResult) {
++            return powerSliderResult;
++          }
+           const proEffortResult = await selectProEffortFromSubmenu();
+           if (proEffortResult) {
+             return proEffortResult;
