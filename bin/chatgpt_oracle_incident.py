@@ -234,7 +234,12 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         )
     pre_submit_fresh_safe = (
         ownership_scope == "same-task"
-        and bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI}
+        and bucket
+        in {
+            DIAGNOSE.PRE_SUBMIT_HOST,
+            DIAGNOSE.PRE_SUBMIT_UI,
+            DIAGNOSE.OWNERSHIP_CONFLICT,
+        }
         and pre_submit_authority is not None
         and not owners
     )
@@ -609,6 +614,7 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
         if packet.get("safe_for_fresh_run") is True and packet.get("bucket") in {
             DIAGNOSE.PRE_SUBMIT_HOST,
             DIAGNOSE.PRE_SUBMIT_UI,
+            DIAGNOSE.OWNERSHIP_CONFLICT,
         }:
             state_path = Path(str(packet["run_dir"])) / "state.json"
             proof = (

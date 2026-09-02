@@ -199,6 +199,58 @@ def test_settled_thinking_time_failure_remains_retry_safe(tmp_path: Path) -> Non
     assert run["signature"] == "thinking-time-selection-unverified"
 
 
+def test_settled_pro_tier_failure_remains_retry_safe(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_dir = write_run(
+        state_root,
+        "p" * 8,
+        status="attention_required",
+        session_authority="pre_submit",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["pre_submit_failure"] = {
+        "code": "ORACLE_PRO_TIER_NOT_SELECTED",
+        "output_absent": True,
+        "conversation_url_absent": True,
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    report = module.diagnose(state_root)
+    run = report["unresolved_runs"][0]
+
+    assert run["bucket"] == "pre-submit-ui-contract"
+    assert run["signature"] == "thinking-time-selection-unverified"
+
+
+def test_settled_project_session_conflict_remains_an_ownership_conflict(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_dir = write_run(
+        state_root,
+        "q" * 8,
+        status="attention_required",
+        session_authority="pre_submit",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["pre_submit_failure"] = {
+        "code": "PROJECT_SESSION_STILL_LIVE_PRELAUNCH_FAILED",
+        "output_absent": True,
+        "conversation_url_absent": True,
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    report = module.diagnose(state_root)
+    run = report["unresolved_runs"][0]
+
+    assert run["bucket"] == "submission-ownership-conflict"
+    assert run["signature"] == "same-task-project-session-still-live"
+
+
 def test_settled_cdp_disconnect_before_prompt_submit_remains_retry_safe(tmp_path: Path) -> None:
     module = load()
     state_root = tmp_path / "oracle-state"

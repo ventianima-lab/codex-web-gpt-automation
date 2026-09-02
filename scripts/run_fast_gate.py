@@ -42,6 +42,7 @@ FAST_TARGETS = [
     "tests/test_chatgpt_oracle_run.py::test_prior_pro_app_read_gate_url_does_not_block_thinking_time_pre_submit_settlement",
     "tests/test_chatgpt_oracle_run.py::test_current_run_conversation_url_blocks_thinking_time_pre_submit_settlement",
     "tests/test_chatgpt_oracle_run.py::test_prior_pro_app_read_gate_url_does_not_change_other_pre_submit_failure_settlement",
+    "tests/test_chatgpt_oracle_run.py::test_project_session_still_live_settles_only_after_exact_owner_releases",
     "tests/test_chatgpt_oracle_run.py::test_new_writable_pro_manifest_is_rejected_before_layout_or_browser",
     "tests/test_chatgpt_oracle_run.py::test_d_coin_missing_exact_root_blocks_before_oracle_or_run_creation",
     "tests/test_chatgpt_oracle_run.py::test_complete_requires_zero_exit_and_nonempty_output",
