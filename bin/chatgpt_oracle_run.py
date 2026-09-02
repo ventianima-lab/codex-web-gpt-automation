@@ -401,7 +401,7 @@ def dry_run_payload(config, layout, argv: Sequence[str], prompt: str) -> dict[st
         "transport": config.transport,
         "attachments": [
             {"path": str(path), "sha256": digest}
-            for path, digest in zip(config.attachments, config.attachment_sha256s, strict=True)
+            for path, digest in zip(config.attachments, config.attachment_sha256s)
         ],
         "output_path": str(layout.output_path),
         "transcript_path": str(layout.transcript_path),
@@ -1747,7 +1747,7 @@ def execute_run(
             "mission bytes changed after manifest validation",
             {"expected": config.mission_sha256, "actual": actual_mission_sha256},
         )
-    for attachment, expected in zip(config.attachments, config.attachment_sha256s, strict=True):
+    for attachment, expected in zip(config.attachments, config.attachment_sha256s):
         actual = STATE.sha256_file(attachment)
         if actual != expected:
             raise OracleRunError(
@@ -1894,7 +1894,7 @@ def execute_run(
                             "evidence_actual": current_mission_sha256,
                         },
                     )
-                for attachment, expected in zip(config.attachments, config.attachment_sha256s, strict=True):
+                for attachment, expected in zip(config.attachments, config.attachment_sha256s):
                     actual = STATE.sha256_file(attachment)
                     if actual != expected:
                         raise OracleRunError(

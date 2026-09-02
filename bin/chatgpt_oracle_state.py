@@ -1128,7 +1128,7 @@ def state_payload(
         },
         "attachments": [
             {"path": str(path), "sha256": digest, "size_bytes": path.stat().st_size}
-            for path, digest in zip(config.attachments, config.attachment_sha256s, strict=True)
+            for path, digest in zip(config.attachments, config.attachment_sha256s)
         ],
         "oracle": {
             "resolved_version": resolved_version,

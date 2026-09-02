@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import hashlib
 import json
@@ -1226,6 +1227,22 @@ def test_pro_dry_run_uses_oracle_attachments_and_no_app_mention(tmp_path: Path) 
     assert prompt.endswith(".")
     assert "@DevSpace" not in prompt
     assert all(item["sha256"] for item in result["attachments"])
+
+
+def test_pro_dry_run_works_with_a_python_39_zip_signature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    native_zip = builtins.zip
+
+    def python_39_zip(*iterables):
+        return native_zip(*iterables)
+
+    monkeypatch.setattr(builtins, "zip", python_39_zip)
+
+    result = execute_run(runner, pro_manifest(tmp_path), dry_run=True)
+
+    assert len(result["attachments"]) == 2
 
 
 def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_path: Path) -> None:
