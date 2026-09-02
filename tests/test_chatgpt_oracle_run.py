@@ -90,6 +90,10 @@ def version_0171_runner(command, **kwargs):
     return subprocess.CompletedProcess(command, 0, stdout="oracle 0.17.1\n", stderr="")
 
 
+def version_0180_runner(command, **kwargs):
+    return subprocess.CompletedProcess(command, 0, stdout="oracle 0.18.0\n", stderr="")
+
+
 def version_timeout_runner(command, **kwargs):
     raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 30))
 
@@ -3521,6 +3525,178 @@ def test_task_bound_readonly_prompt_timeout_can_harvest_without_browser_receipt(
         source_thread_id=owner,
     )
     assert [item["run_id"] for item in owners] == ["c" * 32]
+
+
+def test_task_bound_attachment_pro_prompt_timeout_can_harvest_and_user_settle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_manifest(tmp_path),
+        run_factory=version_0180_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+
+    evidence = runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+    assert evidence is not None
+    assert evidence["settlement_eligibility"] == "oracle-standalone-pro-attachment/v1"
+    assert evidence["transport"] == "pro-attachment-only"
+    assert evidence["commit_probe_turns"] == 0
+    assert evidence["conversation_url_absent"] is True
+    assert len(evidence["attachment_evidence"]) == 2
+
+    dry_run = runner.recover_run(
+        run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    assert dry_run["browser_identity_mode"] == "bounded-prompt-timeout-harvest"
+    assert "--harvest" in dry_run["argv"]
+    assert "--prompt" not in dry_run["argv"]
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user confirmed the exact zero-turn attachment-only run did not submit",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+
+    assert settled["result"]["session_authority"] == "pre_submit"
+    assert proof is not None
+    assert proof["settlement_eligibility"] == "oracle-standalone-pro-attachment/v1"
+    assert proof["pre_submit_marker"] == runner.STATE.ORACLE_PROMPT_NOT_OBSERVED_MARKER
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    (
+        "conversation-url",
+        "prompt-not-submitted",
+        "turn-observed",
+        "assistant-visible",
+        "output-present",
+        "stdout-marker-tampered",
+    ),
+)
+def test_task_bound_attachment_pro_prompt_timeout_rejects_pre_harvest_contradictions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    contradiction: str,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_manifest(tmp_path),
+        run_factory=version_0180_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    meta_mutation = contradiction if contradiction in {
+        "conversation-url",
+        "prompt-not-submitted",
+        "turn-observed",
+        "assistant-visible",
+    } else None
+    write_prompt_timeout_oracle_meta(
+        runner,
+        run_dir,
+        session_root,
+        mutation=meta_mutation,
+    )
+    if contradiction == "output-present":
+        Path(runner.STATE.load_state(state_path)["artifacts"]["output"]).write_text(
+            "unexpected assistant output\n", encoding="utf-8"
+        )
+    elif contradiction == "stdout-marker-tampered":
+        stdout_path = run_dir / "stdout.log"
+        stdout_path.write_text(
+            stdout_path.read_text(encoding="utf-8").replace(
+                runner.STATE.ORACLE_PROMPT_NOT_OBSERVED_MARKER,
+                "Prompt marker was altered",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path) is None
+    with pytest.raises(runner.OracleRunError) as recovery_exc:
+        runner.recover_run(
+            run_dir,
+            action="harvest",
+            dry_run=True,
+            oracle_command=["oracle"],
+        )
+    assert recovery_exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+
+
+def test_task_bound_attachment_pro_prompt_timeout_settlement_requires_intact_recovery_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_manifest(tmp_path),
+        run_factory=version_0180_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+
+    with pytest.raises(runner.STATE.OracleStateError) as missing_recovery:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="recovery evidence does not exist yet",
+        )
+    assert missing_recovery.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    recovery_stdout = run_dir / "recovery-harvest-stdout.log"
+    recovery_stdout.write_text(
+        recovery_stdout.read_text(encoding="utf-8")
+        + "https://chatgpt.com/c/unexpected-recovery-binding\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(runner.STATE.OracleStateError) as tampered_recovery:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="tampered recovery evidence must fail closed",
+        )
+    assert tampered_recovery.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
 
 
 def test_task_bound_direct_devspace_prompt_timeout_can_harvest_without_browser_receipt(
