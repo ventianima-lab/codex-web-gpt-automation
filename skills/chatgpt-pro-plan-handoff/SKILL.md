@@ -134,6 +134,31 @@ If an observer returns while the exact session remains live, comprehensive mode
 continues exact-slug live recovery automatically. Time alone never kills,
 fails, releases, replaces, restarts, or resubmits the session.
 
+If a completed, terminal-harvested regular final gate wrote the exact malformed
+transition `status=PASS`, empty `next_stage`, `ready_for_next=false`, empty
+`blocker`, and an empty terminal mission, leave that receipt and Oracle run
+unchanged. After explicit user authorization, the owning maintenance task may
+prepare one fresh final attestation in the same workflow with
+`--retry-final-receipt`. Bind the current workflow state, scope state, Oracle
+run state, and malformed receipt by exact SHA-256, use confirmation token
+`user-authorized-final-receipt-retry`, and run `--dry-run` first. The command
+accepts only the standard profile, the exact task owner, a stopped observer,
+valid ownership/browser/provider evidence, unchanged mission and output bytes,
+and remaining stage budget. It writes an immutable authority receipt and
+prepares only `final-web-gate`; it never repairs the old verdict, replays
+implementation, or launches a prompt itself. Resume the same manifest normally
+after preparation. The fresh final receipt must use `next_stage=complete` and
+`ready_for_next=true`, after which the existing deterministic local gate still
+decides completion.
+
+```text
+python ~/.codex/bin/chatgpt_oracle_comprehensive.py \
+  --manifest <same-workflow.json> --retry-final-receipt --dry-run \
+  --expected-workflow-sha256 <sha256> --expected-scope-sha256 <sha256> \
+  --expected-run-state-sha256 <sha256> --expected-receipt-sha256 <sha256> \
+  --confirmation user-authorized-final-receipt-retry
+```
+
 `Prompt did not appear in conversation before timeout (send may have failed)`
 remains submission-uncertain by default. Exact recovery reporting no live tab
 and no saved conversation URL is still not enough to release ownership. Only

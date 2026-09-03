@@ -1175,6 +1175,17 @@ def _stage_mission(
                 "its mission authority, writes the bound final verification mission, and returns next_stage="
                 "final-web-gate.\n"
             )
+    if stage == "final-web-gate":
+        protocol += (
+            "\n[FINAL_GATE_RECEIPT_CONTRACT]\n"
+            "A passing final gate must use status=PASS, next_stage=complete, ready_for_next=true, "
+            "and blocker=\"\". Complete is a transition to the mandatory host local gate, not a claim "
+            "that the workflow has already completed. For this terminal transition only, set "
+            "next_mission_path=null and next_mission_sha256=null; do not create an empty terminal mission. "
+            "For the materialization fallback use next_mission_text=\"\". Never use an empty next_stage "
+            "or ready_for_next=false for PASS. If verification cannot pass, report the concrete mismatch "
+            "without asserting PASS; never convert missing evidence into completion.\n"
+        )
     target.write_text(body.rstrip() + protocol, encoding="utf-8")
     return target, receipt, input_sha
 
@@ -2612,6 +2623,7 @@ def _run_workflow_locked(
         elif stored.get("status") in {"running", "attention_required"}:
             return {"ok": False, **stored}
         else:
+            _verify_prepared_final_receipt_retry(config, stored)
             stage = str(stored["next_stage"])
             source = Path(str(stored["next_mission_path"])).resolve(strict=True)
             if str(stored.get("next_mission_sha256") or "") != sha(source):
@@ -2913,11 +2925,183 @@ def run_workflow(
         )
 
 
+def _verify_prepared_final_receipt_retry(config: dict[str, Any], stored: dict[str, Any]) -> None:
+    records = stored.get("records") or []
+    if not records or not records[-1].get("final_receipt_retry_authority"):
+        return
+    record = records[-1]
+    authority_path = Path(record["final_receipt_retry_authority"])
+    authority, _ = _load_expected_json(authority_path, record["authority_sha256"], label="retry authority")
+    state_path = _state_path(config, config["workflow_id"])
+    expected_path = state_path.parent / "final-receipt-retries" / config["workflow_id"] / f"{authority['run_id']}.json"
+    if (
+        authority_path != expected_path
+        or authority.get("workflow_id") != config["workflow_id"]
+        or authority.get("target_source_thread_id") != config.get("source_thread_id")
+        or stored.get("next_stage") != "final-web-gate"
+        or stored.get("next_index") != authority.get("next_index")
+        or stored.get("next_mission_sha256") != authority.get("input_mission_sha256")
+    ):
+        raise WorkflowError("retry authority binding mismatch")
+    run_dir = RUNNER.STATE.oracle_state_root() / "projects" / state_path.parent.name / "runs" / authority["run_id"]
+    for path, digest in (
+        (Path(authority["receipt_path"]), authority["receipt_sha256"]),
+        (run_dir / "state.json", authority["run_state_sha256"]),
+        (run_dir / "output.md", authority["output_sha256"]),
+        (run_dir / "mission.md", authority["augmented_mission_sha256"]),
+        (Path(authority["stage_output_path"]), authority["stage_output_sha256"]),
+        (Path(authority["empty_terminal_path"]), authority["empty_terminal_sha256"]),
+    ):
+        if path.is_symlink() or sha(path) != digest:
+            raise WorkflowError("retry evidence changed before submission")
+
+
+def prepare_final_receipt_retry(
+    manifest_path: Path, *, expected_workflow_sha256: str,
+    expected_scope_sha256: str, expected_run_state_sha256: str,
+    expected_receipt_sha256: str, confirmation: str, dry_run: bool = False,
+) -> dict[str, Any]:
+    """Authorize one fresh final attestation; never repair a web verdict in place."""
+    if confirmation != "user-authorized-final-receipt-retry":
+        raise WorkflowError("explicit user-authorized-final-receipt-retry confirmation required")
+    expected_workflow_sha256 = _required_sha256(expected_workflow_sha256, label="workflow state")
+    expected_scope_sha256 = _required_sha256(expected_scope_sha256, label="scope state")
+    expected_run_state_sha256 = _required_sha256(expected_run_state_sha256, label="Oracle run state")
+    expected_receipt_sha256 = _required_sha256(expected_receipt_sha256, label="stage receipt")
+    config = load_manifest(manifest_path)
+    if config["workflow_profile"] != "standard" or _closed_audit_enabled(config):
+        raise WorkflowError("final receipt retry supports standard workflows only")
+    owner = RUNNER.STATE.current_source_thread_id()
+    if not owner or owner != config.get("source_thread_id"):
+        raise WorkflowError("FOREIGN_TASK_SESSION: final receipt retry requires the owning task")
+    workflow_id = config["workflow_id"]
+    state_path = _state_path(config, workflow_id)
+    scope_path = _scope_path(config)
+    with RUNNER.STATE.project_submit_mutex(
+        config["project_root"], timeout_seconds=30, source_thread_id=owner,
+    ):
+        stored, _ = _load_expected_json(state_path, expected_workflow_sha256, label="workflow state")
+        scope, _ = _load_expected_json(scope_path, expected_scope_sha256, label="scope state")
+        if (
+            stored.get("status") != "awaiting_receipt"
+            or stored.get("current_stage") != "final-web-gate"
+            or stored.get("workflow_id") != workflow_id
+            or stored.get("manifest_sha256") != config["manifest_sha256"]
+            or stored.get("source_thread_id") != owner
+            or scope.get("source_thread_id") != owner
+            or scope.get("active_workflow_id") != workflow_id
+            or scope.get("status") != "active"
+            or stored.get("final_receipt_retry")
+            or any(record.get("final_receipt_retry_authority") for record in stored.get("records", []))
+        ):
+            raise WorkflowError("workflow is not an owned, unretried final receipt candidate")
+        index = int(stored["next_index"]) + 1
+        if index >= config["max_stages"]:
+            raise WorkflowError("final receipt retry cannot reset the stage budget")
+        attempt = str(stored["current_attempt_id"])
+        if not re.fullmatch(r"[0-9a-f]{32}", attempt):
+            raise WorkflowError("invalid exact attempt ID")
+        project_key = state_path.parent.name
+        run_dir = RUNNER.STATE.oracle_state_root() / "projects" / project_key / "runs" / attempt
+        if Path(stored["oracle_run_dir"]).resolve() != run_dir.resolve():
+            raise WorkflowError("Oracle run directory identity mismatch")
+        run_path = run_dir / "state.json"
+        run, _ = _load_expected_json(run_path, expected_run_state_sha256, label="Oracle run state")
+        if (
+            RUNNER.STATE.source_thread_id_from_state(run) != owner
+            or run.get("run_id") != attempt
+            or run.get("project_root") != str(config["project_root"])
+            or run.get("status") != "complete"
+            or run.get("session_authority") != "terminal"
+            or run.get("terminal_harvested") is not True
+            or run.get("task_outcome") != "executed"
+            or not RUNNER.STATE.proven_ownership_receipt(run_path)
+            or not RUNNER.STATE.proven_browser_identity_receipt(run_path)
+        ):
+            raise WorkflowError("exact Oracle run is not owned, completed and harvested")
+        provider = run.get("provider_session") or {}
+        meta_path = Path(str(provider.get("oracle_meta_path") or "")).expanduser()
+        if (
+            provider.get("terminal_confirmed") is not True
+            or provider.get("status") != "completed"
+            or not meta_path.is_absolute() or not meta_path.is_file() or meta_path.is_symlink()
+            or sha(meta_path) != provider.get("oracle_meta_sha256")
+        ):
+            raise WorkflowError("terminal provider evidence changed")
+        observer = run.get("browser_observer") or {}
+        pid = observer.get("oracle_process_pid")
+        if observer.get("status") != "process-exited" or not isinstance(pid, int) or RUNNER.STATE._process_may_be_alive(pid):
+            raise WorkflowError("Oracle observer is live or uncertain")
+        output = run_dir / "output.md"
+        output_lines = output.read_text(encoding="utf-8").rstrip().splitlines()
+        if sha(output) != run.get("artifact_sha256") or not output_lines or output_lines[-1] != "TASK_OUTCOME: EXECUTED":
+            raise WorkflowError("terminal Oracle output changed")
+        source = _inside(config["project_root"], stored["current_binding_source_path"])
+        augmented = _inside(config["project_root"], stored["current_augmented_mission_path"])
+        if (
+            sha(source) != stored["current_input_sha256"]
+            or sha(source) != stored["current_binding_source_sha256"]
+            or sha(augmented) != stored["current_augmented_mission_sha256"]
+            or sha(augmented) != (run.get("mission") or {}).get("sha256")
+            or sha(run_dir / "mission.md") != sha(augmented)
+        ):
+            raise WorkflowError("immutable mission binding changed")
+        receipt_path = _inside(config["project_root"], stored["receipt_path"])
+        receipt, _ = _load_expected_json(receipt_path, expected_receipt_sha256, label="stage receipt")
+        expected = {
+            "schema": RECEIPT_SCHEMA, "workflow_id": workflow_id, "stage": "final-web-gate",
+            "attempt_id": attempt, "input_mission_sha256": sha(source),
+            "status": "PASS", "next_stage": "", "ready_for_next": False, "blocker": "",
+        }
+        if any(receipt.get(key) != value for key, value in expected.items()):
+            raise WorkflowError("receipt is not the bounded empty-transition PASS error")
+        result_path = _inside(config["project_root"], receipt["output_path"])
+        terminal = _inside(config["project_root"], receipt["next_mission_path"])
+        if (
+            not result_path.read_bytes().strip() or sha(result_path) != receipt["output_sha256"]
+            or terminal.read_bytes() != b"" or sha(terminal) != receipt["next_mission_sha256"]
+        ):
+            raise WorkflowError("stage output or empty terminal mission changed")
+        authority_path = state_path.parent / "final-receipt-retries" / workflow_id / f"{attempt}.json"
+        authority = {
+            "schema": "codex.chatgpt.final-receipt-retry/v1", "workflow_id": workflow_id,
+            "evaluated_from_thread": owner, "target_source_thread_id": owner,
+            "run_id": attempt, "slug": (run.get("oracle") or {}).get("slug"),
+            "confirmation": confirmation, "workflow_state_sha256": expected_workflow_sha256,
+            "scope_state_sha256": expected_scope_sha256, "run_state_sha256": expected_run_state_sha256,
+            "receipt_path": str(receipt_path), "receipt_sha256": expected_receipt_sha256,
+            "output_sha256": sha(output), "stage_output_sha256": sha(result_path),
+            "stage_output_path": str(result_path), "empty_terminal_path": str(terminal),
+            "empty_terminal_sha256": sha(terminal),
+            "input_mission_sha256": sha(source), "augmented_mission_sha256": sha(augmented),
+            "next_index": index, "action": "prepare-same-workflow-final-attestation",
+        }
+        if not dry_run:
+            config["_review_policy"] = dict(stored["review_policy"])
+            _materialize_bound_text(authority_path, json.dumps(authority, sort_keys=True, indent=2) + "\n")
+            _write_workflow_state(state_path, config, {
+                **stored, "status": "prepared", "next_stage": "final-web-gate",
+                "next_mission_path": str(source), "next_mission_sha256": sha(source),
+                "next_index": index,
+                "final_receipt_retry": {"path": str(authority_path), "sha256": sha(authority_path)},
+                "records": list(stored.get("records") or []) + [{
+                    "stage": "final-web-gate", "run_dir": str(run_dir),
+                    "final_receipt_retry_authority": str(authority_path),
+                    "authority_sha256": sha(authority_path),
+                }],
+            })
+        return {"ok": True, "dry_run": dry_run, "workflow_id": workflow_id,
+                "authority_path": str(authority_path), "submission_action": "none",
+                "next_action": "resume-the-same-manifest"}
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a bounded Oracle comprehensive workflow.")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--cancel-user-stopped", action="store_true")
+    parser.add_argument("--retry-final-receipt", action="store_true")
+    parser.add_argument("--expected-receipt-sha256")
     parser.add_argument("--workflow-state", type=Path)
     parser.add_argument("--scope-state", type=Path)
     parser.add_argument("--run-dir", type=Path)
@@ -2929,7 +3113,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--confirmation")
     args = parser.parse_args(argv)
     try:
-        if args.cancel_user_stopped:
+        if args.retry_final_receipt:
+            if args.cancel_user_stopped or args.manifest is None:
+                raise WorkflowError("--retry-final-receipt requires --manifest and excludes cancellation")
+            value = prepare_final_receipt_retry(
+                args.manifest, expected_workflow_sha256=args.expected_workflow_sha256,
+                expected_scope_sha256=args.expected_scope_sha256,
+                expected_run_state_sha256=args.expected_run_state_sha256,
+                expected_receipt_sha256=args.expected_receipt_sha256,
+                confirmation=args.confirmation, dry_run=args.dry_run,
+            )
+        elif args.cancel_user_stopped:
             if args.manifest is not None:
                 raise WorkflowError("--manifest cannot be combined with --cancel-user-stopped")
             required = {

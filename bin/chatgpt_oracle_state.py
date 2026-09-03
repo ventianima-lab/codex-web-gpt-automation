@@ -1430,6 +1430,25 @@ def proven_ownership_receipt(state_path: Path) -> dict[str, Any] | None:
     return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(), "payload": receipt}
 
 
+def _receipt_runtime_profile_path(state_path: Path, value: Any) -> str:
+    """Recover this run's profile path after its deterministic POSIX temp alias was cleaned."""
+    profile = Path(str(value or "")).expanduser()
+    if os.name != "nt":
+        browser_temp = state_path.parent.resolve() / "browser-temp"
+        digest = hashlib.sha256(str(browser_temp).encode("utf-8")).hexdigest()[:16]
+        alias = Path("/tmp/Codex") / f"oracle-{os.getuid()}-{digest}" / "t"
+        if not alias.parent.exists() and not alias.parent.is_symlink():
+            try:
+                relative = profile.relative_to(alias)
+            except ValueError:
+                pass
+            else:
+                if relative.parts and ".." not in relative.parts:
+                    return str((browser_temp / relative).resolve())
+    # A surviving or retargeted alias must pass ordinary filesystem resolution.
+    return str(profile.resolve())
+
+
 def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     state = load_state(state_path)
     path = browser_identity_receipt_path(state_path.parent.resolve())
@@ -1576,7 +1595,7 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     observed = {
         "chrome_pid": runtime.get("chromePid"),
         "browser_parent_pid": runtime.get("controllerPid"),
-        "profile_path": str(Path(str(runtime.get("userDataDir") or "")).expanduser().resolve()),
+        "profile_path": _receipt_runtime_profile_path(state_path, runtime.get("userDataDir")),
         "cdp_port": runtime.get("chromePort"),
         "target_id": runtime.get("chromeTargetId"),
         "conversation_url": runtime.get("tabUrl"),

@@ -1951,6 +1951,185 @@ def test_plan_mission_teaches_declared_packet_contract(tmp_path: Path) -> None:
     assert "Do not both write the receipt/files and return this fallback envelope." in text
 
 
+def test_final_gate_mission_requires_complete_transition_before_local_gate(tmp_path: Path) -> None:
+    module = load()
+    config = module.load_manifest(manifest(tmp_path))
+    mission, _, _ = module._stage_mission(
+        config, "a" * 32, 3, "final-web-gate", config["initial_mission_path"], "b" * 32
+    )
+    text = mission.read_text(encoding="utf-8")
+    assert "[FINAL_GATE_RECEIPT_CONTRACT]" in text
+    assert "status=PASS, next_stage=complete, ready_for_next=true" in text
+    assert "Complete is a transition to the mandatory host local gate" in text
+    assert "Never use an empty next_stage" in text
+
+
+@pytest.mark.parametrize("failure", [None, "foreign", "live", "source", "receipt_hash",
+                                   "terminal", "run_status", "ownership", "provider", "budget"])
+def test_explicit_final_receipt_retry_preserves_old_run_and_prepares_same_stage(
+    tmp_path: Path, monkeypatch, failure: str | None,
+) -> None:
+    module = load()
+    owner = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(module.RUNNER.STATE, "current_source_thread_id", lambda: owner)
+    workflow_manifest = manifest(tmp_path)
+    manifest_value = json.loads(workflow_manifest.read_text(encoding="utf-8"))
+    manifest_value["source_thread_id"] = owner
+    workflow_manifest.write_text(json.dumps(manifest_value), encoding="utf-8")
+    config = module.load_manifest(workflow_manifest)
+    config["_review_policy"] = module._default_review_policy()
+    workflow_id = config["workflow_id"]
+    attempt = "b" * 32
+    source = tmp_path / "final-source.md"
+    source.write_text("final verification", encoding="utf-8")
+    stage = tmp_path / "workflow" / "stages" / f"03-final-web-gate-{attempt[:12]}"
+    stage.mkdir(parents=True)
+    augmented = stage / "mission.md"
+    augmented.write_text("augmented final verification", encoding="utf-8")
+    result = stage / "final-result.md"
+    result.write_text("PASS\n", encoding="utf-8")
+    terminal = stage / "terminal.md"
+    terminal.write_bytes(b"")
+    receipt = stage / "stage-result.json"
+    receipt.write_text(json.dumps({
+        "schema": module.RECEIPT_SCHEMA, "workflow_id": workflow_id,
+        "stage": "final-web-gate", "attempt_id": attempt,
+        "input_mission_sha256": module.sha(source), "status": "PASS",
+        "output_path": str(result), "output_sha256": module.sha(result),
+        "next_stage": "", "next_mission_path": str(terminal),
+        "next_mission_sha256": module.sha(terminal), "ready_for_next": False, "blocker": "",
+    }), encoding="utf-8")
+    state_path = module._state_path(config, workflow_id)
+    project_key = state_path.parent.name
+    run_dir = module.RUNNER.STATE.oracle_state_root() / "projects" / project_key / "runs" / attempt
+    run_dir.mkdir(parents=True)
+    (run_dir / "mission.md").write_bytes(augmented.read_bytes())
+    oracle_output = run_dir / "output.md"
+    oracle_output.write_text("web final output\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
+    meta = run_dir / "meta.json"
+    meta.write_text("{}\n", encoding="utf-8")
+    run_state_path = run_dir / "state.json"
+    run_state = {
+        "run_id": attempt, "project_root": str(config["project_root"]),
+        "originating_task": {"source_thread_id": owner, "binding": "bound"},
+        "status": "complete", "session_authority": "terminal", "terminal_harvested": True,
+        "task_outcome": "executed", "mission": {"sha256": module.sha(augmented)},
+        "oracle": {"slug": "oracle-project-retry"}, "artifact_sha256": module.sha(oracle_output),
+        "provider_session": {"terminal_confirmed": True, "status": "completed",
+                             "oracle_meta_path": str(meta), "oracle_meta_sha256": module.sha(meta)},
+        "browser_observer": {"status": "process-exited", "oracle_process_pid": 43210},
+    }
+    run_state_path.write_text(json.dumps(run_state), encoding="utf-8")
+    monkeypatch.setattr(module.RUNNER.STATE, "source_thread_id_from_state", lambda value: owner)
+    monkeypatch.setattr(module.RUNNER.STATE, "proven_ownership_receipt", lambda value: {"ok": True})
+    monkeypatch.setattr(module.RUNNER.STATE, "proven_browser_identity_receipt", lambda value: {"ok": True})
+    monkeypatch.setattr(module.RUNNER.STATE, "_process_may_be_alive", lambda value: False)
+    stored = {
+        "schema": module.STATE_SCHEMA, "status": "awaiting_receipt", "workflow_id": workflow_id,
+        "manifest_sha256": config["manifest_sha256"], "source_thread_id": owner,
+        "current_stage": "final-web-gate", "current_attempt_id": attempt,
+        "current_input_sha256": module.sha(source), "current_binding_source_path": str(source),
+        "current_binding_source_sha256": module.sha(source),
+        "current_augmented_mission_path": str(augmented),
+        "current_augmented_mission_sha256": module.sha(augmented),
+        "oracle_run_dir": str(run_dir), "receipt_path": str(receipt), "next_index": 3,
+        "records": [{"stage": "final-web-gate", "run_dir": str(run_dir), "ok": True}],
+    }
+    module._write_workflow_state(state_path, config, stored)
+    scope_path = module._scope_path(config)
+    hashes = {"expected_workflow_sha256": module.sha(state_path),
+              "expected_scope_sha256": module.sha(scope_path),
+              "expected_run_state_sha256": module.sha(run_state_path),
+              "expected_receipt_sha256": module.sha(receipt)}
+    if failure == "foreign":
+        monkeypatch.setattr(module.RUNNER.STATE, "current_source_thread_id",
+                            lambda: "22222222-2222-4222-8222-222222222222")
+    elif failure == "live":
+        monkeypatch.setattr(module.RUNNER.STATE, "_process_may_be_alive", lambda value: True)
+    elif failure == "source":
+        source.write_text("changed", encoding="utf-8")
+    elif failure == "receipt_hash":
+        hashes["expected_receipt_sha256"] = "0" * 64
+    elif failure == "terminal":
+        terminal.write_text("do more work", encoding="utf-8")
+    elif failure == "run_status":
+        run_state["status"] = "running"
+        run_state_path.write_text(json.dumps(run_state), encoding="utf-8")
+        hashes["expected_run_state_sha256"] = module.sha(run_state_path)
+    elif failure == "ownership":
+        monkeypatch.setattr(module.RUNNER.STATE, "proven_ownership_receipt", lambda value: None)
+    elif failure == "provider":
+        meta.write_text("changed", encoding="utf-8")
+    elif failure == "budget":
+        current = module._json(state_path)
+        current["next_index"] = 7
+        module._write_workflow_state(state_path, config, current)
+        hashes["expected_workflow_sha256"] = module.sha(state_path)
+    if failure:
+        before = state_path.read_bytes()
+        with pytest.raises(module.WorkflowError):
+            module.prepare_final_receipt_retry(
+                workflow_manifest, **hashes, confirmation="user-authorized-final-receipt-retry"
+            )
+        assert state_path.read_bytes() == before
+        return
+    preview = module.prepare_final_receipt_retry(
+        workflow_manifest, **hashes, confirmation="user-authorized-final-receipt-retry", dry_run=True
+    )
+    assert preview["submission_action"] == "none"
+    assert module._json(state_path)["status"] == "awaiting_receipt"
+    with pytest.raises(module.WorkflowError, match="stage receipt did not pass"):
+        module._validate_receipt(
+            config, receipt, workflow_id, "final-web-gate", attempt, module.sha(source)
+        )
+    result_value = module.prepare_final_receipt_retry(
+        workflow_manifest, **hashes, confirmation="user-authorized-final-receipt-retry"
+    )
+    prepared = module._json(state_path)
+    assert result_value["next_action"] == "resume-the-same-manifest"
+    assert prepared["status"] == "prepared"
+    assert prepared["next_stage"] == "final-web-gate"
+    assert prepared["next_mission_path"] == str(source)
+    assert prepared["next_index"] == 4
+    assert prepared["final_receipt_retry"]["sha256"] == module.sha(
+        Path(prepared["final_receipt_retry"]["path"])
+    )
+    assert module.sha(receipt) == hashes["expected_receipt_sha256"]
+    assert module.sha(run_state_path) == hashes["expected_run_state_sha256"]
+    hashes["expected_workflow_sha256"] = module.sha(state_path)
+    hashes["expected_scope_sha256"] = module.sha(scope_path)
+    with pytest.raises(module.WorkflowError, match="unretried final receipt candidate"):
+        module.prepare_final_receipt_retry(
+            workflow_manifest, **hashes, confirmation="user-authorized-final-receipt-retry"
+        )
+
+    result.write_text("changed after authorization\n", encoding="utf-8")
+    with pytest.raises(module.WorkflowError, match="retry evidence changed before submission"):
+        module.run_workflow(workflow_manifest, oracle_execute=lambda *args, **kwargs: pytest.fail("submitted"))
+    result.write_text("PASS\n", encoding="utf-8")
+
+    seen = []
+    def final_only(path: Path, *, dry_run: bool):
+        oracle = json.loads(path.read_text(encoding="utf-8"))
+        mission = Path(oracle["mission_path"])
+        text = mission.read_text(encoding="utf-8")
+        assert "stage=final-web-gate\n" in text
+        assert "stage_index=4\n" in text
+        assert text.startswith(source.read_text(encoding="utf-8"))
+        seen.append(oracle["run_id"])
+        new_receipt = json.loads(receipt.read_text(encoding="utf-8"))
+        new_receipt.update(attempt_id=oracle["run_id"], next_stage="complete", ready_for_next=True,
+                           next_mission_path=None, next_mission_sha256=None)
+        (mission.parent / "stage-result.json").write_text(json.dumps(new_receipt), encoding="utf-8")
+        return {"ok": True, "run_dir": str(mission.parent / "run")}
+    completed = module.run_workflow(
+        workflow_manifest, oracle_execute=final_only,
+        local_gate_runner=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "ok", ""),
+    )
+    assert completed["status"] == "complete"
+    assert len(seen) == 1 and seen[0] != attempt
+
+
 def test_receipt_compatibly_resolves_project_relative_paths_with_hash_binding(tmp_path: Path) -> None:
     module = load()
     config = module.load_manifest(manifest(tmp_path))
