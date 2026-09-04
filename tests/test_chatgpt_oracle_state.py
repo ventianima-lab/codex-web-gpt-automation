@@ -1120,6 +1120,69 @@ def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_u
     assert state.proven_browser_identity_receipt(layout.state_path) is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX temp alias")
+def test_browser_identity_receipt_survives_owned_temp_alias_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    config = state.load_manifest(manifest(tmp_path, mission.resolve(), source_thread_id=task_id))
+    layout = state.create_layout(config, run_id="identity-alias-run-123456")
+    layout.run_dir.mkdir(parents=True)
+    layout.browser_temp_path.mkdir()
+    state.write_json_atomic(
+        layout.state_path,
+        state.state_payload(config, layout, status="running", resolved_version="0.18.0", cdp_port=43101),
+    )
+    state.persist_ownership_receipt(layout.state_path, oracle_process_pid=101)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    digest = hashlib.sha256(str(layout.browser_temp_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    alias = Path("/tmp/Codex") / f"oracle-{os.getuid()}-{digest}" / "t"
+    alias.parent.mkdir(mode=0o700, parents=True)
+    alias.symlink_to(layout.browser_temp_path.resolve(), target_is_directory=True)
+    profile = alias / "oracle-browser-isolated"
+    meta = {"browser": {"runtime": {
+        "chromePid": 102,
+        "controllerPid": 101,
+        "chromePort": 43101,
+        "userDataDir": str(profile),
+        "chromeTargetId": "target-exact",
+        "tabUrl": "https://chatgpt.com/c/exact-conversation",
+    }}}
+    meta_path = session_root / layout.slug / "meta.json"
+    meta_path.parent.mkdir(parents=True)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    captured = state.capture_browser_identity_receipt(layout.state_path)
+    assert captured is not None
+    alias.unlink()
+    alias.parent.rmdir()
+    assert state.proven_browser_identity_receipt(layout.state_path) is not None
+
+    changed = json.loads(meta_path.read_text(encoding="utf-8"))
+    foreign = tmp_path / "foreign" / "browser-temp"
+    foreign_digest = hashlib.sha256(str(foreign).encode("utf-8")).hexdigest()[:16]
+    changed["browser"]["runtime"]["userDataDir"] = str(
+        Path("/tmp/Codex") / f"oracle-{os.getuid()}-{foreign_digest}" / "t" / profile.name
+    )
+    meta_path.write_text(json.dumps(changed), encoding="utf-8")
+    assert state.proven_browser_identity_receipt(layout.state_path) is None
+
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    alias.parent.mkdir(mode=0o700)
+    alias.symlink_to(foreign, target_is_directory=True)
+    try:
+        assert state.proven_browser_identity_receipt(layout.state_path) is None
+    finally:
+        alias.unlink()
+        alias.parent.rmdir()
+
+
 def test_provider_session_terminal_requires_exact_browser_identity_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
