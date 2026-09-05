@@ -4850,7 +4850,9 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
         "recovered answer\nTASK_OUTCOME: EXECUTED\n"
     )
     assert recovered["result"]["status"] == "complete"
-    assert Path(captured_env["TEMP"]).name == "recovery-harvest-browser-temp"
+    assert Path(captured_env["TEMP"]).name == (
+        "recovery-harvest-browser-temp" if os.name == "nt" else "t"
+    )
     assert captured_env["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
     assert not Path(captured_env["TEMP"]).exists()
     transcript = Path(recovered["result"]["artifacts"]["transcript"]).read_text(encoding="utf-8")

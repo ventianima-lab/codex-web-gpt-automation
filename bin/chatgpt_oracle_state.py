@@ -1430,7 +1430,7 @@ def proven_ownership_receipt(state_path: Path) -> dict[str, Any] | None:
     return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(), "payload": receipt}
 
 
-def _receipt_runtime_profile_path(state_path: Path, value: Any) -> str:
+def _runtime_browser_temp_path(state_path: Path, value: Any) -> str:
     profile = Path(str(value or "")).expanduser()
     if os.name != "nt":
         # Cleanup removes the short TMPDIR alias, but Oracle retains its
@@ -1596,7 +1596,7 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     observed = {
         "chrome_pid": runtime.get("chromePid"),
         "browser_parent_pid": runtime.get("controllerPid"),
-        "profile_path": _receipt_runtime_profile_path(state_path, runtime.get("userDataDir")),
+        "profile_path": _runtime_browser_temp_path(state_path, runtime.get("userDataDir")),
         "cdp_port": runtime.get("chromePort"),
         "target_id": runtime.get("chromeTargetId"),
         "conversation_url": runtime.get("tabUrl"),
@@ -6537,7 +6537,7 @@ def proven_pre_submit_profile_copy_ebusy(state_path: Path) -> dict[str, Any] | N
     if match is None:
         return None
     source = Path(match.group("source"))
-    destination = Path(match.group("destination"))
+    destination = Path(_runtime_browser_temp_path(state_path, match.group("destination")))
     expected_source = copy_profile / "Default" / "Network" / "Cookies"
     if (
         source.resolve() != expected_source.resolve()
