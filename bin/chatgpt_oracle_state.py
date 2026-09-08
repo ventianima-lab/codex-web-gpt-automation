@@ -7,7 +7,9 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -50,6 +52,7 @@ CREATE_NO_WINDOW = 0x08000000
 ATOMIC_REPLACE_MAX_ATTEMPTS = 5
 ATOMIC_REPLACE_WINDOWS_TRANSIENT_ERRORS = {5, 32}
 ATOMIC_REPLACE_BACKOFF_SECONDS = (0.01, 0.025, 0.05, 0.1)
+POSIX_BROWSER_TEMP_BASE = Path("/tmp")
 BLOCKED_OPTIONS = {
     "-f", "--file", "--files", "--path", "--paths", "--include", "-p",
     "--prompt", "--message", "--write-output", "--slug", "-e", "--engine",
@@ -1436,12 +1439,22 @@ def _receipt_runtime_profile_path(state_path: Path, value: Any) -> str:
     if os.name != "nt":
         browser_temp = state_path.parent.resolve() / "browser-temp"
         digest = hashlib.sha256(str(browser_temp).encode("utf-8")).hexdigest()[:16]
-        alias = Path("/tmp/Codex") / f"oracle-{os.getuid()}-{digest}" / "t"
-        if not alias.parent.exists() and not alias.parent.is_symlink():
+        aliases = (
+            _posix_browser_temp_alias(browser_temp),
+            # v1.20.15 receipt compatibility for the previously anticipated
+            # alias layout, even though launch-time creation was still absent.
+            POSIX_BROWSER_TEMP_BASE
+            / "Codex"
+            / f"oracle-{os.getuid()}-{digest}"
+            / "t",
+        )
+        for alias in aliases:
+            if alias.parent.exists() or alias.parent.is_symlink():
+                continue
             try:
                 relative = profile.relative_to(alias)
             except ValueError:
-                pass
+                continue
             else:
                 if relative.parts and ".." not in relative.parts:
                     return str((browser_temp / relative).resolve())
@@ -1876,6 +1889,40 @@ def host_uptime_ms(*, platform_name: str | None = None) -> int:
     return int(time.monotonic() * 1000)
 
 
+def _posix_browser_temp_alias(browser_temp_path: Path) -> Path:
+    root = browser_temp_path.expanduser().resolve()
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return (
+        POSIX_BROWSER_TEMP_BASE
+        / f"Codex-{os.getuid()}"
+        / f"oracle-{digest}"
+        / "t"
+    )
+
+
+def _reclaim_stale_owned_browser_temp_alias(root: Path, alias: Path) -> bool:
+    """Remove only this exact dead controller's interrupted temp alias."""
+    marker_path = root / ".owner.json"
+    if not marker_path.is_file() or marker_path.is_symlink():
+        return False
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8", errors="strict"))
+        controller_pid = int(marker.get("controller_pid") or 0)
+        alias_target = alias.resolve(strict=True)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    if (
+        marker.get("schema") != "codex.chatgpt.oracle-browser-temp-owner/v1"
+        or marker.get("temp_alias") != str(alias)
+        or controller_pid <= 0
+        or _process_may_be_alive(controller_pid)
+        or not alias.is_symlink()
+        or alias_target != root
+    ):
+        return False
+    return cleanup_owned_browser_temp(root)
+
+
 def browser_temp_environment(
     browser_temp_path: Path,
     *,
@@ -1884,15 +1931,83 @@ def browser_temp_environment(
 ) -> dict[str, str]:
     root = browser_temp_path.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
+    platform = os.name if platform_name is None else platform_name
+    temp_path = root
+    temp_alias: Path | None = None
+    if platform != "nt":
+        # Chrome creates a com.google.Chrome.*/SingletonSocket below TMPDIR on
+        # POSIX.  The canonical run path can already consume the Unix-domain
+        # socket limit before Chrome adds that suffix, so expose the exact same
+        # owned directory through one short, deterministic alias.  The UID and
+        # canonical-path digest keep concurrent users and runs disjoint.
+        temp_alias = _posix_browser_temp_alias(root)
+        alias_parent = temp_alias.parent
+        alias_root = alias_parent.parent
+        try:
+            alias_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            alias_root_stat = alias_root.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise OracleStateError(
+                "BROWSER_TEMP_ALIAS_ROOT_INVALID",
+                "the short POSIX browser temp root could not be created safely",
+                {"path": str(alias_root)},
+            ) from exc
+        if (
+            alias_root.is_symlink()
+            or not alias_root.is_dir()
+            or alias_root_stat.st_uid != os.getuid()
+            or stat.S_IMODE(alias_root_stat.st_mode) & 0o022
+        ):
+            raise OracleStateError(
+                "BROWSER_TEMP_ALIAS_ROOT_INVALID",
+                "the short POSIX browser temp root is not exclusively owned",
+                {"path": str(alias_root)},
+            )
+        if os.path.lexists(alias_parent):
+            if not _reclaim_stale_owned_browser_temp_alias(root, temp_alias):
+                raise OracleStateError(
+                    "BROWSER_TEMP_ALIAS_CONFLICT",
+                    "the uniquely owned short POSIX browser temp path is unavailable",
+                    {"path": str(temp_alias)},
+                )
+            root.mkdir(parents=True, exist_ok=True)
+        alias_parent_created = False
+        try:
+            alias_parent.mkdir(mode=0o700)
+            alias_parent_created = True
+            temp_alias.symlink_to(root, target_is_directory=True)
+        except OSError as exc:
+            if alias_parent_created:
+                try:
+                    alias_parent.rmdir()
+                except OSError:
+                    pass
+            raise OracleStateError(
+                "BROWSER_TEMP_ALIAS_CONFLICT",
+                "the uniquely owned short POSIX browser temp path is unavailable",
+                {"path": str(temp_alias)},
+            ) from exc
+        temp_path = temp_alias
     marker = {
         "schema": "codex.chatgpt.oracle-browser-temp-owner/v1",
         "controller_pid": os.getpid(),
         "host_uptime_ms": host_uptime_ms(platform_name=platform_name),
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "temp_alias": str(temp_alias) if temp_alias is not None else None,
+        "temp_alias_cleanup_started": False,
     }
-    write_json_atomic(root / ".owner.json", marker)
+    try:
+        write_json_atomic(root / ".owner.json", marker)
+    except BaseException:
+        if temp_alias is not None:
+            try:
+                temp_alias.unlink()
+                temp_alias.parent.rmdir()
+            except OSError:
+                pass
+        raise
     env = dict(os.environ if base_env is None else base_env)
-    value = str(root)
+    value = str(temp_path)
     env.update({"TEMP": value, "TMP": value, "TMPDIR": value})
     return env
 
@@ -1901,6 +2016,18 @@ def cleanup_owned_browser_temp(browser_temp_path: Path) -> bool:
     root = browser_temp_path.expanduser().resolve()
     if not root.exists():
         return True
+    state_path = root.parent / "state.json"
+    if state_path.is_file() and not state_path.is_symlink():
+        confirmed = proven_user_confirmed_no_submission(state_path)
+        if (
+            confirmed is not None
+            and confirmed.get("settlement_eligibility")
+            == "oracle-linux-tmpdir-launch/v1"
+            and Path(str(confirmed.get("browser_temp") or "")).resolve() == root
+        ):
+            # This empty Chrome directory and owner marker are hash-bound
+            # evidence for a user-adjudicated historical launch failure.
+            return False
     marker = root / ".owner.json"
     if not marker.is_file():
         return False
@@ -1910,6 +2037,61 @@ def cleanup_owned_browser_temp(browser_temp_path: Path) -> bool:
         return False
     if payload.get("schema") != "codex.chatgpt.oracle-browser-temp-owner/v1":
         return False
+    alias_value = payload.get("temp_alias")
+    alias: Path | None = None
+    if alias_value is not None:
+        if not isinstance(alias_value, str) or not alias_value:
+            return False
+        if os.name == "nt":
+            return False
+        expected_alias = _posix_browser_temp_alias(root)
+        alias = Path(alias_value)
+        if alias != expected_alias:
+            return False
+        cleanup_started = payload.get("temp_alias_cleanup_started") is True
+        if os.path.lexists(alias):
+            try:
+                alias_parent_stat = alias.parent.stat(follow_symlinks=False)
+                alias_target = alias.resolve(strict=True)
+            except OSError:
+                return False
+            if (
+                alias.parent.is_symlink()
+                or not alias.parent.is_dir()
+                or alias_parent_stat.st_uid != os.getuid()
+                or stat.S_IMODE(alias_parent_stat.st_mode) & 0o077
+                or not alias.is_symlink()
+                or alias_target != root
+            ):
+                return False
+            if not cleanup_started:
+                payload["temp_alias_cleanup_started"] = True
+                try:
+                    write_json_atomic(marker, payload)
+                except OSError:
+                    return False
+            try:
+                alias.unlink()
+            except OSError:
+                return False
+        elif not cleanup_started:
+            return False
+        if os.path.lexists(alias.parent):
+            try:
+                alias_parent_stat = alias.parent.stat(follow_symlinks=False)
+            except OSError:
+                return False
+            if (
+                alias.parent.is_symlink()
+                or not alias.parent.is_dir()
+                or alias_parent_stat.st_uid != os.getuid()
+                or stat.S_IMODE(alias_parent_stat.st_mode) & 0o077
+            ):
+                return False
+            try:
+                alias.parent.rmdir()
+            except OSError:
+                return False
     try:
         shutil.rmtree(root)
     except OSError:
@@ -4905,6 +5087,329 @@ def persist_bounded_task_owned_prompt_timeout_harvest(
     return proven_bounded_task_owned_prompt_timeout_harvest(state_path)
 
 
+def _linux_tmpdir_launch_failure_no_submission_evidence(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Make one Oracle 0.18.0 Linux launch failure user-adjudicable.
+
+    The evidence is intentionally insufficient for automatic pre-submit
+    authority: Oracle 0.18.0 did not seal Chrome's fatal stderr before deleting
+    its copied profile.  It is sufficient to offer the existing explicit-user
+    settlement only when every durable run, ownership, log, port, and metadata
+    field agrees that the browser never exposed a runtime or composer.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    state = load_state(state_path)
+    run_dir = state_path.parent.resolve()
+    run_id = str(state.get("run_id") or "").strip()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    source_thread_id = source_thread_id_from_state(state)
+    originating_task = (
+        state.get("originating_task")
+        if isinstance(state.get("originating_task"), dict)
+        else {}
+    )
+    state_ownership = (
+        state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    )
+    command = tuple(str(item) for item in (oracle.get("command") or []))
+    try:
+        validated_command = validate_oracle_command(list(command))
+    except OracleStateError:
+        validated_command = ()
+    if (
+        state.get("schema") != STATE_SCHEMA
+        or not run_id
+        or run_dir.name != run_id
+        or state_path.is_symlink()
+        or state_path.resolve() != run_dir / "state.json"
+        or source_thread_id is None
+        or originating_task.get("schema") != "codex.chatgpt.oracle-task-owner/v1"
+        or originating_task.get("binding") != "bound"
+        or originating_task.get("source_thread_id") != source_thread_id
+        or state_ownership.get("schema") != "codex.chatgpt.oracle-ownership/v1"
+        or state_ownership.get("binding") != "bound"
+        or state_ownership.get("source_thread_id") != source_thread_id
+        or str(state.get("session_authority") or "")
+        not in {"submitted_unknown", "pre_submit"}
+        or state.get("status") != "attention_required"
+        or str(state.get("transport_status") or "")
+        not in {"failed", "not_submitted_user_confirmed"}
+        or state.get("task_outcome") != "pending"
+        or state.get("terminal_harvested") is not False
+        or int(state.get("exit_code") or 0) != 1
+        or state.get("mode") != "browser"
+        or state.get("transport") != "devspace"
+        or state.get("parallel_parent_id") is not None
+        or state.get("requested_run_id") is not None
+        or state.get("web_multi_child_provenance") is not None
+        or state.get("attachments") != []
+        or not locator
+        or oracle.get("slug") != locator
+        or str(oracle.get("resolved_version") or "").removeprefix("oracle ").strip()
+        != "0.18.0"
+        or validated_command != command
+        or _state_has_conversation_url(state)
+    ):
+        return None
+
+    ownership = proven_ownership_receipt(state_path)
+    if ownership is None:
+        return None
+    ownership_payload = ownership.get("payload") if isinstance(ownership.get("payload"), dict) else {}
+    controller_pid = int(ownership_payload.get("oracle_process_pid") or 0)
+    observer = state.get("browser_observer") if isinstance(state.get("browser_observer"), dict) else {}
+    if (
+        controller_pid <= 0
+        or int(observer.get("oracle_process_pid") or 0) != controller_pid
+        or observer.get("status") != "process-exited"
+        or _process_may_be_alive(controller_pid)
+    ):
+        return None
+
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    mission_sha256 = str(mission.get("sha256") or "").casefold()
+    transport_path = Path(str(mission.get("transport_path") or ""))
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output_path = Path(str(artifacts.get("output") or ""))
+    browser_temp = Path(str(artifacts.get("browser_temp") or ""))
+    records = {name: _artifact_bytes(state, name) for name in ("stdout", "stderr", "transcript")}
+    browser_receipt = run_dir / "browser-identity-receipt.json"
+    if (
+        not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
+        or transport_path.resolve() != run_dir / "mission.md"
+        or transport_path.is_symlink()
+        or output_path.resolve() != run_dir / "output.md"
+        or output_path.exists()
+        or output_path.is_symlink()
+        or browser_temp.resolve() != run_dir / "browser-temp"
+        or browser_temp.is_symlink()
+        or any(record is None for record in records.values())
+        or browser_receipt.exists()
+        or browser_receipt.is_symlink()
+        or any(run_dir.glob("recovery-*"))
+    ):
+        return None
+    try:
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+        transport_bytes = transport_path.read_bytes()
+    except OSError:
+        return None
+    if (
+        not project_root.is_dir()
+        or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
+        or ownership_payload.get("source_thread_id") != source_thread_id
+        or ownership_payload.get("binding") != "bound"
+        or ownership_payload.get("project_root") != str(state.get("project_root") or "")
+        or ownership_payload.get("project_root_sha256")
+        != hashlib.sha256(str(project_root).casefold().encode("utf-8")).hexdigest()
+        or ownership_payload.get("run_id") != run_id
+        or ownership_payload.get("mission_sha256") != mission_sha256
+        or ownership_payload.get("slug") != locator
+    ):
+        return None
+
+    stdout_path, stdout_bytes = records["stdout"]  # type: ignore[misc]
+    stderr_path, stderr_bytes = records["stderr"]  # type: ignore[misc]
+    transcript_path, transcript_bytes = records["transcript"]  # type: ignore[misc]
+    if (
+        stdout_path.resolve() != run_dir / "stdout.log"
+        or stderr_path.resolve() != run_dir / "stderr.log"
+        or transcript_path.resolve() != run_dir / "transcript.md"
+        or any(path.is_symlink() for path in (stdout_path, stderr_path, transcript_path))
+        or stderr_bytes
+        or transcript_bytes != stdout_bytes
+    ):
+        return None
+    try:
+        stdout_text = stdout_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    expected_port = int(identity.get("expected_cdp_port") or 0)
+    refused = f"connect ECONNREFUSED 127.0.0.1:{expected_port}"
+    lines = stdout_text.splitlines()
+    if (
+        expected_port <= 0
+        or identity.get("receipt_path") is not None
+        or identity.get("receipt_sha256") is not None
+        or len(lines) != 13
+        or re.fullmatch(r".{1,4}\s+oracle 0\.18\.0\s+.{2,160}", lines[0]) is None
+        or lines[1:6]
+        != [
+            f"Session: {locator}",
+            "Mode: browser foreground",
+            "Models: 1",
+            "Detach: no",
+            f"Reattach: oracle session {locator}",
+        ]
+        or re.fullmatch(
+            r"Launching browser mode \(target=GPT-5\.6 Sol; requested=gpt-5\.6\) "
+            r"with ~[1-9][0-9]* tokens\.",
+            lines[6],
+        )
+        is None
+        or lines[7:11]
+        != [
+            "This run can take up to an hour (usually ~10 minutes).",
+            "[browser] Browser control: launch Chrome in hidden-window mode; may focus/control the browser UI.",
+            "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen while keeping the page rendered.",
+            "[browser] Browser guidance: For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
+        ]
+        or lines[11:] != [f"ERROR: {refused}", f"User error (browser-automation): {refused}"]
+        or _settlement_logs_have_conversation_url(state_path)
+    ):
+        return None
+
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    provider = state.get("provider_session") if isinstance(state.get("provider_session"), dict) else {}
+    session_root = Path(
+        os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+    ).resolve()
+    meta_path = session_root / locator / "meta.json"
+    if meta_path.is_symlink() or meta_path.parent.is_symlink():
+        return None
+    try:
+        meta_bytes = meta_path.read_bytes()
+        meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    option_browser = options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
+    error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+    models = meta.get("models") if isinstance(meta.get("models"), list) else []
+    try:
+        meta_cwd = Path(str(meta.get("cwd") or "")).resolve()
+        meta_output = Path(str(options.get("writeOutputPath") or "")).resolve()
+        state_profile = Path(str(profile.get("copy_profile") or "")).resolve(strict=True)
+        config_profile = Path(str(config.get("copyProfileSource") or "")).resolve()
+        option_profile = Path(str(option_browser.get("copyProfileSource") or "")).resolve()
+        provider_meta = Path(str(provider.get("oracle_meta_path") or "")).resolve()
+    except OSError:
+        return None
+    if len(models) != 1 or not isinstance(models[0], dict):
+        return None
+    model_log_ref = models[0].get("log") if isinstance(models[0].get("log"), dict) else {}
+    model_log = meta_path.parent / str(model_log_ref.get("path") or "")
+    try:
+        model_log_bytes = model_log.read_bytes()
+    except OSError:
+        return None
+    if (
+        meta.get("id") != locator
+        or meta.get("status") != "error"
+        or meta.get("model") != "gpt-5.6"
+        or meta.get("mode") != "browser"
+        or not str(meta.get("createdAt") or "").strip()
+        or not str(meta.get("completedAt") or "").strip()
+        or meta_cwd != project_root
+        or set(browser) != {"config"}
+        or config != option_browser
+        or config.get("debugPort") != expected_port
+        or config.get("copyProfileSource") in {None, ""}
+        or config_profile != state_profile
+        or option_profile != state_profile
+        or config.get("desiredModel") != "GPT-5.6 Sol"
+        or config.get("modelStrategy") != "select"
+        or config.get("thinkingTime") != "extra-high"
+        or profile.get("model") != "gpt-5.6"
+        or profile.get("model_strategy") != "select"
+        or profile.get("thinking_time") != "extra-high"
+        or options.get("model") != "gpt-5.6"
+        or options.get("slug") != locator
+        or options.get("mode") != "browser"
+        or not str(options.get("prompt") or "").strip()
+        or meta_output != output_path.resolve()
+        or models[0].get("model") != "gpt-5.6"
+        # Oracle 0.18.0 marks the enclosing session as error but leaves the
+        # model row running when Chrome dies before browser execution starts.
+        or models[0].get("status") != "running"
+        or model_log_ref.get("path") != "models/gpt-5.6.log"
+        or model_log.resolve() != meta_path.parent / "models" / "gpt-5.6.log"
+        or model_log.is_symlink()
+        or model_log_bytes
+        or meta.get("errorMessage") != refused
+        or error
+        != {
+            "category": "browser-automation",
+            "message": refused,
+            "details": {"stage": "execute-browser"},
+        }
+        or provider.get("status") != "error"
+        or provider.get("terminal_confirmed") is not False
+        or provider.get("binding") != "unconfirmed"
+        or provider.get("reason") != "browser-identity-receipt-unavailable"
+        or provider.get("observed_conversation_url") is not None
+        or provider_meta != meta_path.resolve()
+        or provider.get("oracle_meta_sha256") != hashlib.sha256(meta_bytes).hexdigest()
+        or CHATGPT_CONVERSATION_URL_RE.search(meta_bytes.decode("utf-8", errors="strict"))
+    ):
+        return None
+
+    if not browser_temp.is_dir():
+        return None
+    marker_path = browser_temp / ".owner.json"
+    if marker_path.is_symlink():
+        return None
+    try:
+        marker_bytes = marker_path.read_bytes()
+        marker = json.loads(marker_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    chrome_dirs = [
+        item
+        for item in browser_temp.iterdir()
+        if re.fullmatch(r"com\.google\.Chrome\.[A-Za-z0-9]{6}", item.name)
+    ]
+    if (
+        marker.get("schema") != "codex.chatgpt.oracle-browser-temp-owner/v1"
+        or "temp_alias" in marker
+        or int(marker.get("controller_pid") or 0) <= 0
+        or _process_may_be_alive(int(marker.get("controller_pid") or 0))
+        or len(chrome_dirs) != 1
+        or chrome_dirs[0].is_symlink()
+        or not chrome_dirs[0].is_dir()
+        or any(chrome_dirs[0].iterdir())
+    ):
+        return None
+    singleton_path_bytes = len(os.fsencode(str(chrome_dirs[0] / "SingletonSocket")))
+    if singleton_path_bytes < 108:
+        return None
+
+    return {
+        "settlement_eligibility": "oracle-linux-tmpdir-launch/v1",
+        "project_root": str(project_root),
+        "run_id": run_id,
+        "transport": "devspace",
+        "transport_mission_path": str(transport_path),
+        "transport_mission_sha256": mission_sha256,
+        "mission_sha256": mission_sha256,
+        "oracle_locator": locator,
+        "oracle_version": "0.18.0",
+        "source_thread_id": source_thread_id,
+        "ownership_receipt_sha256": ownership["sha256"],
+        "controller_pid": controller_pid,
+        "expected_cdp_port": expected_port,
+        "browser_temp": str(browser_temp),
+        "browser_temp_owner_sha256": hashlib.sha256(marker_bytes).hexdigest(),
+        "chrome_temp_name": chrome_dirs[0].name,
+        "singleton_socket_path_bytes": singleton_path_bytes,
+        "oracle_meta_path": str(meta_path),
+        "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        "model_log_sha256": hashlib.sha256(model_log_bytes).hexdigest(),
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+        "recovery_evidence": [],
+        "output_absent": True,
+        "conversation_url_absent": True,
+    }
+
+
 def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
     """Return exact evidence for supported user-adjudicable Oracle runs."""
     # A follow-up session necessarily stores its already-existing parent URL in
@@ -4915,6 +5420,9 @@ def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any]
         return followup
     if _settlement_logs_have_conversation_url(state_path):
         return None
+    linux_tmpdir_launch = _linux_tmpdir_launch_failure_no_submission_evidence(state_path)
+    if linux_tmpdir_launch is not None:
+        return linux_tmpdir_launch
     comprehensive = _comprehensive_no_submission_evidence(state_path)
     if comprehensive is not None:
         return comprehensive
@@ -5121,6 +5629,15 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             )
             if not historical_metadata_task_binding_upgrade:
                 return None
+    elif current.get("settlement_eligibility") == "oracle-linux-tmpdir-launch/v1":
+        required = (
+            "settlement_eligibility", "transport", "transport_mission_path",
+            "transport_mission_sha256", "oracle_version", "source_thread_id",
+            "ownership_receipt_sha256", "controller_pid", "expected_cdp_port",
+            "browser_temp", "browser_temp_owner_sha256", "chrome_temp_name",
+            "singleton_socket_path_bytes", "oracle_meta_path", "oracle_meta_sha256",
+            "model_log_sha256", "transcript_sha256",
+        )
     elif current.get("settlement_eligibility") == "oracle-web-multi-child/v1":
         required = (
             "settlement_eligibility", "parallel_parent_id", "source_mission_path",
@@ -5225,6 +5742,8 @@ def settle_user_confirmed_no_submission(
                 else "user-confirmed-no-submission-after-oracle-version-resolution-failure"
             )
             if evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
+            else "user-confirmed-no-submission-after-linux-tmpdir-launch-failure"
+            if evidence.get("settlement_eligibility") == "oracle-linux-tmpdir-launch/v1"
             else "user-confirmed-no-submission-after-model-selector-failure"
             if evidence.get("pre_submit_marker") in {
                 "oracle-model-selector-button-missing/v1",
@@ -6484,7 +7003,9 @@ def proven_pre_submit_profile_copy_ebusy(state_path: Path) -> dict[str, Any] | N
     if match is None:
         return None
     source = Path(match.group("source"))
-    destination = Path(match.group("destination"))
+    destination = Path(
+        _receipt_runtime_profile_path(state_path, match.group("destination"))
+    )
     expected_source = copy_profile / "Default" / "Network" / "Cookies"
     if (
         source.resolve() != expected_source.resolve()

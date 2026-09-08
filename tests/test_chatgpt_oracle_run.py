@@ -4790,7 +4790,13 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
         "recovered answer\nTASK_OUTCOME: EXECUTED\n"
     )
     assert recovered["result"]["status"] == "complete"
-    assert Path(captured_env["TEMP"]).name == "recovery-harvest-browser-temp"
+    recovery_temp = run_dir / "recovery-harvest-browser-temp"
+    if os.name == "nt":
+        assert Path(captured_env["TEMP"]) == recovery_temp.resolve()
+    else:
+        assert Path(captured_env["TEMP"]) == runner.STATE._posix_browser_temp_alias(
+            recovery_temp
+        )
     assert captured_env["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
     assert not Path(captured_env["TEMP"]).exists()
     transcript = Path(recovered["result"]["artifacts"]["transcript"]).read_text(encoding="utf-8")

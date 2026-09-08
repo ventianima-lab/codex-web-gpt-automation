@@ -411,6 +411,244 @@ def _oracle_metadata_rename_fixture(
     return state_path, meta_path
 
 
+def _linux_tmpdir_launch_failure_fixture(
+    tmp_path: Path,
+    state,
+    *,
+    source_thread_id: str = "019ff05c-bad3-7770-a902-6b1b62588a7d",
+) -> tuple[Path, Path]:
+    # Keep the canonical browser temp path above Linux's sockaddr_un limit once
+    # Chrome adds com.google.Chrome.*/SingletonSocket.
+    fixture_root = tmp_path / ("long-oracle-state-root-" + "x" * 48)
+    fixture_root.mkdir()
+    state_path, meta_path = _oracle_metadata_rename_fixture(
+        fixture_root,
+        state,
+        source_thread_id=source_thread_id,
+    )
+    payload = state.load_state(state_path)
+    run_dir = state_path.parent
+    locator = payload["oracle"]["session_locator"]
+    expected_port = payload["browser_identity"]["expected_cdp_port"]
+    refused = f"connect ECONNREFUSED 127.0.0.1:{expected_port}"
+    stdout_bytes = (
+        "🧿 oracle 0.18.0 — Fine, I'll write the test for the AI too.\n"
+        f"Session: {locator}\n"
+        "Mode: browser foreground\n"
+        "Models: 1\n"
+        "Detach: no\n"
+        f"Reattach: oracle session {locator}\n"
+        "Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6) "
+        "with ~12000 tokens.\n"
+        "This run can take up to an hour (usually ~10 minutes).\n"
+        "[browser] Browser control: launch Chrome in hidden-window mode; may "
+        "focus/control the browser UI.\n"
+        "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen "
+        "while keeping the page rendered.\n"
+        "[browser] Browser guidance: For the calmest shared-desktop flow, prefer "
+        "--browser-attach-running or --remote-chrome.\n"
+        f"ERROR: {refused}\n"
+        f"User error (browser-automation): {refused}\n"
+    ).encode("utf-8")
+    (run_dir / "stdout.log").write_bytes(stdout_bytes)
+    (run_dir / "stderr.log").write_bytes(b"")
+    (run_dir / "transcript.md").write_bytes(stdout_bytes)
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.update(
+        {
+            "status": "error",
+            "completedAt": "2026-09-08T05:26:30.242Z",
+            "errorMessage": refused,
+            "error": {
+                "category": "browser-automation",
+                "message": refused,
+                "details": {"stage": "execute-browser"},
+            },
+        }
+    )
+    meta["models"] = [
+        {
+            "model": "gpt-5.6",
+            "status": "running",
+            "log": {"path": "models/gpt-5.6.log"},
+        }
+    ]
+    meta["options"]["prompt"] = "@codex verify registered app read route"
+    model_log = meta_path.parent / "models" / "gpt-5.6.log"
+    model_log.parent.mkdir()
+    model_log.write_bytes(b"")
+    meta_bytes = json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8")
+    meta_path.write_bytes(meta_bytes)
+
+    payload["provider_session"].update(
+        {
+            "status": "error",
+            "completed_at": "2026-09-08T05:26:30.242Z",
+            "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        }
+    )
+    state.write_json_atomic(state_path, payload)
+    browser_temp = run_dir / "browser-temp"
+    state.write_json_atomic(
+        browser_temp / ".owner.json",
+        {
+            "schema": "codex.chatgpt.oracle-browser-temp-owner/v1",
+            # The Python wrapper creates this marker before it launches the
+            # separately recorded Oracle child process (10796).
+            "controller_pid": 10795,
+            "host_uptime_ms": 497576770,
+            "created_at": "2026-09-08T05:26:03.676479+00:00",
+        },
+    )
+    chrome_temp = browser_temp / "com.google.Chrome.F6TMXM"
+    chrome_temp.mkdir()
+    assert payload["browser_observer"]["oracle_process_pid"] != 10795
+    assert len(os.fsencode(str(chrome_temp / "SingletonSocket"))) >= 108
+    return state_path, meta_path
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux Chrome evidence")
+def test_linux_tmpdir_launch_failure_requires_user_confirmation_to_settle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    source_thread_id = "019ff05c-bad3-7770-a902-6b1b62588a7d"
+    state_path, meta_path = _linux_tmpdir_launch_failure_fixture(
+        tmp_path,
+        state,
+        source_thread_id=source_thread_id,
+    )
+    monkeypatch.setenv(
+        "ORACLE_SESSION_ROOT",
+        str(meta_path.parents[1]),
+    )
+    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    evidence = state._linux_tmpdir_launch_failure_no_submission_evidence(state_path)
+    assert evidence is not None
+    assert evidence["settlement_eligibility"] == "oracle-linux-tmpdir-launch/v1"
+    assert evidence["singleton_socket_path_bytes"] >= 108
+    assert state.proven_pre_submit_failure(state_path) is None
+
+    settled = state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user confirmed Chrome failed before any composer interaction",
+    )
+
+    assert settled["session_authority"] == "pre_submit"
+    assert settled["transport_status"] == "not_submitted_user_confirmed"
+    assert settled["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-linux-tmpdir-launch-failure"
+    )
+    assert state.proven_user_confirmed_no_submission(state_path) is not None
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux Chrome evidence")
+def test_linux_tmpdir_launch_settlement_survives_prior_boot_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    source_thread_id = "019ff05c-bad3-7770-a902-6b1b62588a7d"
+    state_path, meta_path = _linux_tmpdir_launch_failure_fixture(
+        tmp_path,
+        state,
+        source_thread_id=source_thread_id,
+    )
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(meta_path.parents[1]))
+    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+    state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user confirmed Chrome failed before any composer interaction",
+    )
+    browser_temp = state_path.parent / "browser-temp"
+
+    assert state.cleanup_owned_browser_temp(browser_temp) is False
+    cleaned = state.cleanup_prior_boot_browser_temps(
+        state_path.parent.parent,
+        current_uptime_ms=1,
+    )
+
+    assert cleaned == []
+    assert browser_temp.is_dir()
+    assert state.proven_user_confirmed_no_submission(state_path) is not None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong-refused-port",
+        "browser-runtime",
+        "owner-alias",
+        "nonempty-chrome-temp",
+        "nonempty-model-log",
+        "recovery-artifact",
+    ],
+)
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux Chrome evidence")
+def test_linux_tmpdir_launch_failure_rejects_contradictory_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    state = load_state()
+    state_path, meta_path = _linux_tmpdir_launch_failure_fixture(tmp_path, state)
+    run_dir = state_path.parent
+    monkeypatch.setenv(
+        "ORACLE_SESSION_ROOT",
+        str(meta_path.parents[1]),
+    )
+    monkeypatch.setenv("CODEX_THREAD_ID", "019ff05c-bad3-7770-a902-6b1b62588a7d")
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    if mutation == "wrong-refused-port":
+        payload = state.load_state(state_path)
+        expected_port = payload["browser_identity"]["expected_cdp_port"]
+        altered = (run_dir / "stdout.log").read_bytes().replace(
+            str(expected_port).encode("ascii"),
+            str(expected_port + 1).encode("ascii"),
+        )
+        (run_dir / "stdout.log").write_bytes(altered)
+        (run_dir / "transcript.md").write_bytes(altered)
+    elif mutation == "browser-runtime":
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["browser"]["runtime"] = {"promptSubmitted": False}
+        meta_bytes = json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8")
+        meta_path.write_bytes(meta_bytes)
+        payload = state.load_state(state_path)
+        payload["provider_session"]["oracle_meta_sha256"] = hashlib.sha256(
+            meta_bytes
+        ).hexdigest()
+        state.write_json_atomic(state_path, payload)
+    elif mutation == "owner-alias":
+        marker_path = run_dir / "browser-temp" / ".owner.json"
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        marker["temp_alias"] = "/tmp/Codex-1000/oracle-other/t"
+        state.write_json_atomic(marker_path, marker)
+    elif mutation == "nonempty-chrome-temp":
+        chrome_temp = next((run_dir / "browser-temp").glob("com.google.Chrome.*"))
+        (chrome_temp / "SingletonSocket").write_text("unexpected", encoding="utf-8")
+    elif mutation == "nonempty-model-log":
+        (meta_path.parent / "models" / "gpt-5.6.log").write_text(
+            "browser reached a later stage",
+            encoding="utf-8",
+        )
+    else:
+        (run_dir / "recovery-unexpected.log").write_text(
+            "recovery activity",
+            encoding="utf-8",
+        )
+
+    assert state._linux_tmpdir_launch_failure_no_submission_evidence(state_path) is None
+    assert state._user_confirmable_no_submission_evidence(state_path) is None
+
+
 def test_oracle_metadata_rename_prelaunch_failure_is_exactly_settleable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1319,12 +1557,15 @@ def test_run_owned_browser_temp_is_removed_and_prior_boot_orphans_are_swept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = load_state()
+    monkeypatch.setattr(state, "POSIX_BROWSER_TEMP_BASE", tmp_path / "short-temp")
     run_root = tmp_path / "runs"
     stale = run_root / "old-run" / "browser-temp"
     live = run_root / "live-run" / "browser-temp"
     monkeypatch.setattr(state, "host_uptime_ms", lambda **kwargs: 500)
-    state.browser_temp_environment(stale)
-    state.browser_temp_environment(live)
+    stale_env = state.browser_temp_environment(stale)
+    live_env = state.browser_temp_environment(live)
+    stale_alias = Path(stale_env["TMPDIR"])
+    live_alias = Path(live_env["TMPDIR"])
     stale_marker = json.loads((stale / ".owner.json").read_text(encoding="utf-8"))
     stale_marker["host_uptime_ms"] = 900
     state.write_json_atomic(stale / ".owner.json", stale_marker)
@@ -1333,9 +1574,175 @@ def test_run_owned_browser_temp_is_removed_and_prior_boot_orphans_are_swept(
 
     assert cleaned == [str(stale.resolve())]
     assert not stale.exists()
+    assert not os.path.lexists(stale_alias)
     assert live.exists()
+    if os.name == "nt":
+        assert live_alias == live.resolve()
+    else:
+        assert live_alias.is_symlink()
     assert state.cleanup_owned_browser_temp(live) is True
     assert not live.exists()
+    assert not os.path.lexists(live_alias)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX temp alias")
+def test_browser_temp_environment_uses_short_owned_posix_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.setattr(state, "POSIX_BROWSER_TEMP_BASE", tmp_path / "s")
+    browser_temp = (
+        tmp_path
+        / ("long-run-root-" + "a" * 40)
+        / ("long-project-key-" + "b" * 40)
+        / ("long-run-id-" + "c" * 40)
+        / "browser-temp"
+    )
+
+    environment = state.browser_temp_environment(
+        browser_temp,
+        platform_name="posix",
+        base_env={"PRESERVED": "yes"},
+    )
+
+    alias = Path(environment["TMPDIR"])
+    assert environment["TEMP"] == environment["TMP"] == environment["TMPDIR"]
+    assert environment["PRESERVED"] == "yes"
+    assert alias == state._posix_browser_temp_alias(browser_temp)
+    assert len(str(alias)) < len(str(browser_temp.resolve()))
+    assert alias.is_symlink()
+    assert alias.resolve(strict=True) == browser_temp.resolve()
+    assert alias.parent.stat().st_mode & 0o077 == 0
+    marker = json.loads((browser_temp / ".owner.json").read_text(encoding="utf-8"))
+    assert marker["temp_alias"] == str(alias)
+    assert marker["temp_alias_cleanup_started"] is False
+    (alias / "through-alias.txt").write_text("owned", encoding="utf-8")
+    assert (browser_temp / "through-alias.txt").read_text(encoding="utf-8") == "owned"
+
+    assert state.cleanup_owned_browser_temp(browser_temp) is True
+    assert not browser_temp.exists()
+    assert not os.path.lexists(alias)
+    assert not alias.parent.exists()
+
+
+def test_browser_temp_environment_keeps_canonical_path_on_windows(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    browser_temp = tmp_path / "run" / "browser-temp"
+
+    environment = state.browser_temp_environment(
+        browser_temp,
+        platform_name="nt",
+        base_env={},
+    )
+
+    assert environment["TEMP"] == str(browser_temp.resolve())
+    assert environment["TMP"] == str(browser_temp.resolve())
+    assert environment["TMPDIR"] == str(browser_temp.resolve())
+    marker = json.loads((browser_temp / ".owner.json").read_text(encoding="utf-8"))
+    assert marker["temp_alias"] is None
+    assert state.cleanup_owned_browser_temp(browser_temp) is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX temp alias")
+@pytest.mark.parametrize("collision_kind", ["directory", "wrong-target-symlink"])
+def test_browser_temp_alias_collision_fails_without_mutating_foreign_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    collision_kind: str,
+) -> None:
+    state = load_state()
+    monkeypatch.setattr(state, "POSIX_BROWSER_TEMP_BASE", tmp_path / "s")
+    browser_temp = tmp_path / "run" / "browser-temp"
+    alias = state._posix_browser_temp_alias(browser_temp)
+    alias.parent.parent.mkdir(mode=0o700, parents=True)
+    alias.parent.mkdir(mode=0o700)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    if collision_kind == "directory":
+        (alias.parent / "foreign.txt").write_text("keep", encoding="utf-8")
+    else:
+        alias.symlink_to(foreign, target_is_directory=True)
+
+    with pytest.raises(state.OracleStateError) as failure:
+        state.browser_temp_environment(browser_temp, platform_name="posix")
+
+    assert failure.value.code == "BROWSER_TEMP_ALIAS_CONFLICT"
+    assert alias.parent.exists()
+    if collision_kind == "directory":
+        assert (alias.parent / "foreign.txt").read_text(encoding="utf-8") == "keep"
+    else:
+        assert alias.is_symlink()
+        assert alias.resolve(strict=True) == foreign.resolve()
+    assert not (browser_temp / ".owner.json").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX temp alias")
+def test_browser_temp_cleanup_retries_after_canonical_remove_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.setattr(state, "POSIX_BROWSER_TEMP_BASE", tmp_path / "s")
+    browser_temp = tmp_path / "run" / "browser-temp"
+    environment = state.browser_temp_environment(browser_temp, platform_name="posix")
+    alias = Path(environment["TMPDIR"])
+    original_rmtree = state.shutil.rmtree
+    attempts = 0
+
+    def fail_once(path: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("transient canonical cleanup failure")
+        original_rmtree(path)
+
+    monkeypatch.setattr(state.shutil, "rmtree", fail_once)
+
+    assert state.cleanup_owned_browser_temp(browser_temp) is False
+    assert browser_temp.exists()
+    assert not os.path.lexists(alias)
+    marker = json.loads((browser_temp / ".owner.json").read_text(encoding="utf-8"))
+    assert marker["temp_alias_cleanup_started"] is True
+
+    assert state.cleanup_owned_browser_temp(browser_temp) is True
+    assert not browser_temp.exists()
+    assert attempts == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX temp alias")
+def test_browser_temp_environment_reclaims_exact_dead_owned_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.setattr(state, "POSIX_BROWSER_TEMP_BASE", tmp_path / "s")
+    browser_temp = tmp_path / "recovery-status-browser-temp"
+    first_environment = state.browser_temp_environment(
+        browser_temp,
+        platform_name="posix",
+    )
+    alias = Path(first_environment["TMPDIR"])
+    (alias / "interrupted-residue").write_text("stale", encoding="utf-8")
+    marker_path = browser_temp / ".owner.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["controller_pid"] = 999999
+    state.write_json_atomic(marker_path, marker)
+    monkeypatch.setattr(state, "_process_may_be_alive", lambda _pid: False)
+
+    second_environment = state.browser_temp_environment(
+        browser_temp,
+        platform_name="posix",
+    )
+
+    assert second_environment["TMPDIR"] == str(alias)
+    assert alias.is_symlink()
+    assert not (browser_temp / "interrupted-residue").exists()
+    replacement = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert replacement["controller_pid"] == os.getpid()
+    assert state.cleanup_owned_browser_temp(browser_temp) is True
 
 
 def test_unsafe_oracle_args_are_rejected(tmp_path: Path) -> None:
