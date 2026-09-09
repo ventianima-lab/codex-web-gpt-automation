@@ -79,16 +79,17 @@ def test_golden_path_smoke_passes_against_the_source_tree() -> None:
     assert result["submitted_question"] is False
     names = [item["check"] for item in result["checks"]]
     for required in (
-        "mode_contract_compiles",
-        "manifest_loads",
-        "devspace_transport_selected",
-        "prompt_is_one_line_with_app_mention",
+        "mission_contract_compiles",
+        "explicit_latest_pro_default",
+        "registered_app_selected",
+        "prompt_has_exact_app_and_mission",
         "dry_run_preview_ok",
         "argv_never_submits_files",
         "argv_hides_browser_window",
         "argv_selects_a_model",
-        "profile_copy_matches_host_capability",
-        "lifecycle_vocabulary_is_bounded",
+        "profile_supports_reconnect",
+        "temporary_chat_selected",
+        "no_archive_phase",
     ):
         assert required in names
 

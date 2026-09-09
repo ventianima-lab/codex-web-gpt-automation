@@ -950,7 +950,7 @@ def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path
         ({"attachments": None}, "PRO_ATTACHMENTS_REQUIRED"),
         ({"attachments": ["missing.txt"]}, "ATTACHMENT_0_ABSOLUTE_REQUIRED"),
         ({"model": "gpt-5.6"}, "PRO_MODEL_INVALID"),
-        ({"model_strategy": "current"}, "PRO_MODEL_STRATEGY_INVALID"),
+        ({"model_strategy": "ignore"}, "PRO_MODEL_STRATEGY_INVALID"),
         ({"thinking_time": "extended"}, "PRO_THINKING_TIME_INVALID"),
         ({"research": "deep"}, "PRO_RESEARCH_FORBIDDEN"),
         ({"app_name": "DevSpace"}, "PRO_APP_FORBIDDEN"),
@@ -1368,13 +1368,137 @@ def test_unsafe_oracle_args_are_rejected(tmp_path: Path) -> None:
         "--heartbeat=20",
         "--browser-hide-window",
     )
-    assert config.model_strategy == "select"
-    assert config.thinking_time == "heavy"
+    assert config.model == "gpt-5.6-sol"
+    assert config.model_strategy == "current"
+    assert config.thinking_time == "extra-high"
     with pytest.raises(state.OracleStateError) as exc:
         state.load_manifest(manifest(tmp_path, mission.resolve(), thinking_time="xhigh"))
     assert exc.value.code == "THINKING_TIME_INVALID"
     with pytest.raises(state.OracleStateError) as exc:
         state.load_manifest(manifest(tmp_path, mission.resolve(), oracle_command=["powershell", "-Command", "echo unsafe"]))
+    assert exc.value.code == "ORACLE_COMMAND_FORBIDDEN"
+
+
+@pytest.mark.parametrize("effort", ["light", "standard", "extended", "extra-high", "pro"])
+def test_current_latest_profile_accepts_every_explicit_slider_effort(
+    tmp_path: Path,
+    effort: str,
+) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+
+    config = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        model="gpt-5.6-sol",
+        model_strategy="current",
+        thinking_time=effort,
+    ))
+
+    assert config.model == "gpt-5.6-sol"
+    assert config.model_strategy == "current"
+    assert config.thinking_time == effort
+
+
+def test_picker_profile_receipt_requires_exact_requested_latest_effort_log(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    config = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        model="gpt-5.6-sol",
+        model_strategy="current",
+        thinking_time="extra-high",
+        browser_intent=state.current_browser_intent("extra-high"),
+    ))
+    layout = state.create_layout(config)
+    payload = state.state_payload(config, layout, status="running", resolved_version="0.18.0")
+    state.write_json_atomic(layout.state_path, payload)
+
+    layout.stdout_path.write_text(
+        "[browser] Thinking time: Latest / 6 Pro (Latest explicitly selected)\n",
+        encoding="utf-8",
+    )
+    assert state.capture_picker_profile_receipt(layout.state_path) is None
+    assert state.load_state(layout.state_path)["picker_profile"]["verified"] is False
+
+    layout.stdout_path.write_text(
+        "[browser] Thinking time: Latest / extra-high / 4 of 5 (Latest explicitly selected)\n",
+        encoding="utf-8",
+    )
+    assert state.capture_picker_profile_receipt(layout.state_path) is None
+    assert state.proven_picker_profile_receipt(layout.state_path) is None
+
+
+def test_current_pro_browser_intent_is_exact_and_selector_era_parse_stays_compatible(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    with pytest.raises(state.OracleStateError) as invalid:
+        state.load_manifest(manifest(
+            tmp_path,
+            mission.resolve(),
+            transport="pro-devspace-readonly",
+            model="gpt-5.6-sol",
+            model_strategy="current",
+            thinking_time="pro",
+            task_outcome_contract="v1",
+            browser_intent={"model_row": "Latest"},
+        ))
+    assert invalid.value.code == "BROWSER_INTENT_INVALID"
+
+    legacy = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        transport="pro-devspace-readonly",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="pro",
+        task_outcome_contract="v1",
+    ))
+    assert legacy.model_strategy == "select"
+
+
+def test_missing_oracle_command_stays_deterministic_and_explicit_command_is_preserved(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    implicit = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        oracle_command=None,
+    ), platform_name="nt")
+    explicit = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        oracle_command=["oracle"],
+    ))
+
+    assert implicit.oracle_command == (
+        "npx.cmd", "-y", "@steipete/oracle@0.18.0",
+    )
+    assert implicit.oracle_command_defaulted is True
+    assert explicit.oracle_command == ("oracle",)
+    assert explicit.oracle_command_defaulted is False
+
+
+def test_arbitrary_node_oracle_argv_is_not_accepted_as_persisted_runtime(tmp_path: Path) -> None:
+    state = load_state()
+    node = tmp_path / "node.exe"
+    entry = tmp_path / "package" / "dist" / "bin" / "oracle-cli.js"
+    entry.parent.mkdir(parents=True)
+    node.write_bytes(b"not-node")
+    entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+
+    with pytest.raises(state.OracleStateError) as exc:
+        state.validate_oracle_command([str(node), str(entry)])
+
     assert exc.value.code == "ORACLE_COMMAND_FORBIDDEN"
 
 

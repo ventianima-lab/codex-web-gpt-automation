@@ -1140,7 +1140,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.resume_merger:
             result = resume_recovered_merger(args.manifest, dry_run=args.dry_run)
         else:
-            result = run_multi(args.manifest, dry_run=args.dry_run)
+            raise MultiError("new multi-mode runs are retired; use chatgpt_oracle_run.py execute with one mission")
     except Exception as exc:
         result = {"ok": False, "error": {"code": "ORACLE_MULTI_FAILED", "message": str(exc)}}
     print(json.dumps(result, ensure_ascii=False, indent=2))

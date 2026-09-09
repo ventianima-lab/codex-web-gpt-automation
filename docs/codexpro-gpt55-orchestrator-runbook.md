@@ -1,3 +1,7 @@
+> Historical reference only. Do not use this execution mode for new work.
+> Follow [the shared automation policy](AUTOMATION_POLICY.md). Preserve existing
+> run records and their original recovery authority.
+
 # Legacy CodexPro orchestrator runbook
 
 This compatibility path is frozen. Do not use it for a new submission.

@@ -16,19 +16,6 @@ MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 HTML_LINK_RE = re.compile(r"(?:href|src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 CHANGELOG_VERSION_RE = re.compile(r"^##\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b", re.MULTILINE)
-REQUIRED_MODES = {
-    "direct",
-    "plan",
-    "review",
-    "edit",
-    "orchestrator",
-    "deep-research",
-    "Web Multi-GPT",
-    "Local Multi-GPT",
-    "comprehensive mode",
-    "ultra-economy",
-    "pro",
-}
 
 
 def _json(path: Path) -> dict[str, object]:
@@ -108,9 +95,8 @@ def check_repository(root: Path) -> list[str]:
             errors.append(f"{name} does not use the canonical banner")
         if "Codex Web GPT Automation" not in text:
             errors.append(f"{name} is missing the product name")
-        missing_modes = sorted(mode for mode in REQUIRED_MODES if mode not in text)
-        if missing_modes:
-            errors.append(f"{name} is missing modes: {missing_modes}")
+        if "docs/AUTOMATION_POLICY.md" not in text:
+            errors.append(f"{name} must link the shared automation policy")
 
     return errors
 

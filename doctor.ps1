@@ -56,6 +56,12 @@ if (!$Receipt) {
     $InstallReceiptSchema = [string]$Value.schema
     foreach ($Record in $Value.files) {
       $Path = Get-SafeChild $CodexRoot ([string]$Record.path)
+      if ($Record.action -eq 'retired') {
+        if (Test-Path -LiteralPath $Path) {
+          $Issues += @{code='RETIRED_FILE_PRESENT'; path=$Record.path}
+        }
+        continue
+      }
       if (!(Test-Path -LiteralPath $Path)) {
         $Issues += @{code='FILE_MISSING'; path=$Record.path}
         continue

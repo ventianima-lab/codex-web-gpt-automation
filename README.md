@@ -31,7 +31,7 @@
 
 설치 → 고정 HTTPS 주소 승인 → DevSpace exact root 등록 → 재부팅 유지 서비스 →
 endpoint 확인 → Oracle 전용 브라우저 로그인 → Local Network 권한 → ChatGPT 앱
-`codex` 수동 등록 → 일반 비-Pro 연결 검사 순서로 진행합니다. 기존 설치를
+`codex` 수동 등록 → 실제 프로젝트 읽기 확인으로 진행합니다. 기존 설치를
 업데이트할 때는 [최신 릴리스](https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest)의
 변경 기록을 먼저 확인하세요.
 
@@ -45,7 +45,7 @@ endpoint 확인 → Oracle 전용 브라우저 로그인 → Local Network 권�
 
 | Guarded | Recoverable | Web-first | Cross-platform |
 |---|---|---|---|
-| 정확한 프로젝트 루트와 미션 SHA를 실행 전에 고정합니다. | 끊긴 실행을 새로 보내지 않고 기존 Oracle 세션에서 회수합니다. | 계획·리서치·구현·검토를 웹 ChatGPT 세션에 분리해 맡깁니다. | 영수증 기반 설치·롤백을 Windows와 macOS에서 검증합니다. |
+| 정확한 프로젝트 루트와 미션 SHA를 실행 전에 고정합니다. | 끊긴 실행을 새로 보내지 않고 기존 Oracle 세션에서 회수합니다. | 필요한 작업을 하나의 미션으로 전달하고 모델·강도를 선택합니다. | 영수증 기반 설치·롤백을 Windows와 macOS에서 검증합니다. |
 
 Codex Web GPT Automation은 [Oracle](https://github.com/steipete/oracle)로
 로그인된 ChatGPT 브라우저 세션을 실행하고,
@@ -103,7 +103,7 @@ python3 doctor.py
 4. **상주 복구 검증** — 로그인 watchdog, local/public endpoint, root persistence 확인
 5. **Oracle 전용 브라우저 로그인 및 Local network 영속 허용** — 일상 Chrome과 분리; Windows helper는 정확한 `chatgpt.com` 정책을 우선하고 정책 ACL이 잠겨 있으면 Oracle seed 프로필에만 백업·영수증과 함께 저장하며, Oracle 격리 Chrome의 반복 복구 팝업도 일반 Chrome 설정을 건드리지 않고 억제
 6. **ChatGPT 앱 수동 등록** — 이름 `codex`, URL `https://고정주소/mcp`
-7. **일반 GPT 연결 검사** — Pro를 소비하지 않고 `@codex` read probe 수행
+7. **앱 연결 검사** — 선택한 모델로 `@codex`의 실제 파일 읽기를 한 번 확인
 
 ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등록**하는
 절차입니다. ChatGPT 설정·앱 목록·권한·삭제·선택 UI를 자동화하지 않습니다.
@@ -113,33 +113,26 @@ ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등�
 오래되면 `https://chatgpt.com/#settings/Plugins/`에서 기존 앱을 선택해
 `Reconnect`/`다시 연결`합니다. Business UI나 Refresh 부재만으로 앱을 다시 만들지
 않으며, 실제 앱 레코드가 없거나 손상된 경우에만 예외적으로 재생성합니다. 필요할 때만
-`post-register`를 정확히 한 번 실행한 후, 새 일반 비-Pro auditNonce canary로
-`open_workspace → read → read_chunk`를 확인합니다. 위젯 도메인 경고만으로
+`post-register`를 실행한 후, 선택한 모델로 승인된 파일을 실제로 읽고 결과를
+저장합니다. 고정 도구 순서나 감사 영수증은 요구하지 않습니다. 위젯 도메인 경고만으로
 `read_chunk`의 존재·부재를 판단하지 않습니다.
 
 새 프로젝트를 추가할 때는 기존 root를 보존한 전체 목록에 exact folder만
 추가합니다. 앱 설정은 매 작업마다 재검사하거나 자동 조작하지 않습니다.
 
-## 모드 선택
+## 하나의 실행 흐름
 
-| 원하는 결과 | 모드 | 실행 경로 |
-|---|---|---|
-| 질문·분석·작은 작업 | `direct` | Oracle + DevSpace |
-| 구현 전 설계 | `plan` | 읽기 전용 웹 세션 |
-| 코드·계획 독립 검토 | `review` | 읽기 전용 웹 세션 |
-| 범위가 정해진 수정 | `edit` | 웹 구현·테스트 |
-| 한 번에 끝내는 실행 | `orchestrator` | 단일 웹 세션 |
-| 공개 자료 심층 조사 | `deep-research` | Oracle Deep Research |
-| 독립 관점 병렬 탐색 | Web Multi-GPT | 여러 Oracle 세션 + merger |
-| PC 로컬 자문·반례 탐색 | Local Multi-GPT | 선택 설치, Luna Max, 읽기 전용 |
-| 계획부터 최종 gate까지 | comprehensive mode | 단계별 웹 워크플로 |
-| 로컬 비용 최소화 | `ultra-economy` | Luna Max 지휘 + 분리 웹 단계 |
-| Codex Ultra식 웹 분업 | `ultra-gpt` | 웹 planner/reviewer + 병렬 격리 worktree 구현 + merger/검증; 필요할 때 선택형 SHA 폐쇄 감사 |
-| 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 읽기 전용 DevSpace 설계·자문·검토 |
+[공통 자동화 규칙](docs/AUTOMATION_POLICY.md)을 앱과 모든 프로젝트가 함께
+따릅니다. 계획·검토·수정·리서치는 미션 내용으로 전달하며 별도 실행 모드를
+선택하지 않습니다. 호출할 모델과 추론 강도만 명시합니다.
 
-자세한 선택 기준은 [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md),
-[초절약모드](docs/ULTRA_ECONOMY_MODE.md),
-[울트라 GPT 모드와 선택형 폐쇄 감사](docs/ULTRA_GPT_MODE.md)를 참고하세요.
+기본 호환 경로는 **최신 → Pro (6 Pro)** 입니다. GPT-5.6을 숫자로 선택하지
+않습니다. 임시채팅 맞춤화를 자동으로 켜고 확인한 뒤 실행하고, 답변을
+로컬에 저장한 뒤 해당 실행이 소유한 탭만 닫습니다. 오류·타임아웃에는 같은
+탭을 복구하며 자동 재전송하거나 아카이브·복원을 수행하지 않습니다.
+
+프로젝트 고유 테스트와 안전 규칙은 유지하지만, 강제 도구 호출 순서·감사
+영수증 3개·반복 자격 검사·필수 완료 마커는 요구하지 않습니다.
 
 ## 실행 예시
 
@@ -147,11 +140,10 @@ ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등�
 
 ```powershell
 python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
-  --mode orchestrator `
   --project-root C:\project `
   --mission-path C:\project\mission.md `
-  --manifest-output C:\project\.ai-bridge\oracle.json `
-  --reasoning-level "Very High" `
+  --model latest `
+  --effort pro `
   --dry-run
 ```
 
@@ -159,34 +151,19 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 
 ## 안전 계약
 
-- 같은 Codex task와 프로젝트 조합에는 활성 또는 불확실한 Oracle 작업을 하나만 둡니다. 서로 다른 task는 같은 프로젝트에서도 별도 소유권으로 동시에 실행할 수 있으며 서로의 실행을 복구·수확·중단하지 않습니다.
-- 새 프로젝트의 첫 DevSpace 제출 전에 exact root 등록을 확인합니다.
-- 일반 웹 작업은 최고 지원 비-Pro 추론 강도가 기본입니다. Pro는 횟수 제한이 있으므로 사용자가 명시적으로 요청할 때만 선택하며 자동 승격하지 않습니다.
-- 명시적으로 선택한 신규 Pro는 exact root에서 설계·자문·검토만 수행하는 읽기 전용 DevSpace를 사용합니다. 파일 생성·수정·삭제나 명령 실행은 최고 지원 비-Pro `GPT-5.6` `extra-high` regular DevSpace 단계가 맡습니다. 저장된 legacy `pro-devspace` 쓰기 실행은 정확한 복구 때에만 원래 권한을 보존합니다.
-- 같은 읽기 전용 Pro 대화를 이어갈 때는 task-bound terminal parent에 내부 `followup` 라운드만 추가합니다. 신규 `pro-devspace-readonly` 부모의 기본 `archive=auto`는 `never`로 정규화되어 후속 입력창을 보존합니다. 명시적으로 보관했거나 과거에 자동 보관된 부모만 exact conversation URL의 제한된 복원을 사용합니다. 복원이 composer 전에 실패하면 harvest하지 않고 exact run을 보존한 채 사용자 미제출 확인 후 `settle-no-submission`으로 정산합니다. 각 라운드는 같은 conversation과 보관 전이를 다시 증명하고 mission/state/output/transcript hash 영수증을 남기며, raw Oracle follow-up 인자나 새 대화 fallback은 허용하지 않습니다. `--dry-run`은 어떤 예약도 쓰지 않으며, 실제 실행의 로컬 preflight 실패는 자녀 state/log와 hash-bound launch/result 영수증에 남습니다. 하나의 부모 대화에서는 round key가 달라도 controller가 직렬화됩니다. 과거 reservation-only 키는 삭제하거나 재생하지 않고 보존한 뒤, 이전 controller 종료를 확인하고 새 키를 사용합니다.
-- 제출 후 오류는 기존 실행 신원으로 정확히 복구하며, 저장된 slug와 대화
-  URL만 회수하고 자동 재제출하지 않습니다.
-- Oracle이 공식 `output.md`와 완료 메타를 이미 저장했지만 외부 state 전이만
-  끊긴 경우에는 소유 task의 해시 결속 `settle-saved-output`만 사용합니다.
-  이 정산이 예약 CDP 포트와 Oracle 완료 메타의 실제 포트 불일치를
-  검증하면 별도 v2 브라우저 신원 영수증을 자동 봉인해 동일 대화를
-  후속 질문의 부모로 유지합니다. 이미 v1.19.5에서 정산된 실행은 소유
-  task의 `seal-saved-output-browser-identity`로만 이 영수증을 추가합니다.
-  일반 recovery의 브라우저 신원 게이트를 완화하거나 state를 직접 고치지 않습니다.
-- 브라우저나 로컬 프로세스 종료만으로 웹 작업 실패를 판정하지 않습니다.
-- 비밀, Owner 암호, OAuth 토큰, 브라우저 프로필은 저장소에 넣지 않습니다.
-- `codexpro-*` 이름은 기존 영수증·스키마·복구 자산의 내부 호환 ID일 뿐,
-  새 작업용 제품명이나 실행 경로가 아닙니다.
-
-보안 문제는 공개 이슈 대신 [보안 정책](SECURITY.md)의 비공개 경로로 알려주세요.
+[공통 정책](docs/AUTOMATION_POLICY.md)에 따라 승인된 루트·인증·실행 소유권을
+보존합니다. 결과 저장 전에는 탭을 닫지 않으며, 오류에도 자동 재전송하지
+않습니다. 프로젝트의 고유 테스트와 안전 규칙은 유지합니다.
+비밀·Owner 암호·OAuth 토큰·브라우저 프로필은 저장소에 넣지 않습니다.
+보안 문제는 [비공개 보안 경로](SECURITY.md)로 알려주세요.
 
 ## 문서 지도
 
-| 시작 | 운영 | 고급 모드 | 프로젝트 |
-|---|---|---|---|
-| [최초 설치](docs/FIRST_INSTALL.md) | [DevSpace + Tailscale](docs/DEVSPACE_TAILSCALE_SETUP.md) | [초절약모드](docs/ULTRA_ECONOMY_MODE.md) · [울트라 GPT](docs/ULTRA_GPT_MODE.md) | [아키텍처 개요](docs/ARCHITECTURE.md) |
-| [문서 인덱스](docs/README.md) | [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md) | [Local Multi-GPT](docs/LOCAL_MULTI_GPT.md) | [변경 기록](docs/CHANGELOG.md) |
-| [기여 가이드](CONTRIBUTING.md) | [macOS Ultrawork](docs/MACOS_ULTRAWORK.md) | [레거시 경계](docs/FROZEN_LEGACY.md) | [버전 정책](docs/VERSIONING.md) |
+- [최초 설치](docs/FIRST_INSTALL.md)
+- [공통 자동화 규칙](docs/AUTOMATION_POLICY.md)
+- [DevSpace 설정](docs/DEVSPACE_TAILSCALE_SETUP.md)
+- [아키텍처](docs/ARCHITECTURE.md) · [문서 인덱스](docs/README.md)
+- [과거 실행 복구 참고](docs/FROZEN_LEGACY.md)
 
 ## 버전과 지원
 

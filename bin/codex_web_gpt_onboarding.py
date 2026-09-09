@@ -20,10 +20,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from chatgpt_chrome_local_network import browser_profile_loopback_allowed, policy_status
 import codex_local_multi_gpt_setup as LOCAL_MULTI_GPT_SETUP
+import codex_web_gpt_onboarding_ui as UI
 
 
 PRODUCT_NAME = "Codex Web GPT Automation"
@@ -61,42 +62,18 @@ USER_CONFIRMATION_STAGES = (
     "06_oracle_login",
     "07_chatgpt_app",
 )
-FINAL_GATE_TRANSPORTS = ("regular-non-pro-oracle",)
+APP_READ_RESULT_SCHEMA = "codex.chatgpt.registered-app-read-result/v1"
+FINAL_GATE_TRANSPORTS = ("registered-app",)
 FINAL_GATE_MIN_EVIDENCE = 16
-FINAL_GATE_RECEIPT_SCHEMA = "codex.devspace.tool-read-receipt/v1"
-FINAL_GATE_RECEIPT_KEYS = frozenset(
-    {
-        "schema",
-        "receiptId",
-        "auditNonce",
-        "auditStep",
-        "tool",
-        "workspaceId",
-        "canonicalRoot",
-        "requestedRelativePath",
-        "readChunkSha256",
-        "readChunkOffsetBytes",
-        "readChunkBytesReturned",
-        "readChunkTotalBytes",
-        "readChunkEof",
-        "conversationScopeId",
-        "timestamp",
-    }
-)
-FINAL_GATE_RECEIPT_TOOLS = ("open_workspace", "read", "read_chunk")
-FINAL_GATE_MAX_READ_CHUNK_BYTES = 24 * 1024
-FINAL_GATE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
-FINAL_GATE_RECEIPT_ID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
-FINAL_GATE_MANIFEST_SCHEMA = "codex.chatgpt.oracle-run/v1"
-FINAL_GATE_MANIFEST_RELATIVE = (
-    Path("state") / "codex-web-gpt-automation" / "onboarding" / "final-gate-manifests"
-)
-SOURCE_THREAD_ID_RE = re.compile(
-    r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE
-)
+BOOTSTRAP_RECOVERY_SCHEMA = "codex.devspace.bootstrap-recovery/v1"
+BOOTSTRAP_RECOVERY_RELATIVE = Path("state") / "devspace-service" / "bootstrap-recovery.json"
+BOOTSTRAP_RECOVERY_MAX_AGE = dt.timedelta(minutes=5)
+BOOTSTRAP_RECOVERY_CLOCK_SKEW = dt.timedelta(minutes=1)
+WINDOWS_BOOTSTRAP_RUN_NAME = "Codex Web GPT DevSpace Bootstrap"
+WINDOWS_BOOTSTRAP_WATCH_SECONDS = 30
+WATCHDOG_IDENTITY_TIMEOUT_SECONDS = 10
+FINAL_GATE_MIN_PROJECT_EXCERPT = 16
+FINAL_GATE_MAX_PROJECT_READ_BYTES = 256 * 1024
 COMPLETION_STATES_BY_LANGUAGE = {
     "ko": {
         "installed": "로컬 설치·연결 설정 진행 중",
@@ -184,10 +161,17 @@ def public_origin(registration_url: str) -> str:
 
 
 def _quoted_command(argv: Sequence[str]) -> str:
-    def quote(value: str) -> str:
-        return f'"{value}"' if any(ch.isspace() for ch in value) else value
+    """Render one copy/paste-safe PowerShell command for Windows PS 5 and 7."""
 
-    return " ".join(quote(value) for value in argv)
+    def quote(value: str) -> str:
+        if re.fullmatch(r"[A-Za-z0-9_./:\\-]+", value):
+            return value
+        return "'" + value.replace("'", "''") + "'"
+
+    rendered = [quote(str(value)) for value in argv]
+    if rendered and rendered[0].startswith("'"):
+        rendered[0] = "& " + rendered[0]
+    return " ".join(rendered)
 
 
 def onboarding_plan(
@@ -324,7 +308,7 @@ def onboarding_plan(
         {
             "id": "08_final_gate",
             "owner": "agent",
-            "complete_when": "status is ready and first exact project-root qualification passes before submission",
+            "complete_when": "one authenticated registered-app read of the exact root is durably captured",
             "command": f"{python_executable} onboard.py status --provider {provider} --public-url {registration_url} "
             + " ".join(_quoted_command(["--root", str(root)]) for root in normalized_roots)
             + " "
@@ -415,6 +399,11 @@ def readiness_status(
     bootstrapped = _root_identities(bootstrap.get("roots") or [])
     exact_roots_configured = desired == configured
     bootstrap_matches = configured == bootstrapped
+    bootstrap_recovery_verified = stateful_bootstrap_recovery_verified(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        registration_url=plan["registration_url"],
+    ) if provider == "tailscale" else True
     local = http_probe(f"http://127.0.0.1:{DEFAULT_LOCAL_PORT}/mcp")
     public = http_probe(plan["registration_url"])
     browser_profile = (oracle_profile_dir or (Path.home() / ".oracle" / "browser-profile")).resolve()
@@ -426,6 +415,7 @@ def readiness_status(
     checks = {
         "exact_roots_configured": exact_roots_configured,
         "bootstrap_matches_config": bootstrap_matches,
+        "bootstrap_recovery_verified": bootstrap_recovery_verified,
         "app_name_matches_expected": workspace.get("app_name") == plan["app_name"],
         "local_mcp_oauth_challenge": bool(local.get("ok")),
         "public_mcp_oauth_challenge": bool(public.get("ok")),
@@ -710,6 +700,145 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _expected_windows_watchdog_command(codex_home: Path) -> str:
+    root = codex_home.expanduser().resolve()
+    powershell = (
+        Path(os.environ.get("SystemRoot") or r"C:\Windows")
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    script = root / "scripts" / "start_devspace_bootstrap.ps1"
+    return (
+        f'"{powershell}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass '
+        f'-File "{script}" -Mode Watch -WatchIntervalSeconds {WINDOWS_BOOTSTRAP_WATCH_SECONDS}'
+    )
+
+
+def _windows_watchdog_identity_verified(
+    *,
+    codex_home: Path,
+    watchdog_pid: int,
+    runner: Callable[..., Any] = subprocess.run,
+    platform_name: str | None = None,
+) -> bool:
+    """Read-only proof that the exact registered Watch command is still running."""
+    platform = os.name if platform_name is None else platform_name
+    if platform != "nt" or watchdog_pid <= 0:
+        return False
+    root = codex_home.expanduser().resolve()
+    script = (root / "scripts" / "start_devspace_bootstrap.ps1").resolve()
+    powershell = (
+        Path(os.environ.get("SystemRoot") or r"C:\Windows")
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    ).resolve()
+    if not script.is_file() or not powershell.is_file():
+        return False
+    environment = dict(os.environ)
+    environment["CODEX_BOOTSTRAP_WATCHDOG_PID"] = str(watchdog_pid)
+    script_text = (
+        "$ErrorActionPreference='Stop';"
+        "$name='Codex Web GPT DevSpace Bootstrap';"
+        "$registered=(Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' "
+        "-Name $name -ErrorAction Stop).$name;"
+        "$pidValue=[int][Environment]::GetEnvironmentVariable('CODEX_BOOTSTRAP_WATCHDOG_PID');"
+        "$process=Get-CimInstance Win32_Process -Filter (\"ProcessId = $pidValue\") -ErrorAction Stop;"
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+        "[pscustomobject]@{registered_command=[string]$registered;process_id=[int]$process.ProcessId;"
+        "executable_path=[string]$process.ExecutablePath;command_line=[string]$process.CommandLine}|ConvertTo-Json -Compress"
+    )
+    kwargs: dict[str, Any] = {}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        completed = runner(
+            [str(powershell), "-NoProfile", "-Command", script_text],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=WATCHDOG_IDENTITY_TIMEOUT_SECONDS,
+            check=False,
+            env=environment,
+            **kwargs,
+        )
+        if int(getattr(completed, "returncode", 1)) != 0:
+            return False
+        payload = json.loads(str(getattr(completed, "stdout", "") or ""))
+    except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError, ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("process_id") != watchdog_pid:
+        return False
+    if str(payload.get("registered_command") or "") != _expected_windows_watchdog_command(root):
+        return False
+    executable = str(payload.get("executable_path") or "").strip()
+    command_line = str(payload.get("command_line") or "").strip()
+    if not executable or not command_line:
+        return False
+    if os.path.normcase(os.path.normpath(executable)) != os.path.normcase(os.path.normpath(str(powershell))):
+        return False
+    compact = re.sub(r"\s+", " ", command_line).casefold()
+    return all(
+        token.casefold() in compact
+        for token in (
+            str(script),
+            "-mode watch",
+            f"-watchintervalseconds {WINDOWS_BOOTSTRAP_WATCH_SECONDS}",
+        )
+    )
+
+
+def stateful_bootstrap_recovery_verified(
+    *,
+    codex_home: Path,
+    devspace_home: Path,
+    registration_url: str,
+    watchdog_identity_probe: Callable[..., bool] | None = None,
+) -> bool:
+    """Verify a recent recovery from the exact registered, live Watch process."""
+    receipt = _load_json(codex_home / BOOTSTRAP_RECOVERY_RELATIVE)
+    if not receipt or receipt.get("schema") != BOOTSTRAP_RECOVERY_SCHEMA or receipt.get("healthy") is not True:
+        return False
+    if receipt.get("mode") != "Watch" or receipt.get("watch_interval_seconds") != WINDOWS_BOOTSTRAP_WATCH_SECONDS:
+        return False
+    config_path = devspace_home / "config.json"
+    try:
+        config_text = config_path.read_bytes().decode("utf-8-sig")
+    except (OSError, UnicodeError):
+        return False
+    expected_hash = hashlib.sha256(config_text.encode("utf-8")).hexdigest()
+    if str(receipt.get("config_sha256") or "").casefold() != expected_hash:
+        return False
+    expected_hostname = (urllib.parse.urlsplit(registration_url).hostname or "").casefold().rstrip(".")
+    observed_hostname = str(receipt.get("hostname") or "").strip().casefold().rstrip(".")
+    if not expected_hostname or observed_hostname != expected_hostname:
+        return False
+    watchdog_pid = receipt.get("watchdog_pid")
+    if isinstance(watchdog_pid, bool) or not isinstance(watchdog_pid, int) or watchdog_pid <= 0:
+        return False
+    if not isinstance(receipt.get("reason"), str) or not receipt["reason"].strip():
+        return False
+    try:
+        observed_at = dt.datetime.fromisoformat(str(receipt.get("observed_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if observed_at.tzinfo is None:
+        return False
+    age = dt.datetime.now(dt.timezone.utc) - observed_at.astimezone(dt.timezone.utc)
+    if not (-BOOTSTRAP_RECOVERY_CLOCK_SKEW <= age <= BOOTSTRAP_RECOVERY_MAX_AGE):
+        return False
+    probe = watchdog_identity_probe or _windows_watchdog_identity_verified
+    try:
+        return bool(probe(codex_home=codex_home, watchdog_pid=watchdog_pid))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False
+
+
 def _inside(parent: Path, child: Path) -> bool:
     try:
         child.relative_to(parent)
@@ -718,331 +847,191 @@ def _inside(parent: Path, child: Path) -> bool:
     return True
 
 
-def _conversation_url(run_state: dict[str, Any]) -> str:
-    oracle = run_state.get("oracle") if isinstance(run_state.get("oracle"), dict) else {}
-    browser = run_state.get("browser") if isinstance(run_state.get("browser"), dict) else {}
-    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
-    harvest = browser.get("harvest") if isinstance(browser.get("harvest"), dict) else {}
-    for value in (
-        oracle.get("conversation_url"),
-        runtime.get("tabUrl"),
-        harvest.get("url"),
-    ):
-        candidate = str(value or "").strip()
-        parsed = urllib.parse.urlsplit(candidate)
-        if parsed.scheme == "https" and parsed.hostname == "chatgpt.com" and parsed.path.startswith("/c/"):
-            return candidate
-    return ""
+def _valid_actual_model(value: object) -> str:
+    model = str(value or "").strip()
+    if not model or len(model) > 128 or any(ord(character) < 32 for character in model):
+        raise OnboardingError("FINAL_GATE_ACTUAL_MODEL_INVALID")
+    return model
 
 
-def _receipt_timestamp(value: object) -> dt.datetime:
-    if not isinstance(value, str) or not value.strip():
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_TIMESTAMP_INVALID")
-    try:
-        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_TIMESTAMP_INVALID") from exc
-    if parsed.tzinfo is None:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_TIMESTAMP_INVALID")
-    return parsed
-
-
-def _receipt_directory(devspace_home: Path) -> Path:
-    return devspace_home.expanduser().resolve() / "state" / "tool-read-receipts"
-
-
-def _strict_receipt_json(payload: str) -> dict[str, Any]:
-    def no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate JSON key")
-            result[key] = value
-        return result
-
-    decoded = json.loads(payload, object_pairs_hook=no_duplicate_keys)
-    if not isinstance(decoded, dict):
-        raise ValueError("receipt JSON must be an object")
-    return decoded
-
-
-def _tool_read_receipts(
+def _execution_capture_binding(
     *,
-    devspace_home: Path,
-    audit_nonce: str,
-    expected_root: Path,
-    mission_path: Path,
-    mission_sha256: str,
-) -> dict[str, Any]:
-    receipt_directory = _receipt_directory(devspace_home)
-    if receipt_directory.is_symlink() or not receipt_directory.is_dir():
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_DIRECTORY_INVALID")
-    matching: list[dict[str, Any]] = []
-    try:
-        entries = sorted(receipt_directory.iterdir(), key=lambda item: item.name)
-    except OSError as exc:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_DIRECTORY_INVALID") from exc
-    for path in entries:
-        if path.is_symlink():
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SYMLINK_FORBIDDEN")
-        if path.suffix.casefold() != ".json":
-            continue
-        if not path.is_file():
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_NOT_REGULAR")
-        try:
-            payload = _strict_receipt_json(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_INVALID") from exc
-        if set(payload) != FINAL_GATE_RECEIPT_KEYS:
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_KEYSET_INVALID")
-        if payload.get("schema") != FINAL_GATE_RECEIPT_SCHEMA:
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SCHEMA_INVALID")
-        if not isinstance(payload.get("receiptId"), str) or not FINAL_GATE_RECEIPT_ID_RE.fullmatch(payload["receiptId"]):
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ID_INVALID")
-        if not isinstance(payload.get("auditNonce"), str) or not isinstance(payload.get("tool"), str):
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_INVALID")
-        if (
-            not isinstance(payload.get("auditStep"), int)
-            or isinstance(payload.get("auditStep"), bool)
-            or payload["auditStep"] not in (1, 2, 3)
-        ):
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_STEP_INVALID")
-        if not isinstance(payload.get("workspaceId"), str) or not payload["workspaceId"].strip():
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_WORKSPACE_INVALID")
-        if not isinstance(payload.get("canonicalRoot"), str) or not payload["canonicalRoot"].strip():
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ROOT_INVALID")
-        if payload.get("requestedRelativePath") is not None and not isinstance(payload.get("requestedRelativePath"), str):
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_PATH_INVALID")
-        if payload.get("readChunkSha256") is not None and (
-            not isinstance(payload.get("readChunkSha256"), str)
-            or not FINAL_GATE_SHA256_RE.fullmatch(payload["readChunkSha256"])
-        ):
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SHA_INVALID")
-        if not isinstance(payload.get("conversationScopeId"), str) or not payload["conversationScopeId"].strip():
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SCOPE_INVALID")
-        parsed_timestamp = _receipt_timestamp(payload.get("timestamp"))
-        if payload["auditNonce"] == audit_nonce:
-            matching.append(
-                {
-                    "path": path,
-                    "sha256": _sha256_file(path),
-                    "payload": payload,
-                    "timestamp": parsed_timestamp,
-                }
-            )
-    if len(matching) != len(FINAL_GATE_RECEIPT_TOOLS):
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE")
-    by_tool: dict[str, dict[str, Any]] = {}
-    for item in matching:
-        tool = item["payload"]["tool"]
-        if tool not in FINAL_GATE_RECEIPT_TOOLS or tool in by_tool:
-            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE")
-        by_tool[tool] = item
-    if set(by_tool) != set(FINAL_GATE_RECEIPT_TOOLS):
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE")
-    ordered = [by_tool[tool] for tool in FINAL_GATE_RECEIPT_TOOLS]
-    if [item["payload"]["auditStep"] for item in ordered] != [1, 2, 3]:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ORDER_INVALID")
-    workspace_ids = {item["payload"]["workspaceId"] for item in ordered}
-    canonical_roots = {item["payload"]["canonicalRoot"] for item in ordered}
-    scopes = {item["payload"]["conversationScopeId"] for item in ordered}
-    expected_canonical_root = str(expected_root.expanduser().resolve())
-    if len(workspace_ids) != 1:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_WORKSPACE_MISMATCH")
-    if len(canonical_roots) != 1 or os.path.normcase(next(iter(canonical_roots))) != os.path.normcase(expected_canonical_root):
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ROOT_MISMATCH")
-    if len(scopes) != 1:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SCOPE_MISMATCH")
-    # `openai/session` is an opaque per-conversation scope (not the public
-    # ChatGPT /c/<id>). DevSpace enforces that auditNonce open_workspace is the
-    # first workspace/process/mutation action in that scope and issues the exact
-    # 1→2→3 sequence. The server-generated receipt IDs are returned only through
-    # those tool responses; the terminal Oracle conversation must echo all three
-    # below, which challenge-binds the opaque scope to the public conversation.
-    mission_relative = mission_path.relative_to(expected_root).as_posix()
-    if ordered[0]["payload"]["requestedRelativePath"] is not None:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_PATH_MISMATCH")
-    if any(item["payload"]["requestedRelativePath"] != mission_relative for item in ordered[1:]):
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_PATH_MISMATCH")
-    if ordered[0]["payload"]["readChunkSha256"] is not None or ordered[1]["payload"]["readChunkSha256"] is not None:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SHA_MISMATCH")
-    chunk_fields = (
-        "readChunkOffsetBytes",
-        "readChunkBytesReturned",
-        "readChunkTotalBytes",
-        "readChunkEof",
-    )
-    if any(item["payload"][field] is not None for item in ordered[:2] for field in chunk_fields):
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_CHUNK_METADATA_INVALID")
-    chunk = ordered[2]["payload"]
-    numeric_chunk_fields = (
-        "readChunkOffsetBytes",
-        "readChunkBytesReturned",
-        "readChunkTotalBytes",
-    )
-    if any(
-        not isinstance(chunk[field], int) or isinstance(chunk[field], bool) or chunk[field] < 0
-        for field in numeric_chunk_fields
-    ) or not isinstance(chunk["readChunkEof"], bool):
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_CHUNK_METADATA_INVALID")
-    if (
-        chunk["readChunkOffsetBytes"] != 0
-        or chunk["readChunkEof"] is not True
-        or chunk["readChunkBytesReturned"] != chunk["readChunkTotalBytes"]
-    ):
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_CHUNK_METADATA_INVALID")
-    if str(ordered[2]["payload"]["readChunkSha256"]).casefold() != mission_sha256.casefold():
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SHA_MISMATCH")
-    return {
-        "workspace_id": next(iter(workspace_ids)),
-        "conversation_scope_id": next(iter(scopes)),
-        "tool_read_receipts": [
-            {
-                "tool": item["payload"]["tool"],
-                "receipt_id": item["payload"]["receiptId"],
-                "path": str(item["path"]),
-                "sha256": item["sha256"],
-            }
-            for item in ordered
-        ],
-    }
-
-
-def _oracle_final_gate_binding(
-    *,
-    codex_home: Path,
-    devspace_home: Path,
     run_dir: Path,
-    expected_root: str,
+    expected_root: Path,
     expected_app_name: str,
-    listing: Sequence[str],
-    require_current_task: bool = False,
 ) -> dict[str, Any]:
+    """Validate the small executor's durable capture once, at setup time."""
     try:
         directory = run_dir.expanduser().resolve(strict=True)
-        state_root = (codex_home / "state").resolve(strict=True)
+        state_path = (directory / "state.json").resolve(strict=True)
     except OSError as exc:
-        raise OnboardingError("FINAL_GATE_ORACLE_RUN_UNREADABLE") from exc
-    if not directory.is_dir() or not _inside(state_root, directory):
-        raise OnboardingError("FINAL_GATE_ORACLE_RUN_OUTSIDE_CODEX_STATE")
-    state_path = directory / "state.json"
+        raise OnboardingError("FINAL_GATE_EXECUTION_STATE_UNREADABLE") from exc
+    if not directory.is_dir() or state_path.parent != directory or state_path.is_symlink():
+        raise OnboardingError("FINAL_GATE_EXECUTION_STATE_INVALID")
     try:
-        run_state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+        execution = json.loads(state_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise OnboardingError("FINAL_GATE_ORACLE_STATE_INVALID") from exc
-    if not isinstance(run_state, dict) or run_state.get("schema") != "codex.chatgpt.oracle-run-state/v1":
-        raise OnboardingError("FINAL_GATE_ORACLE_STATE_INVALID")
-    exact_root = str(Path(str(run_state.get("project_root") or "")).expanduser().resolve())
-    if os.path.normcase(exact_root) != os.path.normcase(str(Path(expected_root).expanduser().resolve())):
-        raise OnboardingError("FINAL_GATE_ORACLE_ROOT_MISMATCH")
-    profile = run_state.get("profile") if isinstance(run_state.get("profile"), dict) else {}
-    terminal = (
-        run_state.get("transport") == "devspace"
-        and run_state.get("app_name") == expected_app_name
-        and profile.get("model") == "gpt-5.6"
-        and profile.get("thinking_time") == "extra-high"
-        and run_state.get("status") == "complete"
-        and run_state.get("transport_status") == "complete"
-        and run_state.get("session_authority") == "terminal"
-        and run_state.get("terminal_harvested") is True
-        and run_state.get("task_outcome") == "executed"
-    )
-    if not terminal:
-        raise OnboardingError("FINAL_GATE_REGULAR_NON_PRO_ORACLE_NOT_TERMINAL_EXECUTED")
-    registered_app_final_gate = run_state.get("registered_app_final_gate") is True
-    ownership = run_state.get("ownership") if isinstance(run_state.get("ownership"), dict) else {}
-    source_thread_id = str(ownership.get("source_thread_id") or "").strip()
-    if registered_app_final_gate and SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
-        raise OnboardingError("FINAL_GATE_SOURCE_TASK_BINDING_MISSING")
-    if registered_app_final_gate and require_current_task:
-        evaluated_from_thread = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
-        if SOURCE_THREAD_ID_RE.fullmatch(evaluated_from_thread) is None:
-            raise OnboardingError("FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED")
-        if source_thread_id.casefold() != evaluated_from_thread.casefold():
-            raise OnboardingError("FINAL_GATE_FOREIGN_TASK_RUN")
-    artifacts = run_state.get("artifacts") if isinstance(run_state.get("artifacts"), dict) else {}
+        raise OnboardingError("FINAL_GATE_EXECUTION_STATE_INVALID") from exc
+    if not isinstance(execution, dict) or execution.get("schema") != "codex.chatgpt.oracle-execution-state/v1":
+        raise OnboardingError("FINAL_GATE_EXECUTION_STATE_INVALID")
+    observed_root = Path(str(execution.get("project_root") or execution.get("root") or "")).expanduser().resolve()
+    if os.path.normcase(str(observed_root)) != os.path.normcase(str(expected_root)):
+        raise OnboardingError("FINAL_GATE_EXECUTION_ROOT_MISMATCH")
+    selection = execution.get("selection") if isinstance(execution.get("selection"), dict) else {}
+    if str(selection.get("app_name") or "").strip() != expected_app_name:
+        raise OnboardingError("FINAL_GATE_EXECUTION_APP_MISMATCH")
+    mission_entry = execution.get("mission") if isinstance(execution.get("mission"), dict) else {}
     try:
-        output_path = Path(str(artifacts.get("output") or "")).expanduser().resolve(strict=True)
+        mission_candidate = Path(str(mission_entry.get("path") or "")).expanduser()
+        if mission_candidate.is_symlink():
+            raise OSError("mission must not be a symlink")
+        mission_path = mission_candidate.resolve(strict=True)
     except OSError as exc:
-        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_MISSING") from exc
-    if not output_path.is_file() or not _inside(directory, output_path):
-        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_INVALID")
-    output_bytes = output_path.read_bytes()
-    if not output_bytes.strip():
-        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_INVALID")
-    try:
-        output = output_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_INVALID") from exc
-    output_sha256 = hashlib.sha256(output_bytes).hexdigest()
-    if run_state.get("artifact_sha256") != output_sha256:
-        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_HASH_MISMATCH")
-    nonempty = [line.strip() for line in output.splitlines() if line.strip()]
-    if not nonempty or nonempty[-1] != "TASK_OUTCOME: EXECUTED":
-        raise OnboardingError("FINAL_GATE_ORACLE_OUTCOME_MARKER_INVALID")
-    folded = output.casefold()
-    entries = [str(item).strip() for item in listing if str(item).strip()]
-    if not entries or any(entry.casefold() not in folded for entry in entries):
-        raise OnboardingError("FINAL_GATE_LISTING_NOT_BOUND_TO_ORACLE_OUTPUT")
-    if expected_app_name.casefold() not in folded:
-        raise OnboardingError("FINAL_GATE_CONNECTOR_IDENTITY_MISSING")
-    mission = run_state.get("mission") if isinstance(run_state.get("mission"), dict) else {}
-    try:
-        mission_path = Path(str(mission.get("path") or "")).expanduser().resolve(strict=True)
-    except OSError as exc:
-        raise OnboardingError("FINAL_GATE_READ_PROOF_MISSION_UNREADABLE") from exc
-    root_path = Path(expected_root).expanduser().resolve()
-    if not mission_path.is_file() or not _inside(root_path, mission_path):
-        raise OnboardingError("FINAL_GATE_READ_PROOF_MISSION_INVALID")
-    mission_sha256 = _sha256_file(mission_path)
-    if mission.get("sha256") != mission_sha256:
-        raise OnboardingError("FINAL_GATE_READ_PROOF_MISSION_HASH_MISMATCH")
-    run_id = str(run_state.get("run_id") or "").strip()
-    if not run_id:
-        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_AUDIT_NONCE_MISSING")
-    conversation_url = _conversation_url(run_state)
-    if not conversation_url:
-        raise OnboardingError("FINAL_GATE_CONVERSATION_BINDING_MISSING")
-    parsed_conversation = urllib.parse.urlsplit(conversation_url)
-    match = re.fullmatch(r"/c/([^/]+)", parsed_conversation.path)
-    if not match:
-        raise OnboardingError("FINAL_GATE_CONVERSATION_BINDING_MISSING")
-    receipt_binding = _tool_read_receipts(
-        devspace_home=devspace_home,
-        audit_nonce=run_id,
-        expected_root=root_path,
-        mission_path=mission_path,
-        mission_sha256=mission_sha256,
+        raise OnboardingError("FINAL_GATE_EXECUTION_MISSION_INVALID") from exc
+    if not mission_path.is_file() or not _inside(expected_root, mission_path):
+        raise OnboardingError("FINAL_GATE_EXECUTION_MISSION_INVALID")
+    expected_mission_sha256 = str(mission_entry.get("sha256") or "").casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_mission_sha256) or _sha256_file(mission_path) != expected_mission_sha256:
+        raise OnboardingError("FINAL_GATE_EXECUTION_MISSION_INVALID")
+    capture = execution.get("capture") if isinstance(execution.get("capture"), dict) else {}
+    capture_durable = (
+        execution.get("capture") == "durable"
+        or capture.get("durable") is True
+        or capture.get("status") == "durable"
+        or execution.get("capture_durable") is True
     )
-    receipt_ids = [item["receipt_id"] for item in receipt_binding["tool_read_receipts"]]
-    if any(receipt_id not in output for receipt_id in receipt_ids):
-        raise OnboardingError("FINAL_GATE_CONVERSATION_RECEIPT_CHALLENGE_MISSING")
-    oracle = run_state.get("oracle") if isinstance(run_state.get("oracle"), dict) else {}
+    if execution.get("status") != "captured" or not capture_durable:
+        raise OnboardingError("FINAL_GATE_EXECUTION_NOT_DURABLY_CAPTURED")
+    # A captured state is written only after the registered-app run completed;
+    # its exact app identity is the lean authentication evidence.
+    auth_verified = True
+    model_check = execution.get("model_check") if isinstance(execution.get("model_check"), dict) else {}
+    if model_check.get("verified") is not True:
+        raise OnboardingError("FINAL_GATE_ACTUAL_MODEL_INVALID")
+    actual_model = _valid_actual_model(
+        capture.get("actual_model")
+        or capture.get("model")
+        or execution.get("actual_model")
+        or model_check.get("actual_model")
+        or model_check.get("model")
+        or selection.get("model")
+    )
+    artifacts = execution.get("artifacts") if isinstance(execution.get("artifacts"), dict) else {}
+    output_entry = artifacts.get("output")
+    if isinstance(output_entry, dict):
+        output_value = output_entry.get("path")
+        expected_sha256_value = output_entry.get("sha256")
+        expected_bytes = output_entry.get("bytes")
+    else:
+        output_value = output_entry
+        expected_sha256_value = artifacts.get("output_sha256") or artifacts.get("sha256")
+        expected_bytes = artifacts.get("output_bytes", artifacts.get("bytes"))
+    try:
+        output_candidate = Path(str(output_value or "")).expanduser()
+        if output_candidate.is_symlink():
+            raise OSError("output must not be a symlink")
+        output_path = output_candidate.resolve(strict=True)
+        output_bytes = output_path.read_bytes()
+    except OSError as exc:
+        raise OnboardingError("FINAL_GATE_EXECUTION_OUTPUT_INVALID") from exc
+    if not output_path.is_file() or not _inside(directory, output_path) or not output_bytes:
+        raise OnboardingError("FINAL_GATE_EXECUTION_OUTPUT_INVALID")
+    expected_sha256 = str(expected_sha256_value or "").casefold()
+    actual_sha256 = hashlib.sha256(output_bytes).hexdigest()
+    if (
+        expected_sha256 != actual_sha256
+        or isinstance(expected_bytes, bool)
+        or not isinstance(expected_bytes, int)
+        or expected_bytes != len(output_bytes)
+    ):
+        raise OnboardingError("FINAL_GATE_EXECUTION_OUTPUT_BINDING_INVALID")
+    semantic_outcome = str(execution.get("semantic_outcome") or "unknown").strip().casefold()
+    if not semantic_outcome:
+        semantic_outcome = "unknown"
     return {
         "run_dir": str(directory),
-        "run_id": str(run_state.get("run_id") or ""),
-        "slug": str(oracle.get("slug") or ""),
-        "conversation_url": conversation_url,
+        "state_path": str(state_path),
         "state_sha256": _sha256_file(state_path),
         "output_path": str(output_path),
-        "output_sha256": output_sha256,
-        "workspace_id": receipt_binding["workspace_id"],
-        "conversation_scope_id": receipt_binding["conversation_scope_id"],
-        "tool_read_receipts": receipt_binding["tool_read_receipts"],
-        "separate_read_verified": True,
-        "read_file_path": str(mission_path),
-        "read_file_sha256": mission_sha256,
-        "cryptographic_read_verified": True,
-        **(
-            {
-                "registered_app_final_gate": True,
-                "source_thread_id": source_thread_id,
-            }
-            if registered_app_final_gate
-            else {}
-        ),
-        "transport": "regular-non-pro-oracle",
+        "output_sha256": actual_sha256,
+        "output_bytes": len(output_bytes),
+        "mission_path": str(mission_path),
+        "auth_verified": True,
+        "actual_model": actual_model,
+        "outcome": "captured",
+        "semantic_outcome": semantic_outcome,
+        "run_id": str(execution.get("run_id") or ""),
     }
+
+
+def _compact_read_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _project_file_read_proof(
+    *,
+    root: Path,
+    listing: Sequence[str],
+    output_path: Path,
+    excluded_paths: Sequence[Path] = (),
+) -> dict[str, Any]:
+    """Bind a durable answer to real bounded project-file content, without tool ceremony."""
+    try:
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError) as exc:
+        raise OnboardingError("FINAL_GATE_PROJECT_READ_NOT_PROVEN") from exc
+    compact_output = _compact_read_text(output_text)
+    if not compact_output:
+        raise OnboardingError("FINAL_GATE_PROJECT_READ_NOT_PROVEN")
+    excluded = {os.path.normcase(str(path.expanduser().resolve())) for path in excluded_paths}
+    for entry in listing:
+        relative = Path(str(entry))
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            continue
+        raw_candidate = root / relative
+        if raw_candidate.is_symlink():
+            continue
+        try:
+            candidate = raw_candidate.resolve(strict=True)
+            if not _inside(root, candidate) or not candidate.is_file():
+                continue
+            if os.path.normcase(str(candidate)) in excluded:
+                continue
+            size = candidate.stat().st_size
+            if size <= 0 or size > FINAL_GATE_MAX_PROJECT_READ_BYTES:
+                continue
+            source_text = candidate.read_text(encoding="utf-8", errors="strict")
+        except (OSError, UnicodeError):
+            continue
+        for line in source_text.splitlines():
+            excerpt = _compact_read_text(line)
+            if len(excerpt) < FINAL_GATE_MIN_PROJECT_EXCERPT:
+                continue
+            if excerpt in compact_output:
+                return {
+                    "kind": "project-file-content-match",
+                    "relative_path": candidate.relative_to(root).as_posix(),
+                    "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+                    "source_bytes": size,
+                }
+    raise OnboardingError("FINAL_GATE_PROJECT_READ_NOT_PROVEN")
+
+
+def _valid_project_read_proof(value: object) -> bool:
+    if not isinstance(value, dict) or value.get("kind") != "project-file-content-match":
+        return False
+    relative = str(value.get("relative_path") or "")
+    digest = str(value.get("excerpt_sha256") or "")
+    source_bytes = value.get("source_bytes")
+    return bool(
+        relative
+        and not Path(relative).is_absolute()
+        and ".." not in Path(relative).parts
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+        and isinstance(source_bytes, int)
+        and not isinstance(source_bytes, bool)
+        and 0 < source_bytes <= FINAL_GATE_MAX_PROJECT_READ_BYTES
+    )
 
 
 def _final_gate_receipt(
@@ -1050,36 +1039,37 @@ def _final_gate_receipt(
     devspace_home: Path,
     state: dict[str, Any],
 ) -> dict[str, Any] | None:
+    """Return a valid persisted setup result without re-running the app."""
+    del codex_home, devspace_home
     recorded = ((state.get("stages") or {}).get("08_final_gate") or {}).get("evidence")
     if not isinstance(recorded, dict):
         return None
-    if recorded.get("transport") not in FINAL_GATE_TRANSPORTS or recorded.get("read_ok") is not True:
+    if (
+        recorded.get("schema") != APP_READ_RESULT_SCHEMA
+        or recorded.get("transport") not in FINAL_GATE_TRANSPORTS
+        or recorded.get("read_ok") is not True
+        or recorded.get("auth_verified") is not True
+        or recorded.get("outcome") != "captured"
+        or not _valid_project_read_proof(recorded.get("read_proof"))
+    ):
         return None
     summary = str(recorded.get("evidence") or "").strip()
-    listing = recorded.get("listing_sample")
-    entries = [str(item).strip() for item in listing if str(item).strip()] if isinstance(listing, list) else []
     root = str(recorded.get("root") or "").strip()
     identities = _root_identities(state.get("allowed_roots") or [])
-    if not root or os.path.normcase(str(Path(root).expanduser())) not in identities:
+    if (
+        not root
+        or os.path.normcase(str(Path(root).expanduser().resolve())) not in identities
+        or recorded.get("app_name") != state.get("app_name")
+    ):
         return None
-    if len(summary) < FINAL_GATE_MIN_EVIDENCE or not entries:
+    if len(summary) < FINAL_GATE_MIN_EVIDENCE:
         return None
     if not isinstance(recorded.get("recorded_at"), str) or not recorded["recorded_at"].strip():
         return None
     try:
-        binding = _oracle_final_gate_binding(
-            codex_home=codex_home,
-            devspace_home=devspace_home,
-            run_dir=Path(str(recorded.get("run_dir") or "")),
-            expected_root=root,
-            expected_app_name=str(state.get("app_name") or ""),
-            listing=entries,
-        )
+        _valid_actual_model(recorded.get("actual_model"))
     except OnboardingError:
         return None
-    for key, value in binding.items():
-        if recorded.get(key) != value:
-            return None
     return recorded
 
 
@@ -1117,8 +1107,11 @@ def evaluate_stages(
     checks["restart_persistence_verified"] = bool(
         checks.get("bootstrap_matches_config")
         and (
-            state.get("provider") == "tailscale"
-            or _stage_user_confirmed(state, "04_reboot_service")
+            (
+                state.get("provider") == "tailscale"
+                and checks.get("bootstrap_recovery_verified")
+            )
+            or (state.get("provider") != "tailscale" and _stage_user_confirmed(state, "04_reboot_service"))
         )
     )
     checks["oracle_login_confirmed"] = bool(
@@ -1409,16 +1402,12 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
             "등록과 Owner 승인을 마친 뒤 onboard.py confirm 07_chatgpt_app 을 실행합니다.",
         ],
         "08_final_gate": [
-            "마지막으로 실제 프로젝트를 읽을 수 있는지 확인합니다.",
-            (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
-            "프로젝트 안의 짧은 읽기 전용 canary 미션을 준비한 뒤 다음 명령으로 정확한 manifest와 dry-run/live 명령을 생성합니다: python onboard.py prepare-final-gate --root <루트> --mission-path <루트>\\missions\\onboarding-final-gate.md",
-            f"새 일반 비-Pro Oracle 실행에서 @{state['app_name']} 로 exact root 를 열고 반환된 workspaceId를 보존합니다.",
-            "Oracle run_id를 세 호출의 auditNonce로 쓰고 open_workspace를 그 대화의 첫 workspace/process/mutation 호출로 실행합니다. 같은 workspaceId로 미션 파일을 별도 read 호출한 뒤 같은 파일 전체를 offset 0의 read_chunk로 읽습니다.",
-            "각 도구 결과가 돌려준 서버 생성 Audit receipt ID 3개를 최종 답변에 정확히 다시 적습니다. 이 challenge-response와 ~/.devspace/state/tool-read-receipts의 open_workspace → read → read_chunk 영수증을 함께 검증하며, 임의 ID/SHA 자기진술만으로는 통과하지 않습니다.",
-            f"새 canary에 read_chunk 또는 서버 생성 Audit receipt ID가 없으면 ChatGPT의 정확한 기존 @{state['app_name']} 앱 Action 스냅샷이 오래된 것입니다. 앱 상세에서 보이는 Refresh/새로 고침으로 Action을 갱신하고 새 Action을 검토·활성화합니다. 자동화가 이 설정을 조작하지 않습니다.",
-            "OAuth 또는 도구 호출이 계속 오래되면 https://chatgpt.com/#settings/Plugins/ 에서 기존 앱을 선택하고 Reconnect/다시 연결합니다. Business 또는 Refresh 부재만으로 앱을 삭제·재등록하지 않습니다. 앱 레코드가 실제로 없거나 손상된 경우에만 예외적으로 같은 exact 이름과 /mcp URL로 다시 만듭니다. 진단이 요구할 때만 위 post-register를 정확히 한 번 실행한 뒤 새 regular non-Pro auditNonce canary를 실행합니다. open_workspace/read만으로는 절대 통과하지 않습니다.",
-            "Codex Desktop 내장 DevSpace 플러그인 결과는 증거로 쓰지 않습니다.",
-            "성공하면 onboard.py record-final-gate --run-dir <Oracle run 디렉터리> --root <루트> --evidence <요약> --listing <항목> 을 실행합니다.",
+            "등록된 앱으로 실제 프로젝트를 한 번 읽어 설정을 확인합니다.",
+            "프로젝트 안의 짧은 미션 파일을 준비하고 실행 명령을 생성합니다: python onboard.py prepare-final-gate --root <루트> --mission-path <파일>",
+            f"생성된 execute 명령은 @{state['app_name']} 의 인증된 접근, 실제 사용 모델 하나, durable capture 결과를 기록해야 합니다.",
+            "최종 답변에는 --listing 으로 기록할 실제 UTF-8 프로젝트 파일에서 짧은 비밀정보 없는 문장 하나를 그대로 포함해야 합니다. 파일 내용을 읽지 않은 일반적인 open 성공 문구는 통과하지 않습니다.",
+            "도구 호출 순서나 nonce는 요구하지 않습니다. 성공한 설정 결과는 이후 실행마다 다시 만들지 않습니다.",
+            "capture가 끝나면 생성된 record-final-gate 명령으로 run 디렉터리와 짧은 결과 요약을 저장합니다.",
         ],
     }
     english: dict[str, list[str]] = {
@@ -1487,16 +1476,12 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
             "After registration and Owner approval, run onboard.py confirm 07_chatgpt_app.",
         ],
         "08_final_gate": [
-            "Finally confirm the real project root is readable.",
-            (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
-            "Prepare a short read-only canary mission inside the project, then generate the exact manifest and dry-run/live commands with: python onboard.py prepare-final-gate --root <root> --mission-path <root>\\missions\\onboarding-final-gate.md",
-            f"In a fresh regular non-Pro Oracle run, open the exact root with @{state['app_name']} and preserve the returned workspaceId.",
-            "Use the Oracle run_id as auditNonce for all three calls and make open_workspace the conversation's first workspace/process/mutation call. With that same workspaceId, separately read the mission and then read_chunk the complete same file from offset zero.",
-            "Echo the three server-generated Audit receipt IDs returned by the tool calls exactly in the final answer. The gate verifies that challenge-response together with DevSpace's ~/.devspace/state/tool-read-receipts open_workspace → read → read_chunk chain; arbitrary output ID/SHA claims alone never pass.",
-            f"If the fresh canary exposes no read_chunk or server-generated Audit receipt ID, the exact existing @{state['app_name']} ChatGPT app Action snapshot is stale. Use the visible Refresh/New refresh control in that app's detail, then review and enable the new Actions; automation must not change this ChatGPT setting.",
-            "If OAuth or tool calls remain stale, open https://chatgpt.com/#settings/Plugins/, select the existing app, and use Reconnect. Do not delete or re-register it merely because the workspace is Business or Refresh is unavailable. Recreate with the same exact name and /mcp URL only when the app record is actually absent or corrupt. Run the post-register command above exactly once only when diagnosis requires it, then run a fresh regular non-Pro auditNonce canary. open_workspace/read alone never passes.",
-            "The built-in Codex Desktop DevSpace plugin is not valid evidence.",
-            "On success run onboard.py record-final-gate --run-dir <Oracle run directory> --root <root> --evidence <summary> --listing <entry>.",
+            "Read the real project once through the registered app to finish setup.",
+            "Prepare a short mission file inside the project and generate the execute command with: python onboard.py prepare-final-gate --root <root> --mission-path <file>",
+            f"The generated execute command must capture authenticated @{state['app_name']} access, one actual model, and a durable result.",
+            "The final answer must quote one short non-secret line exactly from the real UTF-8 project file named with --listing; a generic workspace-open success message is not proof of a file read.",
+            "No tool order or nonce is required. Do not recreate a successful setup result for every later run.",
+            "After capture, use the generated record-final-gate command to persist the run directory and a short result summary.",
         ],
     }
     guides = korean if language == "ko" else english
@@ -1639,58 +1624,10 @@ def consent_stage(
 
 
 def render_step(step: dict[str, Any]) -> str:
-    """Render one wizard step as a short readable block."""
-    language = step.get("language") if step.get("language") in LANGUAGES else DEFAULT_LANGUAGE
-    words = {
-        "ko": {
-            "user": "사용자 작업 필요",
-            "auto": "자동 진행",
-            "state": "현재 상태",
-            "none_left": "남은 단계가 없습니다.",
-            "triage": "생성 버튼이 없으면 아래 순서로 확인합니다.",
-            "after": "완료 후",
-            "then": "이어서",
-            "remaining": "남은 단계",
-        },
-        "en": {
-            "user": "user action required",
-            "auto": "automatic",
-            "state": "Current state",
-            "none_left": "No stages remain.",
-            "triage": "If the create button is missing, check in this order.",
-            "after": "After finishing",
-            "then": "Next",
-            "remaining": "Remaining",
-        },
-    }[language]
-    total = len(STAGE_IDS)
-    lines: list[str] = []
-    if step.get("done"):
-        lines.append(f"[{total}/{total}] {step['completion_label']}")
-        lines.append(words["none_left"])
-        return "\n".join(lines)
-    current = step["current_stage"]
-    index = STAGE_IDS.index(current) + 1
-    owner = words["user"] if step["needs_user_action"] else words["auto"]
-    lines.append(f"[{index}/{total}] {current}  ({owner})")
-    lines.append(f"{words['state']}: {step['completion_label']}")
-    lines.append("")
-    for instruction in step.get("instructions") or []:
-        lines.append(f"  {instruction}")
-    if step.get("missing_create_button_triage"):
-        lines.append("")
-        lines.append(f"  {words['triage']}")
-        for item in step["missing_create_button_triage"]:
-            lines.append(f"    - {item}")
-    lines.append("")
-    if step.get("confirm_command"):
-        lines.append(f"{words['after']}: python {step['confirm_command']}")
-    else:
-        lines.append(f"{words['then']}: python onboard.py next")
-    remaining = [stage for stage in step.get("pending_stages") or [] if stage != current]
-    if remaining:
-        lines.append(f"{words['remaining']}: {', '.join(remaining)}")
-    return "\n".join(lines)
+    """Render one wizard step through the presentation module."""
+    return UI.render_step(step, STAGE_IDS)
+
+
 
 
 def record_final_gate(
@@ -1701,46 +1638,59 @@ def record_final_gate(
     run_dir: Path | None = None,
     codex_home: Path | None = None,
     devspace_home: Path | None = None,
-    transport: str = "regular-non-pro-oracle",
+    transport: str = "registered-app",
     listing: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Record the non-Pro Oracle exact-root read result that closes onboarding."""
+    """Persist the one setup-time registered-app read result."""
+    del devspace_home
     state = load_state(codex_home=codex_home)
-    identities = _root_identities(state["allowed_roots"])
-    if os.path.normcase(str(Path(root).expanduser().resolve())) not in identities:
+    root_path = Path(root).expanduser().resolve()
+    if os.path.normcase(str(root_path)) not in _root_identities(state["allowed_roots"]):
         raise OnboardingError("FINAL_GATE_ROOT_NOT_IN_ALLOWED_ROOTS")
     if transport not in FINAL_GATE_TRANSPORTS:
-        raise OnboardingError("FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE")
+        raise OnboardingError("FINAL_GATE_TRANSPORT_MUST_BE_REGISTERED_APP")
     summary = evidence.strip()
     entries = [str(item).strip() for item in (listing or []) if str(item).strip()]
-    if read_ok and (len(summary) < FINAL_GATE_MIN_EVIDENCE or not entries):
-        raise OnboardingError("FINAL_GATE_EVIDENCE_INSUFFICIENT")
     binding: dict[str, Any] = {}
     if read_ok:
         if run_dir is None:
-            raise OnboardingError("FINAL_GATE_ORACLE_RUN_REQUIRED")
-        binding = _oracle_final_gate_binding(
-            codex_home=_codex_home(codex_home),
-            devspace_home=(devspace_home or (Path.home() / ".devspace")).expanduser().resolve(),
+            raise OnboardingError("FINAL_GATE_EXECUTION_RUN_REQUIRED")
+        binding = _execution_capture_binding(
             run_dir=run_dir,
-            expected_root=root,
+            expected_root=root_path,
             expected_app_name=state["app_name"],
-            listing=entries,
-            require_current_task=True,
         )
-    state["stages"]["08_final_gate"]["evidence"] = {
+        if len(summary) < FINAL_GATE_MIN_EVIDENCE:
+            raise OnboardingError("FINAL_GATE_EVIDENCE_INSUFFICIENT")
+        read_proof = _project_file_read_proof(
+            root=root_path,
+            listing=entries,
+            output_path=Path(binding["output_path"]),
+            excluded_paths=[Path(binding["mission_path"])],
+        )
+    else:
+        read_proof = None
+    result = {
+        "schema": APP_READ_RESULT_SCHEMA,
         "read_ok": bool(read_ok),
-        "root": str(Path(root).expanduser().resolve()),
+        "root": str(root_path),
+        "app_name": state["app_name"],
+        "auth_verified": binding.get("auth_verified") is True,
+        "actual_model": str(binding.get("actual_model") or ""),
+        "outcome": str(binding.get("outcome") or "failed"),
+        "semantic_outcome": str(binding.get("semantic_outcome") or "unknown"),
         "evidence": summary[:400],
         "listing_sample": entries[:10],
+        "read_proof": read_proof,
         "recorded_at": _now(),
         "transport": transport,
         **binding,
     }
+    state["stages"]["08_final_gate"]["evidence"] = result
     state["updated_at"] = _now()
     _secret_free(state)
     _write_state(state, codex_home=codex_home)
-    return state["stages"]["08_final_gate"]["evidence"]
+    return result
 
 
 def prepare_final_gate(
@@ -1750,87 +1700,70 @@ def prepare_final_gate(
     codex_home: Path | None = None,
     python_executable: str = "python",
 ) -> dict[str, Any]:
-    """Create the exact host-state manifest and commands for the registered-app final gate."""
+    """Describe the single registered-app read check without launching it."""
     state = load_state(codex_home=codex_home)
-    source_thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip().casefold()
-    if SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
-        raise OnboardingError("FINAL_GATE_CODEX_TASK_REQUIRED")
     root_path = Path(root).expanduser().resolve(strict=True)
     if os.path.normcase(str(root_path)) not in _root_identities(state["allowed_roots"]):
         raise OnboardingError("FINAL_GATE_ROOT_NOT_IN_ALLOWED_ROOTS")
     try:
         mission = mission_path.expanduser().resolve(strict=True)
-    except OSError as exc:
-        raise OnboardingError("FINAL_GATE_MISSION_UNREADABLE") from exc
-    if not mission.is_file() or not _inside(root_path, mission):
-        raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_INSIDE_EXACT_ROOT")
-    try:
         mission_bytes = mission.read_bytes()
         mission_bytes.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_UTF8") from exc
-    if len(mission_bytes) > FINAL_GATE_MAX_READ_CHUNK_BYTES:
-        raise OnboardingError("FINAL_GATE_MISSION_EXCEEDS_SINGLE_READ_CHUNK")
-    mission_sha256 = hashlib.sha256(mission_bytes).hexdigest()
-    mission_relative = mission.relative_to(root_path).as_posix()
-    manifest_identity = "\0".join(
-        (source_thread_id, os.path.normcase(str(root_path)), mission_relative, mission_sha256)
-    )
-    manifest_identity_hash = hashlib.sha256(manifest_identity.encode("utf-8")).hexdigest()[:32]
-    target = (
-        _codex_home(codex_home)
-        / FINAL_GATE_MANIFEST_RELATIVE
-        / f"{manifest_identity_hash}.json"
-    )
-    manifest = {
-        "schema": FINAL_GATE_MANIFEST_SCHEMA,
-        "project_root": str(root_path),
-        "mission_path": str(mission),
-        "app_name": state["app_name"],
-        "mode": "browser",
-        "transport": "devspace",
-        "model": "gpt-5.6",
-        "model_strategy": "select",
-        "thinking_time": "extra-high",
-        "research": "off",
-        "task_outcome_contract": "v1",
-        "archive": "never",
-        "registered_app_final_gate": True,
-        "source_thread_id": source_thread_id,
-    }
-    _write_json_atomic(target, manifest)
+        raise OnboardingError("FINAL_GATE_MISSION_UNREADABLE") from exc
+    if not mission.is_file() or not _inside(root_path, mission):
+        raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_INSIDE_EXACT_ROOT")
     runner = _codex_home(codex_home) / "bin" / "chatgpt_oracle_run.py"
-    base = [python_executable, str(runner), "run", "--manifest", str(target)]
+    execute = [
+        python_executable,
+        str(runner),
+        "execute",
+        "--project-root",
+        str(root_path),
+        "--mission-path",
+        str(mission),
+        "--app-name",
+        state["app_name"],
+    ]
     return {
         "ok": True,
-        "schema": "codex-web-gpt.onboarding-final-gate-plan/v1",
+        "schema": "codex-web-gpt.onboarding-app-read-plan/v1",
         "root": str(root_path),
         "mission_path": str(mission),
-        "mission_sha256": mission_sha256,
+        "mission_sha256": hashlib.sha256(mission_bytes).hexdigest(),
         "app_name": state["app_name"],
-        "source_thread_id": source_thread_id,
-        "manifest_path": str(target),
-        "manifest_sha256": _sha256_file(target),
-        "dry_run_command": _quoted_command([*base, "--dry-run"]),
-        "run_command": _quoted_command(base),
+        "access_scope": "setup-once",
+        "requirements": {
+            "exact_root": True,
+            "auth_verified": True,
+            "actual_model": "record the one model actually used",
+            "outcome": "captured",
+            "project_file_content": (
+                "the durable answer includes a short exact non-secret excerpt from one listed UTF-8 file"
+            ),
+        },
+        "execute_command": _quoted_command(execute),
+        "dry_run_command": _quoted_command([*execute, "--dry-run"]),
+        "reconnect_command_template": _quoted_command(
+            [python_executable, str(runner), "reconnect", "--run-dir", "<RUN_DIR>"]
+        ),
         "record_command_template": _quoted_command(
             [
                 python_executable,
                 "onboard.py",
                 "record-final-gate",
                 "--run-dir",
-                "<EXACT_ORACLE_RUN_DIR>",
+                "<RUN_DIR>",
                 "--root",
                 str(root_path),
                 "--evidence",
                 "<VERIFIED_SUMMARY>",
                 "--listing",
-                mission_relative,
+                "<PROJECT_FILE_READ_THROUGH_REGISTERED_APP>",
             ]
         ),
-        "submission_action": "none",
+        "submission_action": "perform-one-registered-app-read",
     }
-
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"{PRODUCT_NAME} first-install planner")
@@ -1891,6 +1824,7 @@ def _global_language_flag(arguments: Sequence[str]) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    UI.configure_output()
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = _parser().parse_args(arguments)
     if getattr(args, "lang", None) is None:
@@ -1914,48 +1848,59 @@ def main(argv: list[str] | None = None) -> int:
                 app_name=args.app_name,
             )
         elif args.command == "start":
+            resume_existing = False
             if not args.reset:
                 try:
                     load_state()
                 except OnboardingError:
                     if state_path().exists():
+                        if args.json:
+                            print(
+                                json.dumps(
+                                    {
+                                        "ok": False,
+                                        "error": "ONBOARDING_STATE_CORRUPT",
+                                        "hint": "python onboard.py start --reset",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
+                        else:
+                            print(UI.render_error("ONBOARDING_STATE_CORRUPT", args.lang))
+                        return 2
+                else:
+                    if args.json:
                         print(
                             json.dumps(
                                 {
                                     "ok": False,
-                                    "error": "ONBOARDING_STATE_CORRUPT",
-                                    "hint": "python onboard.py start --reset",
+                                    "error": "ONBOARDING_ALREADY_STARTED",
+                                    "hint": "python onboard.py resume",
                                 },
                                 ensure_ascii=False,
                             )
                         )
                         return 2
-                else:
-                    print(
-                        json.dumps(
-                            {
-                                "ok": False,
-                                "error": "ONBOARDING_ALREADY_STARTED",
-                                "hint": "python onboard.py resume",
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 2
-            start_onboarding(
-                provider=args.provider,
-                registration_url=args.public_url,
-                roots=args.roots,
-                app_name=args.app_name,
-                enable_local_multi_gpt=args.enable_local_multi_gpt,
-            )
+                    resume_existing = True
+            if not resume_existing:
+                start_onboarding(
+                    provider=args.provider,
+                    registration_url=args.public_url,
+                    roots=args.roots,
+                    app_name=args.app_name,
+                    enable_local_multi_gpt=args.enable_local_multi_gpt,
+                )
             result = next_step(language=args.lang)
         elif args.command in ("next", "resume"):
             result = next_step(language=args.lang)
         elif args.command == "confirm":
             result = confirm_stage(args.stage, language=args.lang)
+            if not args.json:
+                result = next_step(language=args.lang)
         elif args.command == "consent":
             result = consent_stage(args.stage)
+            if not args.json:
+                result = next_step(language=args.lang)
         elif args.command == "record-final-gate":
             result = record_final_gate(
                 read_ok=not args.failed,
@@ -1975,9 +1920,12 @@ def main(argv: list[str] | None = None) -> int:
             path = configure_app_name(codex_home=args.codex_home, app_name=args.app_name)
             result = {"ok": True, "app_name": normalize_app_name(args.app_name), "path": str(path)}
     except OnboardingError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(UI.render_error(str(exc), args.lang))
         return 2
-    if args.command in ("start", "next", "resume") and not args.json:
+    if args.command in ("start", "next", "resume", "confirm", "consent") and not args.json:
         print(render_step(result))
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))

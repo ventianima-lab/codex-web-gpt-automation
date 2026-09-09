@@ -21,7 +21,7 @@ def seed_home(tmp_path: Path) -> Path:
     home = tmp_path / ".codex"
     home.mkdir()
     (home / "config.toml").write_text(
-        'model = "gpt-5.6-sol"\n'
+        'model = "gpt-6-astra"\n'
         'model_reasoning_effort = "medium"\n'
         'custom_setting = "preserve-me"\n\n'
         '[features]\nmemories = true\n\n'
@@ -48,8 +48,8 @@ def test_apply_preserves_existing_config_and_policy_and_is_idempotent(tmp_path: 
     }
 
     config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
-    assert config["model"] == "gpt-5.6-sol"
-    assert config["model_reasoning_effort"] == "high"
+    assert config["model"] == "gpt-6-astra"
+    assert config["model_reasoning_effort"] == "medium"
     assert config["custom_setting"] == "preserve-me"
     assert config["features"] == {"memories": True}
     assert config["mcp_servers"]["example"]["url"].endswith("/mcp")
@@ -64,17 +64,13 @@ def test_apply_preserves_existing_config_and_policy_and_is_idempotent(tmp_path: 
     global_policy = (home / "AGENTS.md").read_text(encoding="utf-8")
     assert "ANCHORMIND ACTIVE MEMORY POLICY" in global_policy
     assert global_policy.count(module.MANAGED_BEGIN) == 1
-    assert "no more than two concurrent workers" in global_policy
-    assert "Never create test output" in global_policy
-    assert "directly under a drive root" in global_policy
-    assert ".codex-tmp\\<task>" in global_policy
-    assert "%LOCALAPPDATA%\\Codex\\Sources" in global_policy
-    assert "Default ordinary web work to `gpt-5.6` with `extra-high`" in global_policy
-    assert "Treat Pro as quota-limited and explicit-only" in global_policy
-    assert "Every new explicit Pro run uses the `pro-devspace-readonly` route" in global_policy
-    assert "Preserve persisted legacy `pro-devspace` write" in global_policy
-    assert "GPT-5.6 Luna" in global_policy and "must be `max`" in global_policy
-    assert "<model>_<reasoning>_<task>" in global_policy
+    assert "docs/AUTOMATION_POLICY.md" in global_policy
+    assert "non-overlapping write scopes" in global_policy
+    assert "Preserve the configured commander" in global_policy
+    assert "durable result capture" in global_policy
+    assert "without automatic resubmission" in global_policy
+    assert "Do not add execution modes" in global_policy
+    assert "historical" in global_policy
     assert module.doctor(home, source_root=ROOT)["ok"] is True
 
     second = module.apply_setup(home, source_root=ROOT)
@@ -91,6 +87,8 @@ def test_existing_agents_table_is_merged_and_legacy_alias_removed() -> None:
         '[features]\nmulti_agent_v2 = false\n'
     )
     config = tomllib.loads(merged)
+    assert config["model"] == "old"
+    assert config["model_reasoning_effort"] == "low"
     assert config["agents"]["max_concurrent_threads_per_session"] == 3
     assert "max_threads" not in config["agents"]
     assert config["agents"]["interrupt_message"] is False
@@ -116,6 +114,20 @@ def test_doctor_rejects_unstable_multi_agent_v2(tmp_path: Path) -> None:
     result = module.doctor(home, source_root=ROOT)
     assert result["ok"] is False
     assert "UNSTABLE_MULTI_AGENT_V2_ENABLED" in result["errors"]
+
+
+def test_doctor_reports_but_does_not_constrain_commander_settings(tmp_path: Path) -> None:
+    home = seed_home(tmp_path)
+    module.apply_setup(home, source_root=ROOT)
+
+    result = module.doctor(home, source_root=ROOT)
+
+    assert result["ok"] is True
+    assert result["main"] == {
+        "model": "gpt-6-astra",
+        "model_reasoning_effort": "medium",
+    }
+    assert not any(error.startswith("TOP_LEVEL_MISMATCH:") for error in result["errors"])
 
 
 def test_role_contracts_are_narrow_and_parseable() -> None:

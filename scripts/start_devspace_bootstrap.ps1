@@ -39,6 +39,26 @@ function Get-TextSha256([string]$Text) {
   }
 }
 
+function Write-RecoveryReceipt([bool]$Healthy, [string]$ConfigHash, [string]$Reason) {
+  $ReceiptRoot = Join-Path $CodexRoot 'state/devspace-service'
+  New-Item -ItemType Directory -Force -Path $ReceiptRoot | Out-Null
+  $ReceiptPath = Join-Path $ReceiptRoot 'bootstrap-recovery.json'
+  $TemporaryPath = "$ReceiptPath.$PID.tmp"
+  $Receipt = [ordered]@{
+    schema = 'codex.devspace.bootstrap-recovery/v1'
+    healthy = $Healthy
+    config_sha256 = $ConfigHash
+    hostname = [string]$Config.hostname
+    mode = [string]$Mode
+    watch_interval_seconds = [int]$WatchIntervalSeconds
+    observed_at = [DateTime]::UtcNow.ToString('o')
+    watchdog_pid = $PID
+    reason = $Reason
+  }
+  [IO.File]::WriteAllText($TemporaryPath, ($Receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+  Move-Item -LiteralPath $TemporaryPath -Destination $ReceiptPath -Force
+}
+
 $Mutex = New-Object Threading.Mutex($false, ("Local\{0}" -f $MutexName))
 $Acquired = $false
 try {
@@ -102,7 +122,14 @@ try {
       if ($ExitCode -eq 0) {
         $RecoveryText = ($RecoveryOutput -join [Environment]::NewLine).Trim()
         try { $Recovery = $RecoveryText | ConvertFrom-Json -ErrorAction Stop } catch {
+          Write-RecoveryReceipt $false $Invocation.ConfigSha256 'recovery-json-invalid'
           Write-BootstrapLog "Recovery cycle $Cycle attempt $Attempt returned invalid JSON (sha256=$(Get-TextSha256 $RecoveryText))."
+          $ExitCode = 1
+          continue
+        }
+        if ($null -eq $Recovery -or $Recovery.ok -ne $true -or $Recovery.local_readiness.ok -ne $true -or $Recovery.public.ok -ne $true) {
+          Write-RecoveryReceipt $false $Invocation.ConfigSha256 'recovery-proof-incomplete'
+          Write-BootstrapLog 'Recovery did not prove local and public readiness.'
           $ExitCode = 1
           continue
         }
@@ -113,10 +140,15 @@ try {
           $Service = $Recovery.service
           Write-BootstrapLog ("DevSpace restarted for compatibility reconciliation (cycle={0}, attempt={1}, supervisor_pid={2}, child_pid={3}, state={4}, reason={5})." -f $Cycle, $Attempt, $Service.supervisor_pid, $Service.child_pid, $Service.state_path, $Recovery.reconciliation_reason)
         }
+        Write-RecoveryReceipt $true $Invocation.ConfigSha256 'local-and-public-recovery-verified'
         $Healthy = $true
         break
       }
-      Write-BootstrapLog "Recovery cycle $Cycle attempt $Attempt failed with exit code $ExitCode (output_sha256=$(Get-TextSha256 (($RecoveryOutput -join [Environment]::NewLine).Trim()))."
+      $FailureText = ($RecoveryOutput -join [Environment]::NewLine).Trim()
+      $FailureCode = 'recovery-command-failed'
+      if ($FailureText -match '\b(DEVSPACE_[A-Z_]+|TAILSCALE_[A-Z_]+|ORACLE_[A-Z_]+)\b') { $FailureCode = $Matches[1] }
+      Write-RecoveryReceipt $false $Invocation.ConfigSha256 $FailureCode
+      Write-BootstrapLog "Recovery cycle $Cycle attempt $Attempt failed with exit code $ExitCode; reason=$FailureCode (output_sha256=$(Get-TextSha256 $FailureText))."
       if ($Attempt -lt 6) { Start-Sleep -Seconds 15 }
     }
 

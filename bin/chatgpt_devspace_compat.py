@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -29,9 +30,15 @@ NATIVE_DEPENDENCY_RESOLVED = (
 NATIVE_DEPENDENCY_INSTALL_SCRIPT = "prebuild-install || node-gyp rebuild --release"
 PATCHES = {
     "dist/artifact-tools.js": {
-        "patch": "artifact-audit-readonly.patch",
         "pristine": "53a045b3961875afce5a95b3992aea3d156b64c0268b1d22724d2ed8e2c3aad2",
-        "patched": "fd5204b37da657d6183c8394b5ee8bed09bbffd50999946b4d0421897a52dfa7",
+        "patched": "53a045b3961875afce5a95b3992aea3d156b64c0268b1d22724d2ed8e2c3aad2",
+        "transitions": {
+            "fd5204b37da657d6183c8394b5ee8bed09bbffd50999946b4d0421897a52dfa7": {
+                "patch": "artifact-audit-readonly.patch",
+                "reverse": True,
+                "result": "53a045b3961875afce5a95b3992aea3d156b64c0268b1d22724d2ed8e2c3aad2",
+            },
+        },
     },
     "dist/oauth-provider.js": {
         "patch": "oauth-refresh-replay.patch",
@@ -41,11 +48,33 @@ PATCHES = {
     "dist/server.js": {
         "patch": "workspace-write-and-read-bridge.patch",
         "pristine": "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263",
-        "patched": "d35a4cd7b5678b4fa16c05ba8ca1d8cc0937d9f4c2bdd48e454a46ffa28da598",
-        "upgrades": {
-            "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": "tool-read-receipts.patch",
-            "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c": "widget-domain.patch",
-            "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985": "receipt-structured-output.patch",
+        "patched": "eeaae28aff625c28940463fe0909a53250580ab90748956a216e07ebc8604988",
+        "transitions": {
+            "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263": {
+                "patch": "workspace-write-and-read-bridge.patch",
+                "reverse": False,
+                "result": "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497",
+            },
+            "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": {
+                "patch": "widget-domain.patch",
+                "reverse": False,
+                "result": "eeaae28aff625c28940463fe0909a53250580ab90748956a216e07ebc8604988",
+            },
+            "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c": {
+                "patch": "tool-read-receipts.patch",
+                "reverse": True,
+                "result": "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497",
+            },
+            "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985": {
+                "patch": "widget-domain.patch",
+                "reverse": True,
+                "result": "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c",
+            },
+            "d35a4cd7b5678b4fa16c05ba8ca1d8cc0937d9f4c2bdd48e454a46ffa28da598": {
+                "patch": "receipt-structured-output.patch",
+                "reverse": True,
+                "result": "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985",
+            },
         },
     },
     "dist/workspaces.js": {
@@ -668,9 +697,67 @@ def current_devspace_service_identity(local_port: int = 7676) -> dict[str, Any] 
         "if($null -eq $p){exit 3}; "
         "$started=[DateTimeOffset]::new($p.CreationDate.ToUniversalTime()).ToUnixTimeMilliseconds()*1000000; "
         "[pscustomobject]@{pid=[int]$p.ProcessId;command_line=[string]$p.CommandLine;"
+        "executable_path=[string]$p.ExecutablePath;"
         "started_at_unix_ns=[int64]$started;local_port=[int]$c.LocalPort}|ConvertTo-Json -Compress"
     )
     return _powershell_json(script)
+
+
+def _command_argv(command_line: str) -> list[str]:
+    if not command_line.strip():
+        return []
+    if os.name != "nt":
+        try:
+            return shlex.split(command_line, posix=True)
+        except ValueError:
+            return []
+    try:
+        import ctypes
+
+        argc = ctypes.c_int()
+        command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+        command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        argv = command_line_to_argv(command_line, ctypes.byref(argc))
+        if not argv:
+            return []
+        try:
+            return [argv[index] for index in range(argc.value)]
+        finally:
+            local_free = ctypes.windll.kernel32.LocalFree
+            local_free.argtypes = [ctypes.c_void_p]
+            local_free.restype = ctypes.c_void_p
+            local_free(argv)
+    except (AttributeError, OSError, ValueError):
+        return []
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    left_value = str(left)
+    right_value = str(right)
+    if os.name == "nt":
+        return os.path.normcase(left_value) == os.path.normcase(right_value)
+    return left_value == right_value
+
+
+def _validated_current_service_package(package_root: Path) -> str:
+    try:
+        root = package_root.resolve(strict=True)
+        metadata = _json_object(root / "package.json", code="DEVSPACE_SERVICE_IDENTITY_MISMATCH")
+        if metadata.get("name") != "@waishnav/devspace":
+            raise ValueError("package-name")
+        if str(metadata.get("version") or "").strip() != SUPPORTED_VERSION:
+            raise ValueError("package-version")
+        for relative, contract in PATCHES.items():
+            if sha256_file(root / relative) != contract["patched"]:
+                raise ValueError(f"patched-hash:{relative}")
+        return sha256_file(root / "dist" / "cli.js")
+    except (DevSpaceCompatError, KeyError, OSError, ValueError) as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_SERVICE_IDENTITY_MISMATCH",
+            "the DevSpace service package identity is not validated",
+            {"package_root": str(package_root), "reason": str(exc)},
+        ) from exc
 
 
 def _assert_devspace_service_identity(
@@ -683,27 +770,10 @@ def _assert_devspace_service_identity(
             "DevSpace service is not listening on the expected local port",
         )
     command_line = str(value.get("command_line") or "")
-    normalized = command_line.replace("\\", "/").casefold()
-    normalized = re.sub(r"/+", "/", normalized)
-    normalized = normalized.replace("/.bin/../", "/")
-    expected_cli_paths = [
-        str(root / "dist" / "cli.js").replace("\\", "/").casefold()
-        for root in package_roots
-    ]
-    if os.name != "nt":
-        for root in package_roots:
-            cli = root / "dist" / "cli.js"
-            shim = root.parents[1] / ".bin" / "devspace"
-            try:
-                if shim.is_symlink() and shim.resolve(strict=True) == cli.resolve(strict=True):
-                    expected_cli_paths.append(str(shim).casefold())
-            except OSError:
-                continue
-    if not any(
-        expected in normalized
-        and re.search(rf"{re.escape(expected)}(?:\"|\s)+serve(?:\s|$)", normalized)
-        for expected in expected_cli_paths
-    ):
+    argv = _command_argv(command_line)
+    expected_cli_paths = [str(root / "dist" / "cli.js") for root in package_roots]
+
+    def reject(reason: str) -> None:
         raise DevSpaceCompatError(
             "DEVSPACE_SERVICE_IDENTITY_MISMATCH",
             "the expected DevSpace port is owned by another process",
@@ -711,8 +781,69 @@ def _assert_devspace_service_identity(
                 "pid": value.get("pid"),
                 "command_line": command_line,
                 "expected_cli_paths": expected_cli_paths,
+                "reason": reason,
             },
         )
+
+    if len(argv) != 3 or argv[2] != "serve":
+        reject("command-shape")
+    executable_value = str(
+        value.get("executable_path") or value.get("executable_final_path") or ""
+    ).strip()
+    try:
+        executable_path = Path(executable_value).resolve(strict=True)
+    except OSError:
+        reject("process-executable-unavailable")
+    if executable_path.name.casefold() not in {"node", "node.exe"}:
+        reject("process-executable-not-node")
+    command_executable = Path(argv[0])
+    if command_executable.name.casefold() not in {"node", "node.exe"}:
+        reject("command-executable-not-node")
+    if command_executable.is_absolute() or command_executable.parent != Path("."):
+        try:
+            if not _same_path(command_executable.resolve(strict=True), executable_path):
+                reject("command-executable-mismatch")
+        except OSError:
+            reject("command-executable-unavailable")
+
+    try:
+        cli_path = Path(argv[1]).resolve(strict=True)
+    except OSError:
+        reject("cli-path-unavailable")
+    cli_parts = [part.casefold() if os.name == "nt" else part for part in cli_path.parts[-5:]]
+    expected_parts = ["node_modules", "@waishnav", "devspace", "dist", "cli.js"]
+    if cli_parts != expected_parts:
+        reject("cli-package-shape")
+    actual_root = cli_path.parents[1]
+
+    resolved_roots: list[Path] = []
+    for root in package_roots:
+        try:
+            resolved_roots.append(root.resolve(strict=True))
+        except OSError:
+            continue
+    try:
+        actual_version = package_version(actual_root)
+    except DevSpaceCompatError:
+        reject("package-metadata")
+    if actual_version == LEGACY_LKG_VERSION and any(
+        _same_path(actual_root, expected_root) for expected_root in resolved_roots
+    ):
+        return value
+    if actual_version != SUPPORTED_VERSION:
+        reject("package-version")
+
+    try:
+        actual_cli_hash = _validated_current_service_package(actual_root)
+        expected_cli_hashes = {
+            _validated_current_service_package(expected_root)
+            for expected_root in resolved_roots
+            if package_version(expected_root) == SUPPORTED_VERSION
+        }
+    except DevSpaceCompatError as exc:
+        reject(str(exc.evidence.get("reason") or "package-validation"))
+    if actual_cli_hash not in expected_cli_hashes:
+        reject("cli-hash-not-expected")
     return value
 
 
@@ -840,7 +971,7 @@ def _git_kwargs() -> dict[str, Any]:
     return {"creationflags": CREATE_NO_WINDOW, "startupinfo": startup}
 
 
-def _apply_patch(package_root: Path, patch_path: Path) -> None:
+def _apply_patch(package_root: Path, patch_path: Path, *, reverse: bool = False) -> None:
     isolated_env = os.environ.copy()
     isolated_env["GIT_CEILING_DIRECTORIES"] = str(package_root.parent)
     patch_bytes = patch_path.read_bytes().replace(b"\r\n", b"\n")
@@ -848,6 +979,8 @@ def _apply_patch(package_root: Path, patch_path: Path) -> None:
         argv = ["git", "-c", "core.autocrlf=false", "apply", "--ignore-space-change"]
         if check_only:
             argv.append("--check")
+        if reverse:
+            argv.append("--reverse")
         argv.append("-")
         completed = subprocess.run(
             argv,
@@ -885,6 +1018,7 @@ def ensure_devspace_compatibility(
     )
     changed: list[str] = []
     already: list[str] = []
+    migrations: list[dict[str, Any]] = []
     oauth_checks: list[dict[str, Any]] = []
     large_read_checks: list[dict[str, Any]] = []
     for root in roots:
@@ -901,21 +1035,44 @@ def ensure_devspace_compatibility(
             if current == contract["patched"]:
                 already.append(item)
                 continue
+            transitions = (
+                contract.get("transitions")
+                if isinstance(contract.get("transitions"), dict)
+                else {}
+            )
             upgrades = contract.get("upgrades") if isinstance(contract.get("upgrades"), dict) else {}
-            if current != contract["pristine"] and current not in upgrades:
+            accepted = {contract["pristine"], contract["patched"], *transitions, *upgrades}
+            if current not in accepted:
                 raise DevSpaceCompatError(
                     "DEVSPACE_FILE_HASH_MISMATCH",
                     "DevSpace compatibility refuses an unknown third-party file",
                     {
                         "path": str(target),
                         "actual": current,
-                        "expected": [contract["pristine"], contract["patched"], *sorted(upgrades)],
+                        "expected": sorted(accepted),
                     },
                 )
             backup_path = backup / Path(relative)
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             if not backup_path.exists():
                 shutil.copy2(target, backup_path)
+            exact_backup = backup / "by-sha256" / current / Path(relative)
+            exact_backup.parent.mkdir(parents=True, exist_ok=True)
+            if exact_backup.exists():
+                if sha256_file(exact_backup) != current:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_BACKUP_HASH_MISMATCH",
+                        "DevSpace compatibility found a corrupt exact-hash backup",
+                        {"path": str(exact_backup), "expected": current},
+                    )
+            else:
+                shutil.copy2(target, exact_backup)
+                if sha256_file(exact_backup) != current:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_BACKUP_HASH_MISMATCH",
+                        "DevSpace compatibility could not preserve the exact pre-migration bytes",
+                        {"path": str(exact_backup), "expected": current},
+                    )
             observed: set[str] = set()
             while current != contract["patched"]:
                 if current in observed:
@@ -925,7 +1082,15 @@ def ensure_devspace_compatibility(
                         {"path": str(target), "actual": current},
                     )
                 observed.add(current)
-                patch_name = contract["patch"] if current == contract["pristine"] else upgrades.get(current)
+                transition = transitions.get(current)
+                if isinstance(transition, dict):
+                    patch_name = str(transition.get("patch") or "")
+                    reverse = transition.get("reverse") is True
+                    expected_result = str(transition.get("result") or "")
+                else:
+                    patch_name = contract.get("patch") if current == contract["pristine"] else upgrades.get(current)
+                    reverse = False
+                    expected_result = ""
                 if not patch_name:
                     raise DevSpaceCompatError(
                         "DEVSPACE_PATCH_HASH_MISMATCH",
@@ -936,8 +1101,32 @@ def ensure_devspace_compatibility(
                             "expected": contract["patched"],
                         },
                     )
-                _apply_patch(root, patch_root() / str(patch_name))
+                before = current
+                _apply_patch(root, patch_root() / str(patch_name), reverse=reverse)
                 current = sha256_file(target)
+                if expected_result and current != expected_result:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_PATCH_TRANSITION_HASH_MISMATCH",
+                        "DevSpace compatibility patch transition produced unexpected bytes",
+                        {
+                            "path": str(target),
+                            "patch": patch_name,
+                            "reverse": reverse,
+                            "before": before,
+                            "actual": current,
+                            "expected": expected_result,
+                        },
+                    )
+                migrations.append(
+                    {
+                        "path": item,
+                        "from_sha256": before,
+                        "to_sha256": current,
+                        "patch": patch_name,
+                        "reverse": reverse,
+                        "backup_path": str(exact_backup),
+                    }
+                )
             changed.append(item)
         if "dist/oauth-provider.js" in PATCHES:
             oauth_checks.append(check_oauth_refresh_replay(package_root=root))
@@ -952,6 +1141,7 @@ def ensure_devspace_compatibility(
         "package_roots": [str(root) for root in roots],
         "changed": changed,
         "already_patched": already,
+        "migrations": migrations,
         "oauth_refresh_replay_checks": oauth_checks,
         "large_read_bridge_checks": large_read_checks,
         "service_restart_required": marker.is_file(),

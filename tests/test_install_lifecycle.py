@@ -349,6 +349,83 @@ def test_doctor_accepts_current_v3_install_receipt_schema() -> None:
         assert 'CONTRACT_UNVERIFIED' not in result.stdout
 
 
+def test_portable_doctor_proves_resolved_oracle_version_without_requiring_path_npx(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle = load_portable_lifecycle()
+    receipt = tmp_path / 'receipts' / 'codexpro-automation-current.json'
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(
+        json.dumps({
+            'schema': lifecycle.RECEIPT_SCHEMA,
+            'backup': str(tmp_path / 'backups' / 'owned'),
+            'files': [],
+            'optional_components': {'local_multi_gpt': {'enabled': False}},
+        }),
+        encoding='utf-8',
+    )
+    node = (tmp_path / 'Codex Runtime' / 'node.exe').resolve()
+    entry = (tmp_path / 'npm cache' / '@steipete' / 'oracle' / 'dist' / 'bin' / 'oracle-cli.js').resolve()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command, **kwargs):
+        calls.append((list(command), kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout='0.18.0\n', stderr='')
+
+    monkeypatch.setattr(lifecycle, '_resolve_python_tool', lambda: sys.executable)
+    monkeypatch.setattr(lifecycle.shutil, 'which', lambda _name: None)
+    result = lifecycle.doctor(
+        tmp_path,
+        oracle_resolver=lambda: [str(node), str(entry)],
+        oracle_run_factory=runner,
+    )
+
+    assert result['oracle_runtime'] == {
+        'command': [str(node), str(entry)],
+        'version': '0.18.0',
+        'exit_code': 0,
+        'timeout_seconds': lifecycle.ORACLE_VERSION_PROBE_TIMEOUT_SECONDS,
+    }
+    assert result['tools'] == {'python3': sys.executable, 'node': None, 'npx': None}
+    assert not any(
+        issue.get('code') == 'TOOL_MISSING' and issue.get('tool') in {'node', 'npx'}
+        for issue in result['issues']
+    )
+    assert len(calls) == 1
+    assert calls[0][0] == [str(node), str(entry), '--version']
+    assert calls[0][1]['timeout'] == lifecycle.ORACLE_VERSION_PROBE_TIMEOUT_SECONDS
+    assert calls[0][1]['stdin'] is subprocess.DEVNULL
+
+
+def test_portable_doctor_fails_closed_on_bounded_oracle_version_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle = load_portable_lifecycle()
+    receipt = tmp_path / 'receipts' / 'codexpro-automation-current.json'
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(
+        json.dumps({'schema': lifecycle.RECEIPT_SCHEMA, 'files': []}),
+        encoding='utf-8',
+    )
+    command = [str((tmp_path / 'node.exe').resolve()), str((tmp_path / 'oracle-cli.js').resolve())]
+
+    def timeout_runner(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+
+    monkeypatch.setattr(lifecycle, '_resolve_python_tool', lambda: sys.executable)
+    result = lifecycle.doctor(
+        tmp_path,
+        oracle_resolver=lambda: command,
+        oracle_run_factory=timeout_runner,
+    )
+
+    assert {'code': 'ORACLE_VERSION_TIMEOUT', 'timeout_seconds': 30} in result['issues']
+    assert result['oracle_runtime']['command'] == command
+    assert result['status'] == 'FAIL'
+
+
 def test_failed_dependency_preflight_leaves_existing_managed_file_byte_identical() -> None:
     """The read-only dependency gate must run before staging or committing manifest files."""
     with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as mock_bin:
@@ -406,8 +483,8 @@ def test_temp_codex_home_install_and_rollback_is_exact_inverse() -> None:
         receipts = sorted((codex_home / 'receipts').glob('codexpro-automation-*.json'))
         assert len(receipts) == 1
         created = codex_home / 'bin' / 'chatgpt_agbrowse_composer.py'
-        installed_pro_skill = codex_home / 'skills' / 'chatgpt-pro-browser' / 'SKILL.md'
-        installed_pro_metadata = codex_home / 'skills' / 'chatgpt-pro-browser' / 'agents' / 'openai.yaml'
+        installed_runtime_skill = codex_home / 'skills' / 'chatgpt-oracle-runtime' / 'SKILL.md'
+        installed_runtime_metadata = codex_home / 'skills' / 'chatgpt-oracle-runtime' / 'agents' / 'openai.yaml'
         assert overwritten.read_bytes() != original
         assert created.is_file()
         installed_policy = codex_home / 'upstream-runtime-policy.json'
@@ -417,13 +494,13 @@ def test_temp_codex_home_install_and_rollback_is_exact_inverse() -> None:
         )
         assert installed_policy.read_bytes() == (ROOT / 'upstream-runtime-policy.json').read_bytes()
         assert hashlib.sha256(installed_policy.read_bytes()).hexdigest() == policy_record['installed_sha256']
-        assert installed_pro_skill.read_bytes() == (
-            ROOT / 'skills' / 'chatgpt-pro-browser' / 'SKILL.md'
+        assert installed_runtime_skill.read_bytes() == (
+            ROOT / 'skills' / 'chatgpt-oracle-runtime' / 'SKILL.md'
         ).read_bytes()
-        assert installed_pro_metadata.read_bytes() == (
-            ROOT / 'skills' / 'chatgpt-pro-browser' / 'agents' / 'openai.yaml'
+        assert installed_runtime_metadata.read_bytes() == (
+            ROOT / 'skills' / 'chatgpt-oracle-runtime' / 'agents' / 'openai.yaml'
         ).read_bytes()
-        assert b'allow_implicit_invocation: false' in installed_pro_metadata.read_bytes()
+        assert b'allow_implicit_invocation: false' in installed_runtime_metadata.read_bytes()
 
         rolled_back = run_powershell(
             '-File', str(ROOT / 'rollback.ps1'),
@@ -434,8 +511,8 @@ def test_temp_codex_home_install_and_rollback_is_exact_inverse() -> None:
         assert overwritten.read_bytes() == original
         assert not created.exists()
         assert not installed_policy.exists()
-        assert not installed_pro_skill.exists()
-        assert not installed_pro_metadata.exists()
+        assert not installed_runtime_skill.exists()
+        assert not installed_runtime_metadata.exists()
         assert json.loads(rolled_back.stdout)['status'] == 'COMPLETE'
 
 

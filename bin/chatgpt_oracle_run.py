@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -21,6 +22,7 @@ STATE_PATH = Path(__file__).resolve().with_name("chatgpt_oracle_state.py")
 COMPAT_PATH = Path(__file__).resolve().with_name("chatgpt_oracle_compat.py")
 DEVSPACE_COMPAT_PATH = Path(__file__).resolve().with_name("chatgpt_devspace_compat.py")
 DEVSPACE_PREFLIGHT_PATH = Path(__file__).resolve().with_name("chatgpt_devspace_preflight.py")
+RUNTIME_PATH = Path(__file__).resolve().with_name("chatgpt_oracle_runtime.py")
 
 
 def load_state_module():
@@ -79,6 +81,33 @@ def load_devspace_preflight_module():
 
 
 DEVSPACE_PREFLIGHT = load_devspace_preflight_module()
+
+
+def load_runtime_module():
+    spec = importlib.util.spec_from_file_location("chatgpt_oracle_runtime_for_runner", RUNTIME_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Oracle runtime module unavailable: {RUNTIME_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+RUNTIME = load_runtime_module()
+
+
+def load_execute_module():
+    path = Path(__file__).resolve().with_name("chatgpt_oracle_execute.py")
+    spec = importlib.util.spec_from_file_location("chatgpt_oracle_execute_for_run", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("lean Oracle executor unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXECUTOR = load_execute_module()
 
 
 class OracleRunError(RuntimeError):
@@ -1587,7 +1616,8 @@ def execute_run(
     popen_factory: Callable[..., Any] = subprocess.Popen,
     platform_name: str | None = None,
     version_resolver: Callable[..., str] = resolve_oracle_version,
-    compat_factory: Callable[[str], dict[str, Any]] = COMPAT.ensure_oracle_compatibility,
+    default_command_resolver: Callable[[], list[str]] = RUNTIME.resolve_default_oracle_command,
+    compat_factory: Callable[..., dict[str, Any]] = COMPAT.ensure_oracle_compatibility,
     devspace_compat_factory: Callable[[], dict[str, Any]] = (
         DEVSPACE_COMPAT.ensure_devspace_compatibility
     ),
@@ -1679,6 +1709,36 @@ def execute_run(
                 "required_thinking_time": STATE.PRO_THINKING_TIME,
             },
         )
+    if (
+        STATE.is_pro_transport(str(config.transport or ""))
+        and str(config.model_strategy or "").strip().casefold() != "current"
+    ):
+        raise OracleRunError(
+            "PRO_MODEL_STRATEGY_LEGACY_FORBIDDEN",
+            "new Pro launches require explicit Latest selection; selector-era state is recovery-only",
+            {
+                "transport": config.transport,
+                "model_strategy": config.model_strategy,
+                "required_model_strategy": "current",
+            },
+        )
+    if not dry_run and config.oracle_command_defaulted:
+        try:
+            resolved_default = default_command_resolver()
+        except Exception as exc:
+            raise OracleRunError(
+                str(getattr(exc, "code", "ORACLE_RUNTIME_UNAVAILABLE")),
+                str(exc),
+                dict(getattr(exc, "evidence", {}) or {}),
+            ) from exc
+        if not isinstance(resolved_default, list) or not resolved_default or not all(
+            isinstance(item, str) and item for item in resolved_default
+        ):
+            raise OracleRunError(
+                "ORACLE_RUNTIME_COMMAND_INVALID",
+                "Oracle runtime resolver returned an invalid command",
+            )
+        config = replace(config, oracle_command=tuple(resolved_default))
     validate_oracle_attachment_sizes(config)
     layout = STATE.create_layout(config, run_id=config.requested_run_id)
     transport_mission_path = layout.run_dir / "mission.md"
@@ -1821,7 +1881,7 @@ def execute_run(
             run_factory=run_factory,
             platform_name=platform_name,
         )
-        compat_factory(version)
+        compat_factory(version, **COMPAT.node_runtime_kwargs(config.oracle_command))
         if STATE.is_devspace_transport(config.transport):
             devspace_compat = devspace_compat_factory()
             if devspace_compat.get("service_restart_required"):
@@ -2017,6 +2077,7 @@ def execute_run(
         return {"ok": False, "run_dir": str(layout.run_dir), "result": STATE.update_state(layout.state_path, status="failed")}
     STATE.write_transcript(layout)
     STATE.capture_browser_identity_receipt(layout.state_path)
+    STATE.capture_picker_profile_receipt(layout.state_path)
     # Exact recovery is allowed to finish under its own run-scoped mutex while
     # this original observer still owns the submission mutex.  If recovery won
     # that race, the stale observer must not overwrite durable terminal state
@@ -3633,7 +3694,7 @@ def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict
     if (
         str(state.get("transport") or "") != "pro-devspace-readonly"
         or str(profile.get("model") or "").casefold() != "gpt-5.6-sol"
-        or str(profile.get("model_strategy") or "") != "select"
+        or not STATE.is_compatible_pro_model_strategy(profile.get("model_strategy"))
         or not STATE.is_compatible_pro_thinking_time(profile.get("thinking_time"))
     ):
         raise OracleRunError(
@@ -3642,10 +3703,15 @@ def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict
         )
     ownership = STATE.proven_ownership_receipt(state_path)
     browser = STATE.proven_browser_identity_receipt(state_path)
-    if ownership is None or browser is None:
+    picker = STATE.proven_picker_profile_receipt(state_path)
+    if (
+        ownership is None
+        or browser is None
+        or (profile.get("model_strategy") == "current" and picker is None)
+    ):
         raise OracleRunError(
             "FOLLOWUP_PARENT_IDENTITY_INVALID",
-            "follow-up requires valid immutable ownership and browser identity receipts",
+            "follow-up requires valid immutable ownership, browser identity, and current-picker receipts",
         )
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
     conversation_url = str(oracle.get("conversation_url") or "").strip()
@@ -3702,10 +3768,13 @@ def _followup_manifest_payload(
         "submit_mutex_timeout_seconds": 30,
         "episode_policy": policy,
         "model": "gpt-5.6-sol",
-        "model_strategy": "select",
+        # Follow-ups are new submissions. A selector-era parent remains valid
+        # recovery evidence, but its child explicitly selects Latest.
+        "model_strategy": "current",
         # A child is a new Pro submission even when its sealed parent used
         # Oracle's historical Heavy spelling.
         "thinking_time": STATE.PRO_THINKING_TIME,
+        "browser_intent": STATE.current_browser_intent(STATE.PRO_THINKING_TIME),
         "research": str(profile.get("research") or "off"),
         "archive": "always" if archive_contract.get("was_archived") is True else "never",
         "task_outcome_contract": "v1",
@@ -4199,11 +4268,25 @@ def _launch_followup_reserved_round(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run additive Oracle browser missions without modifying agbrowse routing.")
+    parser = argparse.ArgumentParser(
+        description="Execute one lean Oracle mission or explicitly recover a historical run."
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-    run_parser = commands.add_parser("run")
-    run_parser.add_argument("--manifest", type=Path, required=True)
-    run_parser.add_argument("--dry-run", action="store_true")
+    execute_parser = commands.add_parser("execute", help="ordinary single-mission flow")
+    execute_parser.add_argument("--manifest", type=Path)
+    execute_parser.add_argument("--project-root", type=Path)
+    execute_parser.add_argument("--mission-path", type=Path)
+    execute_parser.add_argument("--run-root", type=Path)
+    execute_parser.add_argument("--run-id")
+    # Keep selection arguments unset at parse time so an explicit override can
+    # never be silently discarded when --manifest already owns the selection.
+    execute_parser.add_argument("--model", choices=EXECUTOR.SUPPORTED_MODELS)
+    execute_parser.add_argument("--effort", choices=EXECUTOR.SUPPORTED_EFFORTS)
+    execute_parser.add_argument("--app-name")
+    execute_parser.add_argument("--dry-run", action="store_true")
+    reconnect_parser = commands.add_parser("reconnect", help="prompt-free continuation of one ordinary run")
+    reconnect_parser.add_argument("--run-dir", type=Path, required=True)
+    reconnect_parser.add_argument("--dry-run", action="store_true")
     followup_parser = commands.add_parser("followup")
     followup_parser.add_argument("--parent-run-dir", type=Path, required=True)
     followup_parser.add_argument("--mission-path", type=Path, required=True)
@@ -4330,8 +4413,43 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "run":
-            payload = execute_run(args.manifest, dry_run=args.dry_run)
+        if args.command == "execute":
+            if args.manifest is not None:
+                if any(
+                    value is not None
+                    for value in (
+                        args.project_root,
+                        args.mission_path,
+                        args.run_root,
+                        args.run_id,
+                        args.model,
+                        args.effort,
+                        args.app_name,
+                    )
+                ):
+                    raise EXECUTOR.ExecutionError(
+                        "EXECUTE_ARGUMENTS_CONFLICT",
+                        "--manifest cannot be combined with direct root, mission, run identity, model, effort, or app arguments",
+                    )
+                payload = EXECUTOR.execute_manifest(args.manifest, dry_run=args.dry_run)
+            else:
+                if args.project_root is None or args.mission_path is None:
+                    raise EXECUTOR.ExecutionError(
+                        "EXECUTE_ARGUMENTS_REQUIRED",
+                        "execute requires --project-root and --mission-path when --manifest is omitted",
+                    )
+                config = EXECUTOR.make_config(
+                    project_root=args.project_root,
+                    mission_path=args.mission_path,
+                    run_root=args.run_root,
+                    run_id=args.run_id,
+                    model=args.model or EXECUTOR.DEFAULT_MODEL,
+                    effort=args.effort or EXECUTOR.DEFAULT_EFFORT,
+                    app_name=args.app_name or EXECUTOR.DEFAULT_APP_NAME,
+                )
+                payload = EXECUTOR.execute_config(config, dry_run=args.dry_run)
+        elif args.command == "reconnect":
+            payload = EXECUTOR.reconnect_run(args.run_dir, dry_run=args.dry_run)
         elif args.command == "followup":
             payload = followup_run(
                 args.parent_run_dir,
@@ -4437,6 +4555,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
     except STATE.OracleStateError as exc:
+        payload = exc.envelope()
+    except EXECUTOR.ExecutionError as exc:
         payload = exc.envelope()
     except OracleRunError as exc:
         payload = exc.envelope()

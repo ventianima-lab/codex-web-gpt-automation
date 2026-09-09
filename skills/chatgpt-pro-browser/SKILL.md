@@ -1,6 +1,6 @@
 ---
 name: chatgpt-pro-browser
-description: Use for an explicitly requested ChatGPT Pro design, advice, or review through Oracle, including bounded follow-up rounds in the same conversation. New qualified Pro uses read-only DevSpace.
+description: Use the standing Oracle @codex Latest/6 Pro route for non-implementation cognition, with bounded explicit follow-up rounds and exact compatibility recovery.
 ---
 
 # ChatGPT Pro through Oracle
@@ -19,12 +19,16 @@ instead.
 Oracle is the only backend for a new Pro run. There is no new agbrowse,
 CodexPro, in-app Browser, custom CDP/Playwright, or `@chrome` fallback.
 
-## Qualified default route
+## Standing default route
 
-Pro is quota-limited. Invoke this skill only after an explicit user request;
-never infer Pro from task difficulty, select it as an automatic upgrade, or use
-it as a fallback from regular GPT. Qualified Pro uses Oracle with `GPT-5.6 Sol`
-at the Pro effort and the manually registered DevSpace app. The mission must bind one
+All non-implementation cognitive requirements use this route under standing
+approval; do not request per-run Pro opt-in. Oracle uses the manually registered
+`@codex` DevSpace app and the validated CLI carrier `model: gpt-5.6-sol`,
+`model_strategy: current`, and `thinking_time: pro`. Browser proof requires
+exact `Latest` checked, full `5/5` qualification, the composer's
+`Thinking effort` control, and a `6 Pro` signal in either the model menu or
+composer. Never fall back to GPT-5.6/5.5 or invent a `gpt-6`/`latest` CLI slug.
+The mission must bind one
 exact absolute project root. After one-time qualification, do not inspect,
 register, repair, select, or otherwise verify ChatGPT app/settings state on
 each run.
@@ -39,8 +43,9 @@ created and points to the complete root-preserving setup preview.
 
 Pro reads the mission and applicable `AGENTS.md` chain completely. Within the
 exact root it is read-only and limited to design, advice, or review: it must not
-create, edit, or remove files or run commands. A regular `GPT-5.6`
-`extra-high` DevSpace stage owns any required mutation or command. Repository
+create, edit, or remove files or run commands. Native `gpt-5.6-sol` owns any
+required implementation, mutation, or command; native Luna owns chores and
+focused tests, and Astra owns orchestration and deterministic release. Repository
 safety rules remain authoritative. Pro must not change accounts, app settings,
 or external state. It may
 not substitute a parent, child, similarly named, active, or shell-boundary
@@ -53,9 +58,10 @@ evidence or artifacts that DevSpace cannot read. It is never an automatic
 fallback from a DevSpace failure. Build only the declared packet, bind every
 attachment path and SHA-256, and never infer attachments from prose.
 
-## Required Web Multi decision
+## Explicit compatibility Web Multi decision
 
-Every standalone Pro result ends with this exact decision block:
+Only an explicitly selected selector-era/Web Multi compatibility workflow uses
+this exact decision block; it is not part of the standing default:
 
 ```text
 WEB_MULTI_NEEDED: YES|NO
@@ -77,8 +83,8 @@ does not turn the standalone Pro result into a review-to-implementation chain.
 1. Resolve and hash-validate the tested Oracle compatibility contract.
 2. Bind the same task-scoped normalized-project mutex used by regular Oracle work.
 3. Build a short UTF-8 mission that states the exact root, question, read-only
-   design/advice/review authority, and any evidence limitations. Route any
-   required file mutation or command to a regular `GPT-5.6` `extra-high` stage.
+   cognitive authority, and any evidence limitations. Route any required file
+   mutation or command to native Sol.
 4. Use a fresh Oracle slug and require Oracle model and transport evidence
    before accepting a send.
 
@@ -123,7 +129,10 @@ child, obtain explicit user no-submission confirmation, and use the runner's
 exact `settle-no-submission` path. An older exact no-live/no-URL/no-candidate
 harvest pair may be revalidated, but must never be deleted or rewritten.
 
-Completion requires the requested Pro model/effort evidence, exit zero, fresh
+Completion requires a structured observed-picker receipt proving exact
+`Latest` checked, full `5/5` qualification, the composer's `Thinking effort`
+control, and a `6 Pro` signal in either the model menu or composer; requested
+values or a log line alone are insufficient. It also requires exit zero, fresh
 nonempty host-only `output.md`, immutable run identity, and a refreshed
 transcript. The final nonempty line must also be
 `TASK_OUTCOME: EXECUTED|NOT_EXECUTED|BLOCKED`; every citation, footnote, and

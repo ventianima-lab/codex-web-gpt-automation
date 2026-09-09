@@ -23,18 +23,12 @@ Oracle and DevSpace use a **newest validated stable** policy.
 - Promotion requires the published archive integrity, exact package tree and patch hashes,
   Node syntax, focused compatibility tests, an Oracle no-submission canary, DevSpace local/public
   health and large-read/root canaries, Windows/macOS/Linux CI, review, and a normal release.
-- The DevSpace canary must not infer read health from `open_workspace`, an HTTP 401, or a bundled
-  instruction payload. It must receive one workspace ID, make a separate `read` call for the
-  project-contained mission through that same ID, and use `read_chunk` on the same file to return
-  its server-computed complete SHA-256. The local gate must match that digest to the bound mission
-  bytes. An audit run must make that nonce-bearing `open_workspace` the first workspace/process/
-  mutation call in its opaque OpenAI session scope; DevSpace then enforces and numbers the exact
-  `open_workspace` → `read` → `read_chunk` sequence and blocks every mutation surface, including
-  artifact download. The three tool results expose server-generated random receipt IDs which the
-  exact terminal Oracle conversation must echo; the gate verifies those IDs against the durable
-  receipt files, challenge-binding the opaque scope to the public conversation. `mcp_network_error`,
-  a changed ID, a partial chunk, a missing challenge response, a digest mismatch, or another connector blocks
-  promotion and blocks Pro use until a fresh regular non-Pro canary succeeds.
+- Access checks follow [the shared automation policy](AUTOMATION_POLICY.md).
+  Verify an actual read through the registered app rather than inferring it
+  from HTTP health. Tool choice follows the requested check; no audit nonce,
+  forced tool order, receipt count, or preliminary non-Pro run is required.
+  Test large-read behavior when that code changes, not as a recurring mission
+  ritual. Keep authentication, approved roots, and exact-run ownership intact.
 - The promoted `current` is the only default for new work. The previous verified version is
   retained as last-known-good (LKG) for rollback and exact historical recovery only.
 - Existing Oracle runs always retain their recorded version, command, task ownership, browser

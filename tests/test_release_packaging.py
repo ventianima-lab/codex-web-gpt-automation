@@ -72,14 +72,13 @@ def test_manifest_covers_runtime_and_schemas() -> None:
         'docs/templates/codex-agents/implementer.toml',
         'docs/templates/codex-agents/verifier.toml',
         'docs/templates/codex-agents/global-agents-policy.md',
-        'skills/chatgpt-pro-browser/SKILL.md',
-        'skills/chatgpt-pro-browser/agents/openai.yaml',
+        'skills/chatgpt-oracle-runtime/SKILL.md',
+        'skills/chatgpt-oracle-runtime/agents/openai.yaml',
         'skills/chatgpt-pro-browser/scripts/build_project_context_packet.py',
         'skills/chatgpt-pro-browser/scripts/run_chatgpt_pro.py',
         'skills/chatgpt-pro-plan-handoff/scripts/run_pro_plan_handoff.py',
         'skills/chatgpt-pro-plan-handoff/schemas/*.json',
-        'skills/ultra-economy-mode/SKILL.md',
-        'skills/ultra-economy-mode/agents/openai.yaml',
+        'docs/AUTOMATION_POLICY.md',
         'scripts/run_v4_contract_tests.py',
         'scripts/run_harness_canary.py',
         'contracts/install/*.json',
@@ -100,8 +99,8 @@ def test_manifest_covers_runtime_and_schemas() -> None:
         'README.en.md',
         'CONTRIBUTING.md',
         'docs/',
-        'skills/chatgpt-pro-browser/SKILL.md',
-        'skills/chatgpt-pro-browser/agents/openai.yaml',
+        'skills/chatgpt-oracle-runtime/SKILL.md',
+        'skills/chatgpt-oracle-runtime/agents/openai.yaml',
         'skills/chatgpt-pro-browser/scripts/build_project_context_packet.py',
         'skills/chatgpt-pro-browser/scripts/run_chatgpt_pro.py',
         'skills/chatgpt-pro-browser/scripts/run_pro_browser.py',
@@ -159,7 +158,7 @@ def test_package_is_publishable_and_lockfile_matches() -> None:
     assert package['homepage'].startswith('https://github.com/ventianima-lab/codex-web-gpt-automation')
     assert {
         'bin/chatgpt_agbrowse_bridge.py',
-        'skills/chatgpt-thinking-browser/SKILL.md',
+        'skills/chatgpt-oracle-runtime/SKILL.md',
         'install.ps1',
         'LICENSE',
         'scripts/run_v4_contract_tests.py',
@@ -195,18 +194,12 @@ def test_devspace_ci_preparer_pins_the_policy_archive_integrity() -> None:
 
 def test_manual_devspace_launch_docs_disable_optional_subagents_by_default() -> None:
     guide = (ROOT / "docs" / "FIRST_INSTALL.md").read_text(encoding="utf-8")
-    managed_environment = guide[
-        guide.index("DEVSPACE_TOOL_MODE=full") : guide.index(
-            "임시 URL은 앱 등록 후 바뀌므로", guide.index("DEVSPACE_TOOL_MODE=full")
-        )
-    ]
-    assert "아래 세 값을 유지합니다" in guide
-    assert "DEVSPACE_OAUTH_SCOPES=devspace,offline_access" in managed_environment
-    assert "DEVSPACE_SUBAGENTS=false" in managed_environment
+    assert "DEVSPACE_TAILSCALE_SETUP.md" in guide
     tailscale = (ROOT / "docs" / "DEVSPACE_TAILSCALE_SETUP.md").read_text(
         encoding="utf-8"
     )
     assert "`DEVSPACE_SUBAGENTS=false`" in tailscale
+    assert "`DEVSPACE_TOOL_MODE=full`" in tailscale
     assert "separately and explicitly approves" in tailscale
 
 
@@ -257,18 +250,14 @@ def test_tag_push_workflow_publishes_only_validated_annotated_release() -> None:
     assert 'scripts/check_docs.py --root .' in workflow
     assert 'actions: read' in workflow
     assert 'pull-requests: read' in workflow
-    assert 'Require reviewed validation PR and exact-commit portability CI' in workflow
+    assert 'Require merged PR and exact-commit portability CI' in workflow
     assert 'release-portability.yml/runs?head_sha=${release_commit}&event=push' in workflow
     assert '.head_branch == "main"' in workflow
     assert '.conclusion == "success"' in workflow
     assert 'commits/${release_commit}/pulls?per_page=100' in workflow
     assert '.merge_commit_sha == $sha' in workflow
-    assert '.commit_id == $sha' in workflow
-    assert '.state == "CHANGES_REQUESTED"' in workflow
-    assert '.state == "APPROVED"' in workflow
-    assert '.state == "COMMENTED"' in workflow
-    assert 'INDEPENDENT_REVIEW: PASS' in workflow
-    assert 'gsub("^\\\\s+|\\\\s+$"; "") | length) >= 40' in workflow
+    assert '.merged_at != null' in workflow
+    assert 'INDEPENDENT_REVIEW: PASS' not in workflow
     assert 'timeout-minutes: 50' in workflow
     assert 'gh release create "${RELEASE_TAG}" --verify-tag --generate-notes' in workflow
     assert 'releases/tags/${RELEASE_TAG}' in workflow
@@ -282,8 +271,8 @@ def test_update_guard_never_confuses_version_bump_with_published_release() -> No
         assert 'releases/latest' in text
         assert 'peeled remote tag' in text
         assert 'source/install' in text
-    assert 'A version bump is only release metadata preparation' in skill
-    assert 'Never call a version bump, commit, push, or successful branch CI' in skill
+    assert 'A version bump is not a' in skill
+    assert 'Never invent approval evidence or move a published tag' in skill
 
 
 def test_readme_release_badges_use_published_tags() -> None:

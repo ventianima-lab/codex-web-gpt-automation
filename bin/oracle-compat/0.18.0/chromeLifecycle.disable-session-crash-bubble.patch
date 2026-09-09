@@ -1,7 +1,90 @@
 diff --git a/dist/src/browser/chromeLifecycle.js b/dist/src/browser/chromeLifecycle.js
 --- a/dist/src/browser/chromeLifecycle.js
 +++ b/dist/src/browser/chromeLifecycle.js
-@@ -531,5 +531,6 @@ function buildChromeFlags(headless, debugBindAddress, hideWindow = false) {
+@@ -1,4 +1,5 @@
+-import { rm } from "node:fs/promises";
++import { rm, readFile, writeFile, rename, lstat, realpath } from "node:fs/promises";
++import path from "node:path";
+ import net from "node:net";
+ import CDP from "chrome-remote-interface";
+ import { launch, Launcher } from "chrome-launcher";
+@@ -5,4 +6,37 @@
+ import { cleanupStaleProfileState } from "./profileState.js";
+ import { delay } from "./utils.js";
+ import { isWsl, resolveWslChromeLaunchRoute } from "./wslHost.js";
++const startupBlankTargets = new Map();
++export async function prepareCopiedProfileStartup(config, userDataDir) {
++    if (!config.copyProfileSource) return;
++    const root = await realpath(userDataDir);
++    const source = await realpath(config.copyProfileSource);
++    const relative = path.relative(source, root);
++    if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
++        throw new Error('Refusing startup changes inside the source login profile');
++    }
++    const profile = config.chromeProfile || 'Default';
++    if (path.basename(profile) !== profile || profile === '.' || profile === '..') {
++        throw new Error('Invalid copied Chrome profile directory');
++    }
++    const directory = path.join(root, profile);
++    const target = path.join(directory, 'Preferences');
++    if ((await realpath(directory)) !== directory) throw new Error('Copied profile must not redirect');
++    let raw;
++    try {
++        if (!(await lstat(target)).isFile() || (await lstat(target)).isSymbolicLink()) throw new Error('Invalid copied Preferences');
++        raw = await readFile(target, 'utf8');
++    } catch (error) { if (error.code === 'ENOENT') return; throw error; }
++    const preferences = JSON.parse(raw);
++    if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) throw new Error('Invalid copied Preferences');
++    for (const key of ['profile', 'session']) {
++        if (preferences[key] !== undefined && (!preferences[key] || typeof preferences[key] !== 'object' || Array.isArray(preferences[key]))) throw new Error('Invalid copied startup preferences');
++    }
++    preferences.profile = { ...preferences.profile, exit_type: 'Normal', exited_cleanly: true };
++    preferences.session = { ...preferences.session, restore_on_startup: 5, startup_urls: [] };
++    const temporary = `${target}.oracle-startup-${process.pid}.tmp`;
++    await writeFile(temporary, JSON.stringify(preferences), { encoding: 'utf8', flag: 'wx' });
++    try { await rename(temporary, target); }
++    catch (error) { await rm(temporary, { force: true }); throw error; }
++}
+ export async function launchChrome(config, userDataDir, logger) {
+@@ -16,4 +50,5 @@
+     const usingCopiedProfile = Boolean(config.copyProfileSource);
++    await prepareCopiedProfileStartup(config, userDataDir);
+     if (usingCopiedProfile && config.chromeProfile) {
+         chromeFlags.push(`--profile-directory=${config.chromeProfile}`);
+     }
+@@ -38,4 +73,11 @@
+     const pidLabel = typeof launcher.pid === "number" ? ` (pid ${launcher.pid})` : "";
++    // Only remember initial blank targets in this newly launched owned browser.
++    // A reused/remote browser never enters this map.
++    try {
++        const targets = await CDP.List({ port: launcher.port, host: connectHost ?? '127.0.0.1' });
++        startupBlankTargets.set(`${connectHost ?? '127.0.0.1'}:${launcher.port}`,
++            new Set(targets.filter(isBlankPageTarget).map((target) => target.targetId ?? target.id)));
++    } catch { /* no positive ownership evidence: do not close tabs */ }
+     const hostLabel = connectHost ? ` on ${connectHost}` : "";
+     logger(`Launched Chrome${pidLabel} on port ${launcher.port}${hostLabel}`);
+     return Object.assign(launcher, { host: connectHost ?? "127.0.0.1" });
+@@ -387,4 +429,19 @@
+         if (targetConnection) {
++            const key = `${effectiveHost}:${port}`;
++            const initial = startupBlankTargets.get(key);
++            startupBlankTargets.delete(key);
++            if (initial && targetConnection.targetId) {
++                try {
++                    const targets = await CDP.List({ host: effectiveHost, port });
++                    for (const target of targets) {
++                        const id = target.targetId ?? target.id;
++                        if (id !== targetConnection.targetId && initial.has(id) && isBlankPageTarget(target)) {
++                            await CDP.Close({ host: effectiveHost, port, id });
++                            logger(`Closed owned startup blank tab (target=${id})`);
++                        }
++                    }
++                } catch { /* preserve tabs whenever identity or cleanup is uncertain */ }
++            }
+             return targetConnection;
+         }
+         if (attempt >= retries) {
+@@ -531,5 +588,6 @@ function buildChromeFlags(headless, debugBindAddress, hideWindow = false) {
          "--disable-background-timer-throttling",
          "--disable-breakpad",
 +        "--disable-session-crashed-bubble",

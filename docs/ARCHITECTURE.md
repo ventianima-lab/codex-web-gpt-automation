@@ -1,109 +1,42 @@
 # Architecture
 
-Codex Web GPT Automation is a guarded bridge between local Codex work and
-signed-in web ChatGPT sessions. It does not replace Codex, Oracle, DevSpace, or
-ChatGPT; it binds their identities and lifecycle into a recoverable workflow.
+New work follows [the shared automation policy](AUTOMATION_POLICY.md).
 
-## Current execution path
+## Normal path
 
-```mermaid
-flowchart LR
-    C["Local Codex commander"] --> M["UTF-8 mission + manifest"]
-    M --> G["Root, identity, and SHA guards"]
-    G --> O["Oracle browser session"]
-    O --> W["Web ChatGPT"]
-    W --> D["DevSpace exact project root"]
-    W --> R["Durable result"]
-    R --> V["State, hash, and final local gate"]
-```
+The native commander supplies one mission, an exact approved project root,
+and an explicit model/effort choice. Oracle operates a temporary ChatGPT tab;
+DevSpace exposes only user-approved project access. Task type is prompt content,
+not a separate planning, review, editing, orchestration, or comprehensive engine.
 
-| Layer | Owns | Must not own |
-|---|---|---|
-| Local Codex | scope, authorization, mission bytes, deterministic final checks | hidden web execution or guessed recovery |
-| Dispatcher/state | exact root, model/effort, locks, hashes, lifecycle authority | semantic rewriting of completed web work |
-| Oracle | signed-in browser session, model selection evidence, wait/harvest | project filesystem access outside DevSpace |
-| Web ChatGPT | planning, research, implementation, review by selected mode | host credentials or unapproved roots |
-| DevSpace | approved workspace tools and OAuth boundary | ChatGPT app registration automation |
+The current model compatibility route explicitly selects Latest in the UI
+before the requested effort. The Oracle CLI carrier is not the UI model name.
+Model selection is checked once before submission, without a chain of duplicate
+receipts.
 
-## Guarded submission
+## Lifecycle
 
-Before a new project sends its first DevSpace-backed question, the normalized
-project root must exactly match one current `allowedRoots` entry. Parent,
-child, same-name, or other-drive paths are not substitutes. The qualification
-is cached against the DevSpace config hash and repeated only when configuration
-changes.
+Each run owns its task identity, mission, state, browser tab, and output.
+Capture the complete result durably before closing the owned tab. A timeout or
+connection failure retains the same run for recovery; it never automatically
+creates a new submission. Temporary chats have no archive/restore phase.
 
-Every run records the project, mission bytes, transport, model, effort, and
-artifact identity. Regular web work defaults to the highest supported non-Pro
-reasoning tier. New Pro is an explicit, quota-aware opt-in for exact-root,
-read-only DevSpace design, advice, or review. A regular `GPT-5.6` `extra-high`
-DevSpace stage performs every file creation, edit, removal, and command.
-Explicit attachment mode remains a separate read-only immutable-evidence
-contract, not an automatic fallback. Persisted legacy `pro-devspace` write
-runs preserve their exact original authority only during recovery.
+Transport completion means the answer was captured, not that every requested
+project action succeeded. The commander evaluates the actual answer and any
+relevant project tests. No magic output marker or prescribed tool-call order
+is needed to express a successful result.
 
-## Recoverable lifecycle
+## Boundaries
 
-The task-scoped project lock follows exact session authority; different bound Codex tasks use distinct locks even at the same root:
+Authentication, approved roots, and task ownership are enforced at their
+respective boundaries. Setup verifies real access once and rechecks only when
+relevant configuration changes or a failure warrants it. Projects retain
+their domain and test requirements while sharing the app's transport policy.
 
-```text
-pre-submit -> submitted/unknown -> live -> terminal -> harvested
-```
+Historical executors and schemas remain isolated recovery references. Existing
+records are not migrated by rewriting their authority, and legacy recovery
+never becomes an automatic new-work fallback.
 
-Authority is monotonic. A post-submit timeout never creates a replacement run;
-recovery uses the persisted Oracle slug and conversation URL. A proven
-pre-submit failure can be settled only through its supported evidence path.
-Exact recovery uses a run-scoped mutex, not the project submission mutex. This
-allows a prompt-free harvest of the same slug when a disconnected original
-observer still owns the project mutex, while unresolved state continues to
-block every fresh submission until terminal output is durably committed.
-
-The 80-minute mark is a caution/status-audit threshold, not a deadline. The
-host records exact-run liveness and artifact/terminal evidence and continues
-the same process or exact-slug live observation. Elapsed time alone cannot
-terminate a run, release its lock, mark it failed, or authorize a replacement.
-
-## Staged workflows
-
-- `orchestrator` is one authorized web implementation pass.
-- comprehensive mode binds plan, review, implementation, and gates with
-  per-stage identity and hash receipts.
-- Web Multi-GPT runs genuinely independent Oracle sessions in bounded waves and
-  merges compact handoffs.
-- Local Multi-GPT is an optional read-only PC-local advisory tool.
-- Ultra Economy Mode constrains local command to Luna Max and separates Pro
-  design, web implementation, and web verification.
-- Ultra GPT Mode replaces cognitive native subagents with bounded Oracle web
-  sessions: a regular planner, reviewer/partitioner, parallel worktree-write
-  Web Multi implementers, an all-lanes audit barrier, merger, and independent
-  final verifier. Each writer receives a distinct pre-created Git worktree;
-  host-validated disjoint project-relative ownership and actual-delta auditing
-  prevent concurrent overlap before the combined result reaches canonical.
-  When the web app withholds mutating tools, closed host-materialization
-  envelopes preserve the same identity and ownership checks without
-  mislabeling a write tool as read-only. A separate bounded `read_chunk`
-  surface reconstructs UTF-8 files whose first line exceeds the upstream 50KB
-  line-oriented reader limit. Its preflight executes the exact hash-gated
-  installed helper body in a dependency-minimal Node process instead of
-  importing the full MCP server graph. An explicit provider-UI user stop is terminalized
-  only through the comprehensive runner's hash-bound `CANCELED` settlement. It preserves the
-  Oracle run state, records authority/completion receipts, and releases only the
-  exact workflow scope; canceled workflows cannot be reactivated.
-  The same settlement command accepts the distinct
-  `user-confirmed-pre-submit-workflow-cancel` authority only for the exact
-  known bridge-timeout pre-submit state with empty stdout, no output, and no
-  conversation binding.
-  Local Codex retains deterministic control and release duties.
-
-## Installation lifecycle
-
-The portable installer owns only files listed by `install-manifest.json`.
-Before mutation it creates backups, a write-ahead log, and a receipt. Rollback
-and uninstall are exact inverses for unchanged managed bytes; modified or
-unmanaged destinations are preserved as conflicts.
-
-## Compatibility boundary
-
-`codexpro-*` and agbrowse assets are frozen identifiers for exact recovery of
-persisted legacy work. New work uses Oracle. See [Frozen Legacy](FROZEN_LEGACY.md)
-for the inventory and the versioned architecture files for historical details.
+Installation preserves user configuration and credential-bearing state.
+Source delivery, installed byte parity, and release publication are reported
+separately. Runtime updates must not interrupt foreign active work.

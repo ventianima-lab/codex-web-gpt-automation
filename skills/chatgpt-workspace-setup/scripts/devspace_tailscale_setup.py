@@ -47,6 +47,10 @@ COOKIE_VALUE_PATTERN = re.compile(r"(?i)(\b[^=;\s]*(?:session|token|auth|cookie)
 HOSTNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]*\.ts\.net$", re.IGNORECASE)
 WINDOWS_BOOTSTRAP_RUN_NAME = "Codex Web GPT DevSpace Bootstrap"
 WINDOWS_BOOTSTRAP_WATCH_SECONDS = 30
+MANAGED_COMMAND_TIMEOUT_SECONDS = 15 * 60
+INTERACTIVE_INIT_TIMEOUT_SECONDS = 30 * 60
+STATUS_COMMAND_TIMEOUT_SECONDS = 30
+WATCHDOG_REGISTRATION_TIMEOUT_SECONDS = 30
 
 
 class SetupError(ValueError):
@@ -143,6 +147,88 @@ def windows_subprocess_kwargs(platform_name: str | None = None) -> dict[str, Any
     return {"creationflags": creationflags, "startupinfo": startupinfo}
 
 
+def _persistent_windows_user_path() -> str:
+    """Read the persisted per-user Path without mutating this process or the registry."""
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, value_type = winreg.QueryValueEx(key, "Path")
+        if not isinstance(value, str):
+            return ""
+        if value_type == winreg.REG_EXPAND_SZ:
+            value = winreg.ExpandEnvironmentStrings(value)
+        return value
+    except (ImportError, OSError):
+        return ""
+
+
+def _environment_path_key(environment: dict[str, str]) -> str:
+    return next((key for key in environment if key.casefold() == "path"), "PATH")
+
+
+def runtime_subprocess_environment(
+    base: dict[str, str] | None = None,
+    *,
+    platform_name: str | None = None,
+) -> dict[str, str]:
+    """Merge the persisted Windows user Path for this child process only."""
+    environment = dict(os.environ if base is None else base)
+    if (platform_name or os.name) != "nt":
+        return environment
+    path_key = _environment_path_key(environment)
+    current = environment.get(path_key, "")
+    persisted = _persistent_windows_user_path()
+    entries: list[str] = []
+    seen: set[str] = set()
+    for value in (current, persisted):
+        for entry in value.split(";"):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key = os.path.normcase(os.path.normpath(entry.strip('"')))
+            if key not in seen:
+                entries.append(entry)
+                seen.add(key)
+    environment[path_key] = ";".join(entries)
+    return environment
+
+
+def resolve_runtime_executable(
+    executable: str,
+    *,
+    environment: dict[str, str] | None = None,
+    platform_name: str | None = None,
+) -> str:
+    """Resolve an installed executable from the child environment, including user Path."""
+    platform = platform_name or os.name
+    if platform != "nt" or Path(executable).is_absolute() or any(mark in executable for mark in ("/", "\\")):
+        return executable
+    child_environment = environment or runtime_subprocess_environment(platform_name=platform)
+    path_value = child_environment.get(_environment_path_key(child_environment), "")
+    resolved = shutil.which(executable, path=path_value)
+    if resolved:
+        return str(Path(resolved).resolve())
+    # Permit deterministic Windows-path tests even when the test host does not
+    # apply PATHEXT semantics itself.
+    suffixes = tuple(
+        suffix.casefold()
+        for suffix in child_environment.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
+        if suffix
+    )
+    for directory in path_value.split(";"):
+        directory = directory.strip().strip('"')
+        if not directory:
+            continue
+        for suffix in ("", *suffixes):
+            candidate = Path(directory) / f"{executable}{suffix}"
+            if candidate.is_file():
+                return str(candidate.resolve())
+    return executable
+
+
 def bash_argv(command: Sequence[str]) -> list[str]:
     return [str(git_bash_path()), "-lc", "exec " + " ".join(shlex.quote(part) for part in command)]
 
@@ -151,6 +237,23 @@ def command_argv(command: Sequence[str], *, platform_name: str | None = None) ->
     if (platform_name or os.name) == "nt":
         return bash_argv(command)
     return list(command)
+
+
+def devspace_npx_argv(
+    subcommand: str,
+    *,
+    platform_name: str | None = None,
+    resolve_runtime: bool = True,
+) -> list[str]:
+    executable = (
+        resolve_runtime_executable("npx", platform_name=platform_name)
+        if resolve_runtime
+        else "npx"
+    )
+    return command_argv(
+        [executable, "--yes", DEVSPACE_PACKAGE, subcommand],
+        platform_name=platform_name,
+    )
 
 
 def devspace_compat_argv(
@@ -188,7 +291,7 @@ def devspace_native_prepare_argv() -> list[str]:
 
 def devspace_package_prepare_argv(*, platform_name: str | None = None) -> list[str]:
     """Materialize the exact pinned npx tree before inspecting/rebuilding it."""
-    return command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "--version"], platform_name=platform_name)
+    return devspace_npx_argv("--version", platform_name=platform_name)
 
 
 def setup_plan(
@@ -208,10 +311,10 @@ def setup_plan(
         "preserved_existing_roots": [str(root) for root in preserved],
         "root_merge_applied": bool(preserved),
         "root_safety": "existing allowedRoots are preserved; setup must use the complete displayed list",
-        "devspace_init": command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "init"], platform_name=platform_name),
-        "devspace_package_prepare": devspace_package_prepare_argv(platform_name=platform_name),
+        "devspace_init": devspace_npx_argv("init", platform_name=platform_name, resolve_runtime=False),
+        "devspace_package_prepare": devspace_npx_argv("--version", platform_name=platform_name, resolve_runtime=False),
         "devspace_native_prepare": devspace_native_prepare_argv(),
-        "devspace_serve": command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform_name),
+        "devspace_serve": devspace_npx_argv("serve", platform_name=platform_name, resolve_runtime=False),
         "managed_service_environment": {
             "DEVSPACE_TOOL_MODE": DEVSPACE_TOOL_MODE,
             "DEVSPACE_OAUTH_SCOPES": DEVSPACE_OAUTH_SCOPES,
@@ -240,21 +343,58 @@ def setup_plan(
     }
 
 
-def run_checked(argv: Sequence[str], *, runner: Callable[..., Any] = subprocess.run) -> None:
-    run_checked_result(argv, runner=runner)
+def run_checked(
+    argv: Sequence[str],
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+    stage: str = "managed-command",
+    timeout_seconds: float = MANAGED_COMMAND_TIMEOUT_SECONDS,
+    platform_name: str | None = None,
+) -> None:
+    run_checked_result(
+        argv,
+        runner=runner,
+        stage=stage,
+        timeout_seconds=timeout_seconds,
+        platform_name=platform_name,
+    )
 
 
 def run_checked_result(
-    argv: Sequence[str], *, runner: Callable[..., Any] = subprocess.run
+    argv: Sequence[str],
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+    stage: str = "managed-command",
+    timeout_seconds: float = MANAGED_COMMAND_TIMEOUT_SECONDS,
+    platform_name: str | None = None,
 ) -> Any:
     """Run a managed command and retain its checked result for a bounded caller."""
-    completed = runner(
-        list(argv), check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        **windows_subprocess_kwargs(),
-    )
+    try:
+        completed = runner(
+            list(argv),
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            env=runtime_subprocess_environment(platform_name=platform_name),
+            **windows_subprocess_kwargs(platform_name),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise SetupError(
+            f"DEVSPACE_STAGE_TIMEOUT:{stage}:{timeout_seconds:g}s:rerun-the-same-command-to-resume"
+        ) from error
+    except OSError as error:
+        raise SetupError(
+            f"DEVSPACE_STAGE_START_FAILED:{stage}:{type(error).__name__}:check-runtime-and-retry"
+        ) from error
     if completed.returncode != 0:
         summary = redact((completed.stderr or completed.stdout or "").strip())[-1200:]
-        raise SetupError(f"MANAGED_COMMAND_FAILED:{completed.returncode}:{summary}")
+        detail = f":{summary}" if summary else ""
+        raise SetupError(
+            f"DEVSPACE_STAGE_FAILED:{stage}:exit={completed.returncode}{detail}:rerun-the-same-command-to-resume"
+        )
     return completed
 
 
@@ -262,7 +402,11 @@ def checked_compatibility_report(
     *, runner: Callable[..., Any] = subprocess.run,
 ) -> dict[str, Any]:
     """Run the exact compatibility gate and require its machine-readable result."""
-    completed = run_checked_result(devspace_compat_argv(), runner=runner)
+    completed = run_checked_result(
+        devspace_compat_argv(),
+        runner=runner,
+        stage="compatibility-report",
+    )
     try:
         report = json.loads(completed.stdout or "")
     except json.JSONDecodeError as error:
@@ -278,9 +422,31 @@ def run_interactive_checked(
     argv: Sequence[str],
     *,
     runner: Callable[..., Any] = subprocess.run,
+    stage: str = "devspace-init",
+    timeout_seconds: float = INTERACTIVE_INIT_TIMEOUT_SECONDS,
+    platform_name: str | None = None,
 ) -> None:
     """Run a bounded setup prompt attached to the user's current terminal."""
-    runner(list(argv), check=True, text=True)
+    try:
+        completed = runner(
+            list(argv),
+            check=False,
+            text=True,
+            timeout=timeout_seconds,
+            env=runtime_subprocess_environment(platform_name=platform_name),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise SetupError(
+            f"DEVSPACE_STAGE_TIMEOUT:{stage}:{timeout_seconds:g}s:rerun-setup-apply-to-resume"
+        ) from error
+    except OSError as error:
+        raise SetupError(
+            f"DEVSPACE_STAGE_START_FAILED:{stage}:{type(error).__name__}:check-runtime-and-retry"
+        ) from error
+    if completed.returncode != 0:
+        raise SetupError(
+            f"DEVSPACE_STAGE_FAILED:{stage}:exit={completed.returncode}:rerun-setup-apply-to-resume"
+        )
 
 
 def interactive_terminal_available() -> bool:
@@ -327,18 +493,29 @@ def review_owner_password_interactive(
         raise SetupError("DEVSPACE_AUTH_UNREADABLE") from error
     if not isinstance(payload, dict) or not isinstance(payload.get("ownerToken"), str) or not payload["ownerToken"]:
         raise SetupError("DEVSPACE_OWNER_PASSWORD_MISSING")
-    choice = input_fn(
-        "Keep the generated Owner password (recommended), or set a custom one? [K/c]: "
-    ).strip().casefold()
+    output_fn("Owner 암호 선택: K=생성값 유지(권장), C=사용자 지정, X=취소.")
+    choice = input_fn("선택 [K/C/X]: ").strip().casefold()
     changed = False
     if choice in {"", "k", "keep"}:
         owner_password = payload["ownerToken"]
     elif choice in {"c", "custom"}:
-        first = _validate_custom_owner_password(getpass_fn("New Owner password: "))
-        second = getpass_fn("Confirm Owner password: ")
-        if first != second:
-            raise SetupError("DEVSPACE_OWNER_PASSWORD_CONFIRMATION_MISMATCH")
-        owner_password = first
+        output_fn(
+            "사용자 지정 암호 조건: 16자 이상, 공백 없이, 소문자/대문자/숫자/기호 중 3종류 이상."
+        )
+        while True:
+            try:
+                first = _validate_custom_owner_password(getpass_fn("새 Owner 암호: "))
+            except SetupError as error:
+                if str(error) != "DEVSPACE_OWNER_PASSWORD_STRENGTH_INVALID":
+                    raise
+                output_fn("암호 조건을 충족하지 않습니다. 같은 터미널에서 다시 입력하세요.")
+                continue
+            second = getpass_fn("Owner 암호 확인: ")
+            if first != second:
+                output_fn("확인 암호가 일치하지 않습니다. 같은 터미널에서 다시 입력하세요.")
+                continue
+            owner_password = first
+            break
         replacement = dict(payload)
         replacement["ownerToken"] = owner_password
         temporary = target.with_name(f".{target.name}.tmp-{time.time_ns()}")
@@ -352,6 +529,8 @@ def review_owner_password_interactive(
         finally:
             temporary.unlink(missing_ok=True)
         changed = True
+    elif choice in {"x", "cancel", "취소"}:
+        raise SetupError("DEVSPACE_OWNER_PASSWORD_REVIEW_CANCELLED")
     else:
         raise SetupError("DEVSPACE_OWNER_PASSWORD_CHOICE_INVALID")
     output_fn("Owner password (save this now in a password manager):")
@@ -365,8 +544,12 @@ def review_owner_password_interactive(
     }
 
 
-def devspace_service_environment(base: dict[str, str] | None = None) -> dict[str, str]:
-    environment = dict(os.environ if base is None else base)
+def devspace_service_environment(
+    base: dict[str, str] | None = None,
+    *,
+    platform_name: str | None = None,
+) -> dict[str, str]:
+    environment = runtime_subprocess_environment(base, platform_name=platform_name)
     environment["DEVSPACE_TOOL_MODE"] = DEVSPACE_TOOL_MODE
     environment["DEVSPACE_OAUTH_SCOPES"] = DEVSPACE_OAUTH_SCOPES
     # DevSpace 1.0.8 adds an optional local-agent daemon that can invoke local
@@ -418,15 +601,62 @@ def apply_setup(
     if slot.get("mapping") == "conflict":
         raise SetupError("TAILSCALE_FUNNEL_PORT_IN_USE")
     if config_path is not None and config_path.exists():
-        persist_existing_setup_config(config_path, config)
+        if config_path.is_symlink():
+            raise SetupError("DEVSPACE_CONFIG_SYMLINK_UNSUPPORTED")
+        # Config can survive an interrupted init before DevSpace writes auth.json.
+        # Treat valid auth as the completion boundary; malformed auth is never
+        # overwritten or regenerated automatically.
+        original_payload = persisted_config(config_path)
+        auth_path = devspace_auth_path(config_path)
+        owner_auth = valid_owner_auth(auth_path, allow_missing=True)
+        if owner_auth is not None:
+            persist_existing_setup_config(config_path, config)
+        else:
+            if not terminal_check():
+                raise SetupError("DEVSPACE_PARTIAL_INIT_REQUIRES_INTERACTIVE_TTY")
+            original_bytes = config_path.read_bytes()
+            try:
+                run_interactive_checked(
+                    devspace_npx_argv("init", platform_name=platform_name),
+                    runner=runner,
+                    stage="devspace-init-resume-auth",
+                    platform_name=platform_name,
+                )
+                valid_owner_auth(auth_path)
+                generated_payload = persisted_config(config_path)
+                repaired_payload = {**generated_payload, **original_payload}
+                repaired_payload.update(
+                    {
+                        "allowedRoots": [str(root) for root in config.roots],
+                        "publicBaseUrl": config.public_origin,
+                    }
+                )
+                _replace_setup_config_payload(config_path, repaired_payload)
+            except Exception:
+                _replace_file_bytes_atomic(config_path, original_bytes)
+                raise
+            owner_password_reviewer(auth_path=auth_path)
     else:
         if not terminal_check():
             raise SetupError("DEVSPACE_FIRST_INIT_REQUIRES_INTERACTIVE_TTY")
         run_interactive_checked(
-            command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "init"], platform_name=platform_name),
+            devspace_npx_argv("init", platform_name=platform_name),
             runner=runner,
+            stage="devspace-init",
+            platform_name=platform_name,
         )
-        owner_password_reviewer()
+        # DevSpace may have already created config/auth before its interactive
+        # init was interrupted.  Complete only the two non-secret setup fields
+        # atomically so rerunning setup can safely resume without regenerating auth.
+        if config_path is not None:
+            if not config_path.exists():
+                raise SetupError("DEVSPACE_INIT_DID_NOT_CREATE_CONFIG")
+            auth_path = devspace_auth_path(config_path)
+            valid_owner_auth(auth_path)
+            persist_existing_setup_config(config_path, config)
+            owner_password_reviewer(auth_path=auth_path)
+        else:
+            owner_password_reviewer()
     if config_path is not None:
         persisted = persisted_allowed_roots(config_path)
         missing = [
@@ -436,18 +666,25 @@ def apply_setup(
         ]
         if missing:
             raise SetupError("DEVSPACE_SETUP_DID_NOT_PERSIST_COMPLETE_ALLOWED_ROOTS")
-    run_checked(devspace_package_prepare_argv(platform_name=platform_name), runner=runner)
-    run_checked(devspace_native_prepare_argv(), runner=runner)
-    run_checked(devspace_native_argv(), runner=runner)
-    run_checked(devspace_compat_argv(), runner=runner)
+    run_checked(
+        devspace_package_prepare_argv(platform_name=platform_name),
+        runner=runner,
+        stage="package-prepare",
+        platform_name=platform_name,
+    )
+    run_checked(devspace_native_prepare_argv(), runner=runner, stage="native-runtime-prepare")
+    run_checked(devspace_native_argv(), runner=runner, stage="native-runtime-check")
+    run_checked(devspace_compat_argv(), runner=runner, stage="compatibility-check")
     run_checked(
         devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
         runner=runner,
+        stage="managed-service-stop",
     )
     launch_managed_devspace_service(popen_factory=popen_factory, platform_name=platform_name)
     run_checked(
         devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
         runner=runner,
+        stage="managed-service-restart-confirmation",
     )
     wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     ensure_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
@@ -470,9 +707,9 @@ def recover_service(
     """
     local = http_probe(config.local_mcp_url, opener=opener)
     service_started = not local.get("ok")
-    run_checked(devspace_package_prepare_argv(), runner=runner)
-    run_checked(devspace_native_prepare_argv(), runner=runner)
-    run_checked(devspace_native_argv(), runner=runner)
+    run_checked(devspace_package_prepare_argv(), runner=runner, stage="package-prepare")
+    run_checked(devspace_native_prepare_argv(), runner=runner, stage="native-runtime-prepare")
+    run_checked(devspace_native_argv(), runner=runner, stage="native-runtime-check")
     compatibility = checked_compatibility_report(runner=runner)
     restart_required = bool(compatibility.get("service_restart_required"))
     service_restarted = service_started or restart_required
@@ -480,11 +717,13 @@ def recover_service(
         run_checked(
             devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
             runner=runner,
+            stage="managed-service-stop",
         )
         launch = launch_managed_devspace_service(popen_factory=popen_factory)
         run_checked(
             devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
             runner=runner,
+            stage="managed-service-restart-confirmation",
         )
     if service_started and restart_required:
         reconciliation_reason = "listener-absent-and-compatibility-restart-required"
@@ -523,18 +762,20 @@ def refresh_after_app_registration(
     the existing config, Owner credential, OAuth database, roots, and Funnel
     hostname.
     """
-    run_checked(devspace_package_prepare_argv(), runner=runner)
-    run_checked(devspace_native_prepare_argv(), runner=runner)
-    run_checked(devspace_native_argv(), runner=runner)
-    run_checked(devspace_compat_argv(), runner=runner)
+    run_checked(devspace_package_prepare_argv(), runner=runner, stage="package-prepare")
+    run_checked(devspace_native_prepare_argv(), runner=runner, stage="native-runtime-prepare")
+    run_checked(devspace_native_argv(), runner=runner, stage="native-runtime-check")
+    run_checked(devspace_compat_argv(), runner=runner, stage="compatibility-check")
     run_checked(
         devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
         runner=runner,
+        stage="managed-service-stop",
     )
     launch = launch_managed_devspace_service(popen_factory=popen_factory)
     run_checked(
         devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
         runner=runner,
+        stage="managed-service-restart-confirmation",
     )
     readiness = wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     result = refresh_exact_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
@@ -593,6 +834,7 @@ def refresh_exact_public_route(
         run_checked(
             ["tailscale", "funnel", "--bg", f"--https={config.public_port}", "off"],
             runner=runner,
+            stage="funnel-route-disable",
         )
     result = ensure_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
     return {
@@ -746,7 +988,7 @@ def run_managed_devspace_service(
     _write_json_atomic(paths["state"], base_state)
     try:
         child = popen_factory(
-            command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform),
+            devspace_npx_argv("serve", platform_name=platform),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -755,7 +997,7 @@ def run_managed_devspace_service(
             errors="replace",
             bufsize=1,
             shell=False,
-            env=devspace_service_environment(),
+            env=devspace_service_environment(platform_name=platform),
             start_new_session=platform != "nt",
             **windows_subprocess_kwargs(platform),
         )
@@ -800,7 +1042,7 @@ def launch_managed_devspace_service(
     paths = managed_service_paths(codex_home)
     supervisor = launch_hidden(
         managed_service_runner_argv(), popen_factory=popen_factory,
-        environment=devspace_service_environment(), platform_name=platform_name,
+        environment=devspace_service_environment(platform_name=platform_name), platform_name=platform_name,
     )
     return {
         "supervisor_pid": int(supervisor.pid),
@@ -846,13 +1088,21 @@ def register_windows_bootstrap_watchdog(
 ) -> dict[str, Any]:
     platform = platform_name or os.name
     if platform != "nt":
-        return {"ok": True, "changed": False, "platform": platform, "mode": "external-login-service"}
+        return {
+            "ok": True,
+            "changed": False,
+            "platform": platform,
+            "mode": "external-login-service",
+            "registration_verified": False,
+            "restart_persistence_verified": False,
+            "persistence_verified": False,
+        }
     root = (codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))).resolve()
     script = root / "scripts" / "start_devspace_bootstrap.ps1"
     if not script.is_file():
         raise SetupError("DEVSPACE_BOOTSTRAP_WATCHDOG_SCRIPT_MISSING")
     command = windows_bootstrap_watchdog_command(root)
-    runner(
+    run_checked_result(
         [
             "reg.exe",
             "ADD",
@@ -865,10 +1115,10 @@ def register_windows_bootstrap_watchdog(
             command,
             "/f",
         ],
-        check=True,
-        text=True,
-        capture_output=True,
-        **windows_subprocess_kwargs(platform),
+        runner=runner,
+        stage="watchdog-registration",
+        timeout_seconds=WATCHDOG_REGISTRATION_TIMEOUT_SECONDS,
+        platform_name=platform,
     )
     launch_hidden(
         [
@@ -895,6 +1145,12 @@ def register_windows_bootstrap_watchdog(
         "mode": "per-user-login-watchdog",
         "run_name": WINDOWS_BOOTSTRAP_RUN_NAME,
         "watch_interval_seconds": WINDOWS_BOOTSTRAP_WATCH_SECONDS,
+        "registration_verified": True,
+        # Registry registration and process launch do not prove a successful
+        # managed recovery cycle.  The onboarding gate must consume the
+        # separate bootstrap-recovery receipt emitted by the watchdog.
+        "restart_persistence_verified": False,
+        "persistence_verified": False,
     }
 
 
@@ -976,6 +1232,7 @@ def ensure_public_route(
         run_checked(
             ["tailscale", "funnel", "--bg", f"--https={config.public_port}", f"http://127.0.0.1:{config.local_port}"],
             runner=runner,
+            stage="funnel-route-apply",
         )
     final = funnel_status(config, runner=runner)
     if not final.get("ok"):
@@ -1005,13 +1262,76 @@ def persisted_config(config_path: Path) -> dict[str, Any]:
     return payload
 
 
-def persisted_allowed_roots(config_path: Path) -> tuple[Path, ...]:
-    payload = persisted_config(config_path)
-    values = payload.get("allowedRoots")
-    if not isinstance(values, list) or not values:
+def devspace_auth_path(config_path: Path) -> Path:
+    return config_path.with_name("auth.json")
+
+
+def valid_owner_auth(auth_path: Path, *, allow_missing: bool = False) -> dict[str, Any] | None:
+    """Validate only the auth shape needed to know initialization is complete."""
+    if auth_path.is_symlink():
+        raise SetupError("DEVSPACE_AUTH_SYMLINK_UNSUPPORTED")
+    if not auth_path.exists():
+        if allow_missing:
+            return None
+        raise SetupError("DEVSPACE_AUTH_MISSING")
+    try:
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise SetupError("DEVSPACE_AUTH_UNREADABLE") from error
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("ownerToken"), str)
+        or not payload["ownerToken"]
+    ):
+        raise SetupError("DEVSPACE_OWNER_PASSWORD_MISSING")
+    return payload
+
+
+def _replace_setup_config_payload(config_path: Path, payload: dict[str, Any]) -> None:
+    """Atomically replace config bytes after a resumed interactive init."""
+    temporary = config_path.with_name(f".{config_path.name}.tmp-{time.time_ns()}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        persisted_config(temporary)
+        os.replace(temporary, config_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _replace_file_bytes_atomic(path: Path, data: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.tmp-{time.time_ns()}")
+    try:
+        temporary.write_bytes(data)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _allowed_roots_from_payload(
+    payload: dict[str, Any],
+    *,
+    allow_incomplete: bool = False,
+) -> tuple[Path, ...]:
+    if "allowedRoots" not in payload:
+        if allow_incomplete:
+            return ()
+        raise SetupError("DEVSPACE_CONFIG_ALLOWED_ROOTS_MISSING")
+    values = payload["allowedRoots"]
+    if not isinstance(values, list):
+        raise SetupError("DEVSPACE_CONFIG_ALLOWED_ROOTS_INVALID")
+    if not values:
+        if allow_incomplete:
+            return ()
         raise SetupError("DEVSPACE_CONFIG_ALLOWED_ROOTS_MISSING")
     roots: list[Path] = []
     for value in values:
+        if not isinstance(value, str) or not value:
+            raise SetupError("DEVSPACE_CONFIG_ALLOWED_ROOT_INVALID")
         candidate = Path(str(value)).expanduser()
         if not candidate.is_absolute():
             raise SetupError("DEVSPACE_CONFIG_ALLOWED_ROOT_INVALID")
@@ -1019,8 +1339,12 @@ def persisted_allowed_roots(config_path: Path) -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def persisted_allowed_roots(config_path: Path) -> tuple[Path, ...]:
+    return _allowed_roots_from_payload(persisted_config(config_path))
+
+
 def persist_existing_setup_config(config_path: Path, config: SetupConfig) -> Path:
-    """Atomically update non-secret DevSpace config while preserving auth state."""
+    """Atomically update only non-secret roots/origin while preserving every other field."""
     if config_path.is_symlink():
         raise SetupError("DEVSPACE_CONFIG_SYMLINK_UNSUPPORTED")
     payload = persisted_config(config_path)
@@ -1028,10 +1352,8 @@ def persist_existing_setup_config(config_path: Path, config: SetupConfig) -> Pat
     shutil.copy2(config_path, backup_path)
     payload.update(
         {
-            "host": payload.get("host") or "127.0.0.1",
-            "port": config.local_port,
             "allowedRoots": [str(root) for root in config.roots],
-            "publicBaseUrl": f"https://{config.hostname}",
+            "publicBaseUrl": config.public_origin,
         }
     )
     temporary = config_path.with_name(f".{config_path.name}.tmp-{time.time_ns()}")
@@ -1043,6 +1365,7 @@ def persist_existing_setup_config(config_path: Path, config: SetupConfig) -> Pat
             json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
             encoding="utf-8",
         )
+        os.chmod(temporary, 0o600)
         # Parse the staged bytes strictly before replacing the live file.
         persisted_config(temporary)
         os.replace(temporary, config_path)
@@ -1051,17 +1374,44 @@ def persist_existing_setup_config(config_path: Path, config: SetupConfig) -> Pat
     return backup_path
 
 
-def synchronize_existing_bootstrap_config(bootstrap_path: Path, config: SetupConfig) -> Path | None:
-    """Keep the diagnostic bootstrap mirror aligned without making it runtime authority."""
-    if not bootstrap_path.exists():
-        return None
-    if bootstrap_path.is_symlink():
-        raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_SYMLINK_UNSUPPORTED")
+def verify_bootstrap_config(bootstrap_path: Path, config: SetupConfig) -> dict[str, Any]:
+    """Verify the live diagnostic mirror; registration alone is not persistence proof."""
     payload = persisted_config(bootstrap_path)
+    expected_roots = [str(root) for root in config.roots]
     if payload.get("schema") != "codexpro.devspace-bootstrap/v1":
         raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_SCHEMA_UNSUPPORTED")
-    backup_path = bootstrap_path.with_name(f"{bootstrap_path.name}.bak-{time.time_ns()}")
-    shutil.copy2(bootstrap_path, backup_path)
+    if payload.get("roots") != expected_roots:
+        raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_ROOTS_MISMATCH")
+    if payload.get("hostname") != config.hostname:
+        raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_HOSTNAME_MISMATCH")
+    if payload.get("local_port") != config.local_port or payload.get("public_port") != config.public_port:
+        raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_PORT_MISMATCH")
+    if not isinstance(payload.get("python_path"), str) or not payload["python_path"]:
+        raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_PYTHON_MISSING")
+    return {
+        "ok": True,
+        "path": str(bootstrap_path),
+        "roots_match": True,
+        "root_count": len(expected_roots),
+    }
+
+
+def synchronize_existing_bootstrap_config(bootstrap_path: Path, config: SetupConfig) -> Path | None:
+    """Create/update and verify the diagnostic mirror without making it runtime authority."""
+    if bootstrap_path.is_symlink():
+        raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_SYMLINK_UNSUPPORTED")
+    backup_path: Path | None = None
+    if bootstrap_path.exists():
+        payload = persisted_config(bootstrap_path)
+        if payload.get("schema") != "codexpro.devspace-bootstrap/v1":
+            raise SetupError("DEVSPACE_BOOTSTRAP_CONFIG_SCHEMA_UNSUPPORTED")
+        backup_path = bootstrap_path.with_name(f"{bootstrap_path.name}.bak-{time.time_ns()}")
+        shutil.copy2(bootstrap_path, backup_path)
+    else:
+        payload = {
+            "schema": "codexpro.devspace-bootstrap/v1",
+            "python_path": sys.executable,
+        }
     payload.update(
         {
             "roots": [str(root) for root in config.roots],
@@ -1070,16 +1420,19 @@ def synchronize_existing_bootstrap_config(bootstrap_path: Path, config: SetupCon
             "public_port": config.public_port,
         }
     )
+    bootstrap_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = bootstrap_path.with_name(f".{bootstrap_path.name}.tmp-{time.time_ns()}")
     try:
         temporary.write_text(
             json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
             encoding="utf-8",
         )
+        os.chmod(temporary, 0o600)
         persisted_config(temporary)
         os.replace(temporary, bootstrap_path)
     finally:
         temporary.unlink(missing_ok=True)
+    verify_bootstrap_config(bootstrap_path, config)
     return backup_path
 
 
@@ -1096,7 +1449,8 @@ def merge_persisted_setup_roots(
     """Preserve current allowedRoots when setup is invoked with only new roots."""
     if not config_path.exists():
         return config, ()
-    existing = persisted_allowed_roots(config_path)
+    payload = persisted_config(config_path)
+    existing = _allowed_roots_from_payload(payload, allow_incomplete=True)
     merged = list(existing)
     preserved: list[Path] = []
     keys = {os.path.normcase(os.path.normpath(str(root))) for root in merged}
@@ -1135,8 +1489,16 @@ def funnel_status(
             text=True,
             encoding="utf-8",
             errors="strict",
+            timeout=STATUS_COMMAND_TIMEOUT_SECONDS,
+            env=runtime_subprocess_environment(),
             **windows_subprocess_kwargs(),
         )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": "TAILSCALE_FUNNEL_STATUS_TIMEOUT",
+            "timeout_seconds": STATUS_COMMAND_TIMEOUT_SECONDS,
+        }
     except OSError as error:
         return {"ok": False, "error": type(error).__name__}
     if result.returncode != 0:
@@ -1171,8 +1533,12 @@ def discover_tailscale_hostname(*, runner: Callable[..., Any] = subprocess.run) 
             text=True,
             encoding="utf-8",
             errors="strict",
+            timeout=STATUS_COMMAND_TIMEOUT_SECONDS,
+            env=runtime_subprocess_environment(),
             **windows_subprocess_kwargs(),
         )
+    except subprocess.TimeoutExpired as exc:
+        raise SetupError("TAILSCALE_STATUS_TIMEOUT:check-tailscale-and-retry") from exc
     except OSError as exc:
         raise SetupError("TAILSCALE_NOT_INSTALLED") from exc
     if result.returncode != 0:

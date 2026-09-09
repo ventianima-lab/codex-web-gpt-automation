@@ -81,13 +81,13 @@ does not change roots, Owner credential, OAuth database, or Funnel hostname:
 python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py post-register --root C:\projects\one --hostname your-device.your-tailnet.ts.net
 ```
 
-Verify the registered app with a fresh regular, non-Pro Oracle `@codex`
-read-only probe that opens the exact project root and reads a small directory
-listing. Do not substitute Codex Desktop's built-in `DevSpace` plugin tools:
-they are a separate connector and do not validate the manually registered
-ChatGPT app. Never spend a Pro submission as the first connectivity probe. The
-Oracle composer names the exact project root before the mission path so a
-mission directory cannot be mistaken for the workspace root.
+Verify the registered app with one actual project read using the
+[shared automation policy](AUTOMATION_POLICY.md). Use the selected model and
+effort in a temporary chat, automatically enabling temporary-chat personalization before submission. Do not
+substitute another connector's health for this app's file access. No preliminary
+non-Pro run, forced tool sequence, audit nonce, or three receipts are required.
+The mission names the exact project root so its directory cannot be mistaken
+for the workspace root.
 
 Before the first DevSpace-backed Oracle question in a new project, the runner
 checks that the normalized exact folder is present in local `allowedRoots`.
@@ -110,7 +110,7 @@ visible Refresh/New refresh control in its app detail to update Actions. If
 OAuth or calls remain stale, manually open `https://chatgpt.com/#settings/Plugins/`,
 select the existing app, and use Reconnect. Run the explicit `post-register`
 refresh exactly once only when the stage or diagnosis requires it, then repeat
-only the fresh regular non-Pro auditNonce read-only Oracle probe. If it still
+only the relevant actual access check through the normal flow. If it still
 fails, keep the server running and report the same connector URL; do not
 automate deletion, re-registration, or repeated refreshes. Business UI or an
 unavailable Refresh control is not a re-registration fallback; recreation is

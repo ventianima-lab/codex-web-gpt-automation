@@ -1,9 +1,9 @@
-# Codex Web GPT Automation First Install
+# First install
 
-This is the English install-to-verification path. The wizard selects Korean or
-English from the shell locale; override it with `--lang en` or `--lang ko`.
+The app and consuming projects follow the [shared automation policy](AUTOMATION_POLICY.md).
+This guide covers one-time setup, not a qualification loop before every run.
 
-## Start the wizard
+## Install and resume
 
 ```powershell
 git clone https://github.com/ventianima-lab/codex-web-gpt-automation.git
@@ -15,125 +15,47 @@ python onboard.py --lang en start --root <project-folder>
 python onboard.py --lang en next
 ```
 
-Repeat `--root` for every project. Existing DevSpace `allowedRoots` are merged
-and preserved; malformed existing JSON fails closed. Tailscale Funnel is the
-managed default. Cloudflare requires a named tunnel, ngrok requires a static or
-reserved domain, and custom providers require a stable `https://.../mcp` URL
-plus an OS login service. Ephemeral URLs never satisfy installation.
+Use `python3` on macOS. Repeat `--root` for additional approved projects.
+Resume existing setup with `python onboard.py resume`; do not reset successful
+stages. Follow the current instruction from `next`, using
+`python onboard.py confirm <stage-id>` after the required user action.
 
-The first interactive install asks whether to install optional Local Multi-GPT.
-The default is no. Use `--enable-local-multi-gpt` only when wanted. The wizard
-persists the choice and does not complete installation until its exact MCP
-registration passes doctor.
+Tailscale Funnel is the managed default. Other providers need a stable HTTPS
+`/mcp` endpoint. Preserve existing roots and configuration. Optional Local
+Multi-GPT is separate from the normal execution path and defaults to disabled.
 
-## Follow one stage at a time
+## User-controlled setup
 
-```powershell
-python onboard.py --lang en next
-python onboard.py --lang en confirm <stage-id>
-```
+The user handles provider login, DevSpace Owner credentials, Oracle ChatGPT
+login, app registration and OAuth approval. Never request or record passwords,
+tokens, cookies, or secrets. Do not automate ChatGPT account, personalization,
+or permission settings.
 
-The stages are install, stable endpoint approval, DevSpace initialization,
-reboot persistence, local/public endpoint checks, dedicated Oracle Chrome
-login, scoped Local Network permission, ChatGPT app registration, and the final
-real-root gate. Do not skip ahead.
+Register the intended app (examples use `codex`) at the approved endpoint.
+Change local-network policy only after explicit scoped consent, preserving
+unrelated Chrome settings and profiles. If the UI or connection fails, diagnose
+that specific failure; do not repeatedly recreate or refresh a working app.
 
-The user personally completes Tailscale sign-in, DevSpace Owner-password input,
-ChatGPT sign-in in the dedicated Oracle profile, developer-mode activation, app
-registration, and Owner OAuth approval. The agent must never request or store
-passwords, tokens, cookies, or OAuth secrets and must not automate ChatGPT
-settings or app selection.
+## One access check
 
-Before changing Chrome Local Network policy, record explicit consent:
+Verify endpoint reachability and one actual project read through the registered
+app. HTTP 401 without authentication can establish endpoint reachability, but
+cannot establish successful authenticated file access.
 
-```powershell
-python onboard.py consent 06b_local_network_access
-```
+Use the normal temporary-chat flow. Explicitly select Latest, then the requested
+effort (default Pro / 6 Pro). Automatically enable temporary-chat personalization before submission.
+Oracle's current compatibility carrier is `gpt-5.6-sol` with
+`model_strategy=current` and `thinking_time=pro`; it must click Latest, not the
+numeric GPT-5.6 row. Do not invent `gpt-6` or `latest` CLI model identifiers.
 
-The change is scoped to `https://chatgpt.com`; unrelated Chrome policy entries
-and the everyday Chrome profile remain untouched.
+Save the complete answer before closing the owned tab. A timeout retains that
+same run; never automatically resend. Read access does not require a prescribed
+tool sequence, audit nonce, three receipts, or a magic result marker. Report
+missing access or incomplete results honestly.
 
-If Windows policy ACLs deny the write, the helper does not elevate or reset
-Chrome. It preserves logins, cookies, and unrelated site permissions while
-atomically adding only the exact `https://chatgpt.com` origin to the closed
-Oracle seed profile's `local_network` and `loopback_network` settings. A backup
-and SHA-bound receipt make the grant durable across disposable run profiles and
-future upgrades without app re-registration. The same Oracle-only update marks
-the seed profile as cleanly exited, while the hash-gated Oracle launcher adds
-Chrome's crash-bubble suppression flag. This removes repeated Restore pages
-prompts without changing the everyday Chrome profile, its open tabs, or its
-session-restore behavior.
+Project rules reference the shared policy while retaining project-specific
+tests and safety constraints. Source installation, connection setup, and a
+successful actual read are distinct states; report the state actually reached.
 
-Register the app as `codex` with the exact stable `/mcp` URL. Depending on the
-account UI, check either Settings > Apps > Advanced settings > Developer mode,
-or Settings > Plugins > Developer mode. A missing Create button is first a UI,
-workspace, or developer-mode diagnostic—not proof that a higher plan is
-required.
-
-ChatGPT keeps a registered app's Action list as a snapshot. If a fresh final
-canary sees `open_workspace` and `read` but no `read_chunk`, or it sees no
-server-generated Audit receipt IDs, do not accept the partial result. Keep the
-exact existing `codex` app name and `/mcp` URL. In the app detail, manually use
-the visible **Refresh** or **New refresh** control to update Actions, then
-review and enable the new Actions. Agents must not automate these ChatGPT
-settings.
-
-If OAuth or tool calls remain stale, manually open
-`https://chatgpt.com/#settings/Plugins/`, select the existing `codex` app, and
-use **Reconnect**. Do not delete or re-register the app merely because the
-workspace is Business or Refresh is unavailable. Run `post-register` exactly
-once only when `08_final_gate` or diagnosis requires it after registration or
-reconnection, then run a fresh regular non-Pro auditNonce canary. Recreate with
-the same exact name and `/mcp` URL only as an exception when the app record is
-actually absent or corrupt and the existing app cannot be selected, refreshed,
-or reconnected.
-
-A widget-domain warning concerns required app-submission UI metadata; it does
-not prove whether the `read_chunk` Action is present. The managed DevSpace
-compatibility patch supplies the exact credential-free public HTTPS origin. If
-the warning remains after installation, Refresh the existing app's Actions;
-do not recreate the app. Verify the actual `open_workspace → read → read_chunk`
-surface with the fresh canary instead of inferring it from that warning.
-
-## Final gate
-
-Unauthenticated local and public `/mcp` returning HTTP 401 is healthy. The final
-gate uses a fresh regular non-Pro `GPT-5.6` extra-high Oracle read of the exact
-project root through the registered app. It does not accept the built-in Codex
-Desktop connector, Pro, arbitrary prose, or an unbound directory listing.
-
-First place a short read-only canary mission inside the exact project root and
-generate the manifest plus dry-run/live commands from the current Codex task:
-
-```powershell
-python onboard.py prepare-final-gate `
-  --root <project-folder> `
-  --mission-path <project-folder>\missions\onboarding-final-gate.md
-```
-
-Run the emitted `dry_run_command` first and verify `submission_action=none`,
-then run the emitted `run_command` exactly once from the same Codex task. An
-ordinary terminal or a different Codex task fails closed on task ownership.
-
-```powershell
-python onboard.py record-final-gate `
-  --run-dir <Oracle-run-directory> `
-  --root <project-folder> `
-  --evidence "Exact root and listing summary" `
-  --listing <observed-entry>
-```
-
-The wizard revalidates the run location, exact root/app identity, regular model
-and effort, terminal EXECUTED state, conversation URL, output hash, listing,
-workspace identity, and final `TASK_OUTCOME: EXECUTED` marker. Only
-`Full install and real project-root read verified` means the installation is
-complete.
-
-The canary must prove `open_workspace`, a separate `read`, and complete
-offset-zero `read_chunk` of the same file, with all three server-generated
-receipt IDs echoed in its answer. `open_workspace` plus `read` is still a
-failure, including after an app refresh.
-
-For detailed Tailscale service setup and recovery, see
-[DevSpace + Tailscale](DEVSPACE_TAILSCALE_SETUP.md). The Korean full guide is
-[FIRST_INSTALL.md](FIRST_INSTALL.md).
+See [managed DevSpace setup](DEVSPACE_TAILSCALE_SETUP.md) for helper details,
+and [한국어](FIRST_INSTALL.md) for the Korean guide.

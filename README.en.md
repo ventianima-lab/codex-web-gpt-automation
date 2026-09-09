@@ -33,8 +33,7 @@
 Follow this order: install, approve the stable HTTPS endpoint, register the
 exact DevSpace root, establish reboot persistence, verify both endpoints, sign
 in to the dedicated Oracle browser, grant scoped Local Network access,
-manually register the ChatGPT app as `codex`, then run an ordinary non-Pro
-connection probe. Before updating an existing install,
+manually register the ChatGPT app as `codex`, then verify one actual project read. Before updating an existing install,
 read the [latest release notes](https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest).
 
 When you hand only the repository URL to an AI coding agent, have it read the
@@ -47,7 +46,7 @@ only after the real project-root read check passes.
 
 | Guarded | Recoverable | Web-first | Cross-platform |
 |---|---|---|---|
-| Exact project roots and mission hashes are bound before execution. | Interrupted work is harvested from its existing Oracle session, never blindly resubmitted. | Planning, research, implementation, and review run in separate web ChatGPT sessions. | Receipt-backed install and rollback are tested on Windows and macOS. |
+| Exact project roots and mission hashes are bound before execution. | Interrupted work is harvested from its existing Oracle session, never blindly resubmitted. | One mission-based flow with explicit model and effort selection. | Receipt-backed install and rollback are tested on Windows and macOS. |
 
 Codex Web GPT Automation uses [Oracle](https://github.com/steipete/oracle) to
 run signed-in ChatGPT browser sessions and
@@ -105,7 +104,7 @@ for exact commands and provider-specific branches.
 4. **Verify restart recovery** — confirm local/public endpoints and root persistence
 5. **Sign in and persist Local network access** — keep the Oracle browser separate; on Windows the helper prefers the exact-origin `chatgpt.com` policy and falls back to a backed-up, receipted Oracle seed-profile grant when policy ACLs are locked
 6. **Register the ChatGPT app manually** — name `codex`, URL `https://stable-host/mcp`
-7. **Run a regular GPT read probe** — validate `@codex` without consuming Pro
+7. **Check app access** — read an approved file once using the selected model
 
 When adding a project, preserve the complete existing root set and add only the
 new exact folder. Do not inspect or automate ChatGPT app settings per task.
@@ -116,33 +115,24 @@ if OAuth or tool calls remain stale, open `https://chatgpt.com/#settings/Plugins
 select the existing app, and use **Reconnect**. Business UI or an unavailable
 Refresh control is not grounds to recreate the app: do so only when its record
 is actually absent or corrupt. Run `post-register` exactly once only when
-required, then use a fresh regular non-Pro auditNonce canary to prove
-`open_workspace → read → read_chunk`. A widget-domain warning alone does not
+required, then read an approved file using the selected model and save the
+result. No fixed tool sequence or audit receipts are required. A widget-domain warning alone does not
 establish whether `read_chunk` is present.
 
-## Choose a mode
+## One execution flow
 
-| Desired result | Mode | Route |
-|---|---|---|
-| Questions, analysis, small work | `direct` | Oracle + DevSpace |
-| Design before implementation | `plan` | Read-only web session |
-| Independent code or plan review | `review` | Read-only web session |
-| Scoped changes | `edit` | Web implementation and tests |
-| One-pass execution | `orchestrator` | Single web session |
-| Public-source investigation | `deep-research` | Oracle Deep Research |
-| Parallel independent perspectives | Web Multi-GPT | Multiple Oracle sessions + merger |
-| PC-local advice and counterexamples | Local Multi-GPT | Optional, Luna Max, read-only |
-| Plan through final gate | comprehensive mode | Staged web workflow |
-| Minimize local model cost | `ultra-economy` | Luna Max command + separate web stages |
-| Codex Ultra-style web delegation | `ultra-gpt` | Web plan/review + parallel isolated-worktree writers + merge/verification; optional SHA-bound closed audit |
-| Explicitly requested Pro work | `pro` | GPT-5.6 Sol Pro + read-only DevSpace design, advice, or review |
+The app and every project follow the [shared automation policy](docs/AUTOMATION_POLICY.md).
+Planning, research, review, and editing belong in the mission, not separate
+execution modes. Select the model and effort explicitly.
 
-Natural-language aliases use the same routes: `orchestrator` / orchestrator and
-`deep-research` / deep research. Regular web work defaults to the highest supported non-Pro reasoning tier. Pro is quota-limited, never auto-selected, and runs only after an explicit request. Every new qualified Pro run uses Oracle + read-only DevSpace for design, advice, or review. A regular `GPT-5.6` `extra-high` DevSpace stage performs any file creation, edit, removal, or command. Explicit `pro-attachment` remains a separate read-only immutable-evidence route and is never an automatic fallback. Persisted legacy `pro-devspace` write runs retain their exact original authority only during recovery.
+The default compatibility route selects **Latest → Pro (6 Pro)**, never the
+numeric GPT-5.6 row. Use temporary chats. Automatically enable and confirm temporary-chat
+personalization before submission, save the result durably, then close only the owned tab.
+Recover that same tab after timeout or connection failure; do not automatically
+resubmit, archive, or restore conversations.
 
-See [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) for selection rules,
-[Ultra Economy Mode](docs/ULTRA_ECONOMY_MODE.md), and
-[Ultra GPT Mode](docs/ULTRA_GPT_MODE.md) for its execution contract and optional closed audit.
+Project tests and safety rules remain. Forced tool ordering, three audit
+receipts, recurring qualification, and magic completion markers do not.
 
 ## Run example
 
@@ -150,11 +140,10 @@ Create a UTF-8 mission inside the project and verify identity with a dry run.
 
 ```powershell
 python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
-  --mode orchestrator `
   --project-root C:\project `
   --mission-path C:\project\mission.md `
-  --manifest-output C:\project\.ai-bridge\oracle.json `
-  --reasoning-level "Very High" `
+  --model latest `
+  --effort pro `
   --dry-run
 ```
 
@@ -162,28 +151,19 @@ Remove `--dry-run` only when live execution is authorized.
 
 ## Safety contract
 
-- Allow one active or uncertain Oracle workflow per Codex-task/project pair. Different tasks may run concurrently at the same root under separate ownership and must never recover, harvest, or stop each other.
-- Qualify the exact root before the first DevSpace submission for a new project.
-- Regular web work defaults to the highest supported non-Pro reasoning tier. Pro requires explicit opt-in and is never an automatic upgrade.
-- New explicit Pro is read-only inside the exact root and is limited to design, advice, or review. A regular `GPT-5.6` `extra-high` DevSpace stage performs mission-authorized writes, removals, and commands; persisted legacy `pro-devspace` write runs preserve their original authority only during exact recovery.
-- Continued discussion in the same read-only Pro conversation uses only an internal follow-up round against a task-bound terminal parent. Every round re-proves the unchanged conversation and records mission/state/output/transcript hashes; raw Oracle follow-up injection and new-conversation fallback remain forbidden. Dry-run writes no reservation. A live local-preflight failure produces child state/logs and hash-bound launch/result evidence. One parent conversation serializes controllers even across different round keys. Preserve historical reservation-only keys without replay or deletion; after proving the old controller ended, use a new round key.
-- Post-submit failure recovers the existing slug and URL and never resubmits the task.
-- If Oracle saved official terminal output and completed metadata but the outer state transition was missed, only the owner task may use hash-bound `settle-saved-output`. A proven reserved-versus-observed CDP port mismatch seals a separate v2 browser identity receipt so the exact conversation remains eligible as a follow-up parent. A run already reconciled by v1.19.5 may be migrated only with owner-only `seal-saved-output-browser-identity`; ordinary recovery authority is not relaxed.
-- Browser or local-process exit alone is not evidence that web work failed.
-- Never commit secrets, Owner passwords, OAuth tokens, or browser profiles.
-- `codexpro-*` remains only as an internal compatibility ID for old receipts,
-  schemas, and recovery assets. It is not the product name or a new-work route.
-
-Report security issues through the private path in [Security Policy](SECURITY.md),
-not a public issue.
+The [shared policy](docs/AUTOMATION_POLICY.md) preserves approved roots,
+authentication, and task ownership. Save results before closing the owned tab;
+never automatically resend on failure. Project tests and safety rules remain.
+Never commit secrets, passwords, OAuth tokens, or browser profiles.
+Report security issues through the [private security path](SECURITY.md).
 
 ## Documentation map
 
-| Start | Operate | Advanced modes | Project |
-|---|---|---|---|
-| [First Install](docs/FIRST_INSTALL.en.md) | [DevSpace + Tailscale](docs/DEVSPACE_TAILSCALE_SETUP.md) | [Ultra Economy](docs/ULTRA_ECONOMY_MODE.md) · [Ultra GPT](docs/ULTRA_GPT_MODE.md) | [Architecture overview](docs/ARCHITECTURE.md) |
-| [Documentation index](docs/README.md) | [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) | [Local Multi-GPT](docs/LOCAL_MULTI_GPT.md) | [Changelog](docs/CHANGELOG.md) |
-| [Contributing](CONTRIBUTING.md) | [macOS Ultrawork](docs/MACOS_ULTRAWORK.md) | [Frozen legacy boundary](docs/FROZEN_LEGACY.md) | [Versioning](docs/VERSIONING.md) |
+- [First install](docs/FIRST_INSTALL.en.md)
+- [Shared automation policy](docs/AUTOMATION_POLICY.md)
+- [DevSpace setup](docs/DEVSPACE_TAILSCALE_SETUP.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Documentation index](docs/README.md)
+- [Historical recovery reference](docs/FROZEN_LEGACY.md)
 
 ## Versions and support
 

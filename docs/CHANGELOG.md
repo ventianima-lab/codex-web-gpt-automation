@@ -1,5 +1,77 @@
 # 기술 변경 기록
 
+## 2.0.0 - One lean execution flow
+
+- Final 2.0.0 review hardening binds a discovered absolute Node executable into
+  Oracle compatibility validation instead of re-discovering Node from `PATH`.
+  Ordinary mission execution no longer repeats the retired DevSpace root
+  qualification ceremony; it still revalidates the approved root, mission
+  path, symlink status, and mission hash immediately before launch.
+- Windows restart persistence now requires a fresh recovery receipt emitted in
+  `Watch` mode plus the exact per-user Run registration and the still-live
+  matching watchdog process. Interrupted DevSpace initialization with a saved
+  config but missing auth resumes interactively, while malformed auth fails
+  closed and valid auth is preserved.
+- The onboarding final gate remains lean but no longer accepts a generic
+  workspace-open answer. Its durable capture must contain a bounded exact
+  non-secret excerpt from a listed UTF-8 file inside the approved project root;
+  the mission prompt itself is explicitly ineligible as that proof. No nonce,
+  tool-order requirement, three-receipt chain, or magic marker is reintroduced.
+- Ordinary-run duplicate protection now fails closed when an existing run
+  state is unreadable instead of permitting a replacement submission.
+  `execute --manifest` also rejects explicit model, effort, or app overrides
+  rather than silently discarding them; direct execution keeps the documented
+  Latest/Pro/codex defaults when those flags are omitted.
+- Temporary Chat personalization recognizes the supported English and Korean
+  control labels, including the current non-personalized wording, while keeping
+  the same one-control/one-radio-pair ambiguity checks before any click.
+
+- Discover Oracle in configured npm caches and the Windows packaged Codex cache,
+  retaining the explicit package-root override. Validate archived patch migration
+  and the pre-submission personalization hook in the normal fast gate.
+
+- Replace separate new-work execution modes with one mission-based flow and
+  explicit model/effort selection. Existing historical records retain their
+  original recovery authority; retired modes are not new-work fallbacks.
+- Automatically enable temporary-chat personalization before submission. Persist the
+  complete result before closing the owned tab; recover the same run after
+  uncertainty without automatically resending the prompt.
+- Remove compulsory audit nonces, ordered tool calls, three receipts, repeated
+  qualification chains, magic output markers, and archive/restore phases from
+  ordinary execution. Keep authentication, approved roots, model selection,
+  task ownership, result integrity, and relevant project tests.
+- Define one shared app policy for consuming projects. Preserve their domain
+  checks and configured native commander instead of copying routing rituals.
+- Remove the synthetic release-review marker requirement while retaining a
+  merged PR, exact-commit CI, and immutable publication identity.
+- Include the previously unreleased Latest-selection and Windows startup fixes
+  described below. The public execution-interface replacement is a major change.
+
+- Oracle 0.18.0's compatibility adapter explicitly selects `Latest` / `최신`
+  before setting the requested power level. The five positions map to light,
+  standard, extended, extra-high, and Pro. Unverified selection stops submission;
+  a previous Pro setting is never silently retained for an Extra-high request.
+- Pro additionally requires the visible `6 Pro` model label in the open picker
+  or composer, together with the checked Latest row and power 5/5. The known
+  Oracle CLI model slug is only a compatibility carrier, never a request to
+  click GPT-5.6 Sol. This route remains until native Oracle 6 Pro support passes
+  model, no-submission, and real workspace-read verification.
+- Fresh owned browser launches clean up only their captured startup blank tabs
+  after connecting a separate work tab. Startup preferences are normalized only
+  in the run-owned copied profile; original login profiles, cookies, existing
+  conversations, reused browsers, and unrelated tabs remain untouched.
+- Retain the isolated profile for same-tab recovery using Oracle's supported
+  manual-login profile option. Do not combine Oracle's non-reattachable
+  `--copy-profile` mode with browser retention. Windows process probes never
+  send signals, and reconnect previews do not write lock files.
+- Onboarding gains readable Korean/English progress, UTF-8 output, resumable
+  partial setup, and hash-bound watchdog recovery evidence. A saved project
+  list alone no longer proves successful service recovery.
+- Runtime and service identity checks distinguish executable/version evidence
+  from a matching path string, including Windows app-cache installations.
+- Preserve user-approved native commander and worker routing. Web delegation
+  is not forced by the app policy, and CGW remains removed.
+
 ## 1.20.15 - Verify the current GPT-5.6 Sol Pro power slider
 
 - Oracle 0.18.0 now recognizes ChatGPT's current unified `Thinking effort`

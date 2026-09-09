@@ -71,6 +71,46 @@ function Get-ManifestFiles([string]$Root,$Patterns){
   }
   @($files|Sort-Object -Unique)
 }
+function Get-ManifestRetirementPaths([string]$Root,$Value){
+  if($null -eq $Value.retire){return @()}
+  $paths=@($Value.retire.receipt_owned_files);$result=@()
+  foreach($relativeValue in $paths){
+    $relative=[string]$relativeValue
+    if([string]::IsNullOrWhiteSpace($relative)-or$relative.Contains('\')-or[IO.Path]::IsPathRooted($relative)-or$relative -match '(^|/)[.]{1,2}($|/)' -or [Management.Automation.WildcardPattern]::ContainsWildcardCharacters($relative)){throw "unsafe retirement path: $relative"}
+    $top=($relative -split '/')[0]
+    if($top -notin @('bin','skills','mcp_servers','scripts','contracts','docs','tests','plugins','marketplace')){throw "unsupported retirement root: $relative"}
+    [void](Get-SafeChild $Root $relative);$result+=$relative
+  }
+  @($result|Sort-Object -Unique)
+}
+function Get-ReceiptOwnedRetirements([string]$Root,[string]$Receipts,$Paths){
+  $owned=@{};foreach($relative in @($Paths)){$owned[[string]$relative]=@{}}
+  if(Test-Path -LiteralPath $Receipts){
+    foreach($receiptPath in @(Get-ChildItem -LiteralPath $Receipts -Filter 'codexpro-automation-*.json' -File -Force -ErrorAction SilentlyContinue|Sort-Object LastWriteTimeUtc -Descending)){
+      if($receiptPath.LinkType){continue}
+      try{$value=Get-Content -LiteralPath $receiptPath.FullName -Raw|ConvertFrom-Json}catch{continue}
+      if($value.schema -notin @('codexpro.install-receipt/v2','codexpro.install-receipt/v3')){continue}
+      $priorBackup=[string]$value.backup
+      if([string]::IsNullOrWhiteSpace($priorBackup)-or!(Test-IsWithinRoot (Join-Path $Root 'backups') $priorBackup)){continue}
+      foreach($record in @($value.files)){
+        $relative=[string]$record.path;$digest=([string]$record.installed_sha256).ToLowerInvariant()
+        if($owned.ContainsKey($relative)-and$record.action -in @('created','overwritten')-and$digest -match '^[0-9a-f]{64}$'){$owned[$relative][$digest]=$receiptPath.FullName}
+      }
+    }
+  }
+  $planned=@();$conflicts=@()
+  foreach($relative in @($Paths|Sort-Object -Unique)){
+    $destination=Get-SafeChild $Root ([string]$relative)
+    if(!(Test-Path -LiteralPath $destination)){continue}
+    $item=Get-Item -LiteralPath $destination -Force
+    if($item.LinkType -or $item.PSIsContainer){$conflicts+=@{path=$relative;action='preserved_non_file_retirement_target'};continue}
+    $actual=Get-Hash $destination
+    if(!$owned[$relative].ContainsKey($actual)){$conflicts+=@{path=$relative;action='preserved_unowned_or_modified_retirement_target'};continue}
+    $planned+=@{path=[string]$relative;retired_sha256=$actual;source_receipt=[string]$owned[$relative][$actual]}
+  }
+  if($conflicts.Count){throw ('RETIREMENT_CONFLICT: '+($conflicts|ConvertTo-Json -Compress))}
+  @($planned)
+}
 function Resume-PendingInstallTransactions([string]$Root){
   $backupBase=Join-Path $Root 'backups';if(!(Test-Path -LiteralPath $backupBase)){return}
   foreach($journalPath in @(Get-ChildItem -LiteralPath $backupBase -Filter 'install.wal.json' -File -Recurse -Force -ErrorAction SilentlyContinue|Sort-Object FullName)){
@@ -79,6 +119,13 @@ function Resume-PendingInstallTransactions([string]$Root){
     $conflicts=@();$entries=@($journal.files)
     for($index=$entries.Count-1;$index -ge 0;$index--){
       $entry=$entries[$index];$destination=Get-SafeChild $Root ([string]$entry.path)
+      if($entry.action -eq 'retired'){
+        $retiredHash=if($entry.retired_sha256){[string]$entry.retired_sha256}else{[string]$entry.installed_sha256}
+        if(Test-Path -LiteralPath $destination){$item=Get-Item -LiteralPath $destination -Force;if(!$item.LinkType -and !$item.PSIsContainer -and (Get-Hash $destination)-eq$retiredHash){continue};$conflicts+=@{path=$entry.path;action='preserved_recreated_after_interrupted_retirement'};continue}
+        $backup=Get-SafeChild ([string]$journal.backup) ([string]$entry.path)
+        if(!(Test-Path -LiteralPath $backup) -or (Get-Item -LiteralPath $backup -Force).LinkType -or (Get-Hash $backup)-ne [string]$entry.backup_sha256){$conflicts+=@{path=$entry.path;action='missing_interrupted_retirement_backup'};continue}
+        Copy-FileDurable $backup $destination;continue
+      }
       if(!(Test-Path -LiteralPath $destination)){
         if($entry.action -eq 'created'){continue}
         $conflicts+=@{path=$entry.path;action='missing_overwritten_after_interrupted_install'};continue
@@ -108,10 +155,12 @@ elseif(!$WhatIfPreference -and !$env:CI -and !$env:PYTEST_CURRENT_TEST -and [Env
 else{$InstallLocalMultiGpt=[bool]$Manifest.optional_components.local_multi_gpt.default_install}
 $Patterns=@($Manifest.include);if($InstallLocalMultiGpt){$Patterns+=@($Manifest.optional_components.local_multi_gpt.include)}
 $Files=@(Get-ManifestFiles $RepoRoot $Patterns)
-if($WhatIfPreference){$Files|ForEach-Object{"Would stage and install $_"};if($InstallLocalMultiGpt){'Would install and register optional Local Multi-GPT MCP'}else{'Would not install optional Local Multi-GPT MCP (use -EnableLocalMultiGpt to opt in)'};if($ManageLegacyDependency){"Would explicitly install and contract-validate recovery-only agbrowse@$($Manifest.external.agbrowse.version)"}else{'Would leave frozen agbrowse/CodexPro legacy dependencies untouched'};exit 0}
+$RetirementPaths=@(Get-ManifestRetirementPaths $HomeRoot $Manifest);$overlap=@($Files|Where-Object{$_ -in $RetirementPaths});if($overlap.Count){throw "manifest installs and retires the same path: $($overlap -join ',')"}
+if($WhatIfPreference){$Retirements=@(Get-ReceiptOwnedRetirements $HomeRoot $ReceiptRoot $RetirementPaths);$Files|ForEach-Object{"Would stage and install $_"};$Retirements|ForEach-Object{"Would retire receipt-owned unchanged $($_.path)"};if($InstallLocalMultiGpt){'Would install and register optional Local Multi-GPT MCP'}else{'Would not install optional Local Multi-GPT MCP (use -EnableLocalMultiGpt to opt in)'};if($ManageLegacyDependency){"Would explicitly install and contract-validate recovery-only agbrowse@$($Manifest.external.agbrowse.version)"}else{'Would leave frozen agbrowse/CodexPro legacy dependencies untouched'};exit 0}
 $records=@();$installed=@();$receipt=$null;$dependency=$null;$dependencyApplied=$false;$dependencySourceReceipt=$null;$journal=$null;$journalPath=$null;$localMultiGpt=[ordered]@{enabled=$InstallLocalMultiGpt;mode=$(if($InstallLocalMultiGpt){'pending'}else{'skipped'});reason=$(if($InstallLocalMultiGpt){$null}else{'not-selected'});receipt=$null}
 $dependencyPreflightToken=$null
 Resume-PendingInstallTransactions $HomeRoot
+$Retirements=@(Get-ReceiptOwnedRetirements $HomeRoot $ReceiptRoot $RetirementPaths)
 if($ManageLegacyDependency){
  $preflightOutput=@(& (Join-Path $RepoRoot 'update.ps1') -Preflight -AgbrowseVersion ([string]$Manifest.external.agbrowse.version) -CodexHome $HomeRoot)
  if($LASTEXITCODE){throw "agbrowse dependency preflight failed with exit code ${LASTEXITCODE}: $($preflightOutput -join ' ')"}
@@ -130,17 +179,34 @@ try{
   Write-JsonDurable $replacementPath ([ordered]@{schema='codexpro.install-replacement/v1';path=$relative;action=$action;installed_sha256=$record.installed_sha256;backup_sha256=$backupHash;mutated_at=[DateTime]::UtcNow.ToString('o')})
   if($record.installed_sha256 -ne (Get-Hash $destination)){throw "commit hash verification failed: $relative"};$record.phase='VERIFIED';$record.transitions+=@('VERIFIED');Write-JsonDurable $journalPath $journal;$record.phase='COMPLETE';$record.transitions+=@('COMPLETE');Write-JsonDurable $journalPath $journal;$receiptRecord=[ordered]@{path=$relative;action=$action;installed_sha256=$record.installed_sha256;backup_sha256=$backupHash};$records+=$receiptRecord;$installed+=$receiptRecord;$stepIndex++
  }
+  foreach($retirement in $Retirements){
+   $relative=[string]$retirement.path;$destination=Get-SafeChild $HomeRoot $relative;$retiredHash=[string]$retirement.retired_sha256
+   if(!(Test-Path -LiteralPath $destination) -or (Get-Item -LiteralPath $destination -Force).LinkType -or (Get-Item -LiteralPath $destination -Force).PSIsContainer -or (Get-Hash $destination)-ne$retiredHash){throw "RETIREMENT_CONFLICT: changed during install: $relative"}
+   $backup=Get-SafeChild $BackupRoot $relative;New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backup)|Out-Null;Copy-FileDurable $destination $backup;$backupHash=Get-Hash $backup
+   $replacementPath=Join-Path $BackupRoot "steps/$stepIndex/replacement.json";$record=[ordered]@{path=$relative;action='retired';installed_sha256=$retiredHash;retired_sha256=$retiredHash;backup_sha256=$backupHash;source_receipt=[string]$retirement.source_receipt;phase='INTENT';transitions=@('INTENT');replacement=$replacementPath};$journal.files+=@($record);Write-JsonDurable $journalPath $journal
+   $receiptRecord=[ordered]@{path=$relative;action='retired';installed_sha256=$retiredHash;retired_sha256=$retiredHash;backup_sha256=$backupHash;source_receipt=[string]$retirement.source_receipt};$installed+=$receiptRecord
+   Remove-Item -LiteralPath $destination -Force;$record.phase='MUTATED';$record.transitions+=@('MUTATED');Write-JsonDurable $journalPath $journal
+   Write-JsonDurable $replacementPath ([ordered]@{schema='codexpro.install-replacement/v1';path=$relative;action='retired';installed_sha256=$retiredHash;retired_sha256=$retiredHash;backup_sha256=$backupHash;source_receipt=[string]$retirement.source_receipt;mutated_at=[DateTime]::UtcNow.ToString('o')})
+   if(Test-Path -LiteralPath $destination){throw "retirement verification failed: $relative"};$record.phase='VERIFIED';$record.transitions+=@('VERIFIED');Write-JsonDurable $journalPath $journal;$record.phase='COMPLETE';$record.transitions+=@('COMPLETE');Write-JsonDurable $journalPath $journal;$records+=$receiptRecord;$stepIndex++
+  }
  if($ManageLegacyDependency){& (Join-Path $RepoRoot 'update.ps1') -AgbrowseVersion ([string]$Manifest.external.agbrowse.version) -CodexHome $HomeRoot -PreflightToken $dependencyPreflightToken;if($LASTEXITCODE){throw "agbrowse dependency install failed with exit code $LASTEXITCODE"};$dependencyApplied=$true;$dependencySourceReceipt=Join-Path $HomeRoot 'agbrowse-update-receipt.json';if(!(Test-Path -LiteralPath $dependencySourceReceipt)){throw 'agbrowse dependency install produced no update receipt'};$dependencyReceipt=Get-SafeChild $BackupRoot 'dependency-update-receipt.json';New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dependencyReceipt)|Out-Null;Copy-Item -LiteralPath $dependencySourceReceipt -Destination $dependencyReceipt -Force;$dependency=[ordered]@{mode='applied';role='persisted-run-recovery-only';receipt=$dependencyReceipt;receipt_sha256=(Get-Hash $dependencyReceipt)}}else{$dependency=[ordered]@{mode='skipped';reason='legacy-recovery-dependencies-frozen'}}
  if($InstallLocalMultiGpt){$setupOutput=@(& python (Join-Path $RepoRoot 'bin/codex_local_multi_gpt_setup.py') enable --codex-home $HomeRoot);if($LASTEXITCODE){throw "Local Multi-GPT MCP registration failed with exit code ${LASTEXITCODE}: $($setupOutput -join ' ')"};try{$setup=($setupOutput -join [Environment]::NewLine)|ConvertFrom-Json}catch{throw 'Local Multi-GPT MCP setup produced invalid output'};if(!$setup.ok){throw 'Local Multi-GPT MCP setup did not pass'};$localMultiGpt=[ordered]@{enabled=$true;mode=if($setup.changed){'registered'}else{'preserved'};reason=$null;receipt=$setup.receipt;cli=$setup.cli;cli_version=$setup.cli_version}}
  $journal.status='COMPLETE';$journal.completed_at=[DateTime]::UtcNow.ToString('o');Write-JsonDurable $journalPath $journal
  New-Item -ItemType Directory -Force -Path $ReceiptRoot|Out-Null;$receipt=Get-SafeChild $ReceiptRoot "codexpro-automation-$Stamp-$Nonce.json";Write-JsonDurable $receipt ([ordered]@{schema='codexpro.install-receipt/v3';installed_at=[DateTime]::UtcNow.ToString('o');manifest_version=$Manifest.version;backup=$BackupRoot;files=$records;dependency=$dependency;optional_components=[ordered]@{local_multi_gpt=$localMultiGpt};dependency_note='CodexPro and agbrowse are frozen for new work; dependency changes require explicit legacy-recovery opt-in.';wal=$journalPath})
- "Installed $($Files.Count) files. Receipt: $receipt"
+ "Installed $($Files.Count) files and retired $($Retirements.Count) receipt-owned files. Receipt: $receipt"
 } catch {
   $conflicts=@()
   if($localMultiGpt.receipt){$registrationRollback=@(& python (Join-Path $RepoRoot 'bin/codex_local_multi_gpt_setup.py') rollback --codex-home $HomeRoot --receipt ([string]$localMultiGpt.receipt));if($LASTEXITCODE){$conflicts+=@{path='config.toml';action='local_multi_gpt_registration_rollback_incomplete';detail=($registrationRollback -join ' ')}}}
   foreach($record in @($installed|Sort-Object -Descending path)) {
     try {
       $destination=Get-SafeChild $HomeRoot $record.path
+      if($record.action -eq 'retired'){
+        $retiredHash=if($record.retired_sha256){[string]$record.retired_sha256}else{[string]$record.installed_sha256};$backup=Get-SafeChild $BackupRoot $record.path
+        if(Test-Path -LiteralPath $destination){$item=Get-Item -LiteralPath $destination -Force;if(!$item.LinkType -and !$item.PSIsContainer -and (Get-Hash $destination)-eq$retiredHash){continue};$conflicts+=@{path=$record.path;action='preserved_recreated_retired_path'};continue}
+        if((Test-Path -LiteralPath $backup) -and !(Get-Item -LiteralPath $backup -Force).LinkType -and (Get-Hash $backup)-eq$record.backup_sha256){Copy-FileDurable $backup $destination}
+        else{$conflicts+=@{path=$record.path;action='missing_retirement_backup'}}
+        continue
+      }
       if($record.action -eq 'created') {
         if((Test-Path -LiteralPath $destination) -and (Get-Hash $destination)-eq $record.installed_sha256) { Remove-Item -LiteralPath $destination -Force }
         else { $conflicts+=@{path=$record.path;action='preserved_modified_created'} }

@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -25,12 +24,13 @@ def write_config(path: Path, roots: list[Path]) -> None:
     path.write_text(json.dumps({"allowedRoots": [str(root) for root in roots]}), encoding="utf-8")
 
 
+
+
 class FakeOnboarding:
-    def __init__(self, *, codex_home: Path, state: dict, gate: dict | None, gate_error: Exception | None = None):
+    def __init__(self, *, codex_home: Path, state: dict, result: dict | None):
         self.codex_home = codex_home
         self.state = state
-        self.gate = gate
-        self.gate_error = gate_error
+        self.result = result
 
     def load_state(self, *, codex_home=None):
         assert codex_home in {None, self.codex_home}
@@ -42,140 +42,126 @@ class FakeOnboarding:
     def _final_gate_receipt(self, codex_home, devspace_home, state):
         assert codex_home == self.codex_home.resolve()
         assert state is self.state
-        if self.gate_error is not None:
-            raise self.gate_error
-        return self.gate
+        return self.result
 
 
-def test_recent_registered_app_read_gate_is_read_only_and_root_scoped(tmp_path: Path) -> None:
+def app_result(module, project: Path, **updates: object) -> dict:
+    result = {
+        "schema": module.APP_READ_RESULT_SCHEMA,
+        "read_ok": True,
+        "root": str(project),
+        "app_name": "codex",
+        "auth_verified": True,
+        "actual_model": "Latest",
+        "outcome": "captured",
+        "evidence": "authenticated app read completed",
+        "listing_sample": ["README.md"],
+        "recorded_at": "2020-01-01T00:00:00+00:00",
+        "transport": "registered-app",
+    }
+    result.update(updates)
+    return result
+
+
+def test_registered_app_result_is_setup_once_root_scoped_and_not_freshness_gated(tmp_path: Path) -> None:
     module = load_module()
     project = tmp_path / "Coin"
     project.mkdir()
     codex_home = tmp_path / ".codex"
-    now = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
-    recorded_at = now - timedelta(hours=2)
     state = {"app_name": "codex", "allowed_roots": [str(project)]}
-    gate = {
-        "read_ok": True,
-        "root": str(project),
-        "recorded_at": recorded_at.isoformat(),
-        "run_id": "regular-canary-1",
-        "conversation_url": "https://chatgpt.com/c/canary",
-        "tool_read_receipts": [{}, {}, {}],
-    }
-    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=gate)
+    fake = FakeOnboarding(
+        codex_home=codex_home,
+        state=state,
+        result=app_result(module, project),
+    )
 
-    result = module.ensure_recent_registered_app_read_gate(
+    result = module.ensure_registered_app_read_result(
         project,
         "codex",
         codex_home=codex_home,
-        devspace_home=tmp_path / ".devspace",
-        now=now,
+        onboarding_loader=lambda: fake,
+    )
+    legacy = module.ensure_recent_registered_app_read_gate(
+        project,
+        "codex",
+        codex_home=codex_home,
         onboarding_loader=lambda: fake,
     )
 
-    assert result["schema"] == module.PRO_APP_READ_GATE_SCHEMA
-    assert result["qualified"] is True
-    assert result["age_seconds"] == 7200
-    assert result["receipt_count"] == 3
+    assert result == legacy
+    assert result == {
+        "schema": module.APP_READ_RESULT_SCHEMA,
+        "qualified": True,
+        "project_root": str(project.resolve()),
+        "app_name": "codex",
+        "auth_verified": True,
+        "actual_model": "Latest",
+        "outcome": "captured",
+        "recorded_at": "2020-01-01T00:00:00+00:00",
+        "state_path": str(codex_home / "state" / "codex-web-gpt-automation" / "onboarding" / "state.json"),
+        "setup_once": True,
+    }
     assert not (codex_home / "state").exists()
 
 
 @pytest.mark.parametrize(
-    ("app_name", "root_kind", "age_hours", "reason"),
+    ("state_update", "result_update", "reason"),
     [
-        ("other", "exact", 1, "registered-app-name-mismatch"),
-        ("codex", "other", 1, "exact-root-not-covered-by-verified-app"),
-        ("codex", "exact", 25, "final-gate-expired"),
+        ({"app_name": "other"}, {}, "registered-app-name-mismatch"),
+        ({"allowed_roots": []}, {}, "exact-root-not-covered-by-verified-app"),
+        ({}, {"root": "other"}, "app-read-root-mismatch"),
+        ({}, {"auth_verified": False}, "app-auth-not-verified"),
+        ({}, {"actual_model": ""}, "actual-model-invalid"),
+        ({}, {"outcome": "failed"}, "app-read-outcome-not-captured"),
     ],
 )
-def test_pro_gate_fails_closed_for_wrong_app_root_or_stale_receipt(
+def test_registered_app_result_requires_only_minimal_policy_fields(
     tmp_path: Path,
-    app_name: str,
-    root_kind: str,
-    age_hours: int,
+    state_update: dict,
+    result_update: dict,
     reason: str,
 ) -> None:
     module = load_module()
     project = tmp_path / "Coin"
-    other = tmp_path / "Other"
-    project.mkdir()
-    other.mkdir()
-    codex_home = tmp_path / ".codex"
-    now = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
-    roots = [str(project if root_kind == "exact" else other)]
-    state = {"app_name": app_name, "allowed_roots": roots}
-    gate = {
-        "read_ok": True,
-        "root": roots[0],
-        "recorded_at": (now - timedelta(hours=age_hours)).isoformat(),
-        "run_id": "regular-canary-1",
-        "conversation_url": "https://chatgpt.com/c/canary",
-        "tool_read_receipts": [{}, {}, {}],
-    }
-    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=gate)
-
-    with pytest.raises(module.DevSpacePreflightError) as exc:
-        module.ensure_recent_registered_app_read_gate(
-            project,
-            "codex",
-            codex_home=codex_home,
-            now=now,
-            onboarding_loader=lambda: fake,
-        )
-
-    assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
-    assert exc.value.evidence["reason"] == reason
-    assert exc.value.evidence["required_tools"] == ["open_workspace", "read", "read_chunk"]
-
-
-def test_pro_gate_rejects_receipt_for_different_allowed_root(tmp_path: Path) -> None:
-    module = load_module()
-    project = tmp_path / "Coin"
-    other = tmp_path / "Other"
-    project.mkdir()
-    other.mkdir()
-    codex_home = tmp_path / ".codex"
-    now = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
-    state = {"app_name": "codex", "allowed_roots": [str(project), str(other)]}
-    gate = {
-        "read_ok": True,
-        "root": str(other),
-        "recorded_at": (now - timedelta(hours=1)).isoformat(),
-        "run_id": "regular-canary-other-root",
-        "conversation_url": "https://chatgpt.com/c/canary",
-        "tool_read_receipts": [{}, {}, {}],
-    }
-    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=gate)
-
-    with pytest.raises(module.DevSpacePreflightError) as exc:
-        module.ensure_recent_registered_app_read_gate(
-            project,
-            "codex",
-            codex_home=codex_home,
-            now=now,
-            onboarding_loader=lambda: fake,
-        )
-
-    assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
-    assert exc.value.evidence["reason"] == "final-gate-root-mismatch"
-
-
-def test_pro_gate_keeps_partial_registered_app_surface_fail_closed_with_manual_refresh_guidance(tmp_path: Path) -> None:
-    module = load_module()
-    project = tmp_path / "Coin"
     project.mkdir()
     codex_home = tmp_path / ".codex"
-    state = {"app_name": "codex", "allowed_roots": [str(project)]}
-
+    state = {"app_name": "codex", "allowed_roots": [str(project)], **state_update}
     fake = FakeOnboarding(
         codex_home=codex_home,
         state=state,
-        gate=None,
-        gate_error=ValueError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE"),
+        result=app_result(module, project, **result_update),
     )
+
     with pytest.raises(module.DevSpacePreflightError) as exc:
-        module.ensure_recent_registered_app_read_gate(
+        module.ensure_registered_app_read_result(
+            project,
+            "codex",
+            codex_home=codex_home,
+            onboarding_loader=lambda: fake,
+        )
+
+    assert exc.value.code == "REGISTERED_APP_READ_RESULT_REQUIRED"
+    assert exc.value.evidence["reason"] == reason
+    assert exc.value.evidence["next_action"] == "COMPLETE_REGISTERED_APP_READ_CHECK_ONCE"
+    serialized = json.dumps(exc.value.evidence)
+    assert "auditNonce" not in serialized
+    assert "read_chunk" not in serialized
+    assert "fresh" not in serialized.casefold()
+
+
+def test_missing_registered_app_result_has_no_prescribed_tool_or_model_gate(tmp_path: Path) -> None:
+    module = load_module()
+    project = tmp_path / "Coin"
+    project.mkdir()
+    codex_home = tmp_path / ".codex"
+    fake = FakeOnboarding(
+        codex_home=codex_home,
+        state={"app_name": "codex", "allowed_roots": [str(project)]},
+        result=None,
+    )
+
+    with pytest.raises(module.DevSpacePreflightError) as exc:
+        module.ensure_registered_app_read_result(
             project,
             "codex",
             codex_home=codex_home,
@@ -183,86 +169,15 @@ def test_pro_gate_keeps_partial_registered_app_surface_fail_closed_with_manual_r
         )
 
     evidence = exc.value.evidence
-    assert exc.value.code == "PRO_DEVSPACE_APP_READ_GATE_REQUIRED"
-    assert evidence["final_gate_error"] == "FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE"
-    assert evidence["manual_chatgpt_action_required"] is True
-    assert evidence["post_refresh_actions"] == [
-        "RUN_POST_REGISTER_ONCE",
-        "RUN_FRESH_REGULAR_NON_PRO_AUDIT_NONCE_CANARY",
-    ]
-    english = "\n".join(evidence["registered_app_action_snapshot_guidance"]["en"])
-    korean = "\n".join(evidence["registered_app_action_snapshot_guidance"]["ko"])
-    assert "Refresh or New refresh" in english
-    assert "#settings/Plugins/" in english
-    assert "Reconnect" in english
-    assert "actually absent or corrupt" in english
-    assert "Business or Refresh is unavailable" in english
-    assert "recreate and publish" not in english
-    assert "새로 고침" in korean
-    assert "다시 연결" in korean
-    assert "실제로 없거나 손상" in korean
-    assert "read_chunk" in korean
-
-
-def test_pro_gate_does_not_recommend_app_refresh_for_unrelated_or_unknown_failures(tmp_path: Path) -> None:
-    module = load_module()
-    project = tmp_path / "Coin"
-    project.mkdir()
-    codex_home = tmp_path / ".codex"
-    state = {"app_name": "codex", "allowed_roots": [str(project)]}
-
-    for gate_error, expected_code in [
-        (ValueError("FINAL_GATE_ORACLE_STATE_INVALID"), "FINAL_GATE_ORACLE_STATE_INVALID"),
-        (RuntimeError("sensitive arbitrary diagnostic"), None),
-    ]:
-        fake = FakeOnboarding(
-            codex_home=codex_home,
-            state=state,
-            gate=None,
-            gate_error=gate_error,
-        )
-        with pytest.raises(module.DevSpacePreflightError) as exc:
-            module.ensure_recent_registered_app_read_gate(
-                project,
-                "codex",
-                codex_home=codex_home,
-                onboarding_loader=lambda fake=fake: fake,
-            )
-
-        evidence = exc.value.evidence
-        assert evidence["final_gate_error"] == expected_code
-        assert evidence["manual_chatgpt_action_required"] is False
-        assert "registered_app_action_snapshot_guidance" not in evidence
-        assert "post_refresh_actions" not in evidence
-        conditional = evidence["conditional_registered_app_action_snapshot_guidance"]
-        assert "If a fresh regular non-Pro canary exposes no read_chunk" in conditional["en"][0]
-
-
-def test_pro_gate_without_recorded_final_gate_keeps_only_conditional_snapshot_guidance(tmp_path: Path) -> None:
-    module = load_module()
-    project = tmp_path / "Coin"
-    project.mkdir()
-    codex_home = tmp_path / ".codex"
-    state = {"app_name": "codex", "allowed_roots": [str(project)]}
-    fake = FakeOnboarding(codex_home=codex_home, state=state, gate=None)
-
-    with pytest.raises(module.DevSpacePreflightError) as exc:
-        module.ensure_recent_registered_app_read_gate(
-            project,
-            "codex",
-            codex_home=codex_home,
-            onboarding_loader=lambda: fake,
-        )
-
-    evidence = exc.value.evidence
-    assert evidence["final_gate_error"] is None
-    assert evidence["manual_chatgpt_action_required"] is False
-    assert "registered_app_action_snapshot_guidance" not in evidence
-    assert "post_refresh_actions" not in evidence
-    conditional = evidence["conditional_registered_app_action_snapshot_guidance"]
-    assert "read_chunk" in "\n".join(conditional["ko"])
-    assert "Refresh or New refresh" in "\n".join(conditional["en"])
-
+    assert evidence["required"] == {
+        "exact_root": True,
+        "registered_app": True,
+        "auth_verified": True,
+        "actual_model": "one non-empty observed model",
+        "outcome": "captured",
+    }
+    assert "required_tools" not in evidence
+    assert "required_model" not in evidence
 
 def test_first_exact_root_qualification_is_cached_until_config_changes(tmp_path: Path) -> None:
     module = load_module()

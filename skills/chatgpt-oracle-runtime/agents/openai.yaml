@@ -1,6 +1,6 @@
 interface:
   display_name: "ChatGPT Oracle Runtime"
-  short_description: "Run highest-tier regular GPT or explicit read-only Pro through Oracle"
+  short_description: "Run one temporary-chat mission with explicit model and effort"
   default_prompt: "$chatgpt-oracle-runtime C:\\project\\mission.md"
 policy:
   allow_implicit_invocation: false

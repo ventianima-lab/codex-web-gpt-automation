@@ -3,9 +3,9 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
-import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -193,6 +193,210 @@ def test_status_requires_exact_root_order_and_bootstrap_match(tmp_path: Path) ->
     )
     assert mismatch["checks"]["exact_roots_configured"] is False
     assert mismatch["ready"] is False
+
+
+def _write_bootstrap_recovery_receipt(
+    *,
+    codex_home: Path,
+    devspace_home: Path,
+    hostname: str,
+    observed_at: datetime | None = None,
+    mode: str = "Watch",
+    watch_interval_seconds: int = 30,
+) -> Path:
+    config_text = (devspace_home / "config.json").read_bytes().decode("utf-8-sig")
+    target = codex_home / module.BOOTSTRAP_RECOVERY_RELATIVE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({
+            "schema": module.BOOTSTRAP_RECOVERY_SCHEMA,
+            "healthy": True,
+            "config_sha256": hashlib.sha256(config_text.encode("utf-8")).hexdigest(),
+            "hostname": hostname,
+            "mode": mode,
+            "watch_interval_seconds": watch_interval_seconds,
+            "watchdog_pid": 4242,
+            "reason": "healthy-recovery-observed",
+            "observed_at": (observed_at or datetime.now(timezone.utc)).isoformat(),
+        }),
+        encoding="utf-8",
+    )
+    return target
+
+
+def test_tailscale_bootstrap_recovery_requires_recent_raw_utf8_hash_and_hostname(
+    tmp_path: Path,
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    codex_home = Path(environment["codex_home"])
+    devspace_home = Path(environment["devspace_home"])
+    config = devspace_home / "config.json"
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    config.write_bytes(json.dumps(payload, indent=2).replace("\n", "\r\n").encode("utf-8"))
+    receipt = _write_bootstrap_recovery_receipt(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        hostname="device.tailnet.ts.net",
+    )
+
+    assert module.stateful_bootstrap_recovery_verified(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        registration_url="https://device.tailnet.ts.net/mcp",
+        watchdog_identity_probe=lambda **_kwargs: True,
+    ) is True
+
+    stale = json.loads(receipt.read_text(encoding="utf-8"))
+    stale["observed_at"] = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
+    receipt.write_text(json.dumps(stale), encoding="utf-8")
+    assert module.stateful_bootstrap_recovery_verified(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        registration_url="https://device.tailnet.ts.net/mcp",
+        watchdog_identity_probe=lambda **_kwargs: True,
+    ) is False
+
+    _write_bootstrap_recovery_receipt(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        hostname="other.tailnet.ts.net",
+    )
+    assert module.stateful_bootstrap_recovery_verified(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        registration_url="https://device.tailnet.ts.net/mcp",
+        watchdog_identity_probe=lambda **_kwargs: True,
+    ) is False
+
+    _write_bootstrap_recovery_receipt(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        hostname="device.tailnet.ts.net",
+    )
+    config.write_bytes(config.read_bytes() + b"\r\n")
+    assert module.stateful_bootstrap_recovery_verified(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        registration_url="https://device.tailnet.ts.net/mcp",
+        watchdog_identity_probe=lambda **_kwargs: True,
+    ) is False
+
+
+def test_bootstrap_persistence_rejects_recent_once_and_dead_watch_receipts(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    codex_home = Path(environment["codex_home"])
+    devspace_home = Path(environment["devspace_home"])
+    probe_calls: list[int] = []
+
+    _write_bootstrap_recovery_receipt(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        hostname="device.tailnet.ts.net",
+        mode="Once",
+    )
+    assert module.stateful_bootstrap_recovery_verified(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        registration_url="https://device.tailnet.ts.net/mcp",
+        watchdog_identity_probe=lambda **kwargs: probe_calls.append(kwargs["watchdog_pid"]) or True,
+    ) is False
+    assert probe_calls == []
+
+    _write_bootstrap_recovery_receipt(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        hostname="device.tailnet.ts.net",
+        mode="Watch",
+    )
+    assert module.stateful_bootstrap_recovery_verified(
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        registration_url="https://device.tailnet.ts.net/mcp",
+        watchdog_identity_probe=lambda **_kwargs: False,
+    ) is False
+
+
+def test_windows_watchdog_identity_requires_exact_registration_and_live_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_home = tmp_path / "codex home"
+    script = codex_home / "scripts" / "start_devspace_bootstrap.ps1"
+    script.parent.mkdir(parents=True)
+    script.write_text("exit 0\n", encoding="utf-8")
+    system_root = tmp_path / "Windows"
+    powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    powershell.parent.mkdir(parents=True)
+    powershell.write_bytes(b"MZ")
+    monkeypatch.setenv("SystemRoot", str(system_root))
+    expected = module._expected_windows_watchdog_command(codex_home)
+    observed: dict[str, object] = {}
+
+    def runner(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        payload = {
+            "registered_command": expected,
+            "process_id": 4242,
+            "executable_path": str(powershell.resolve()),
+            "command_line": (
+                f'"{powershell.resolve()}" -NoProfile -File "{script.resolve()}" '
+                "-Mode Watch -WatchIntervalSeconds 30"
+            ),
+        }
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+
+    assert module._windows_watchdog_identity_verified(
+        codex_home=codex_home,
+        watchdog_pid=4242,
+        runner=runner,
+        platform_name="nt",
+    ) is True
+    assert observed["kwargs"]["timeout"] == module.WATCHDOG_IDENTITY_TIMEOUT_SECONDS
+    command_text = " ".join(observed["argv"])
+    assert "Get-ItemProperty" in command_text
+    assert "Get-CimInstance" in command_text
+    assert "reg.exe" not in command_text
+
+    def wrong_registration(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        payload = {
+            "registered_command": expected + " -Unexpected",
+            "process_id": 4242,
+            "executable_path": str(powershell.resolve()),
+            "command_line": f'"{powershell.resolve()}" -File "{script.resolve()}" -Mode Watch -WatchIntervalSeconds 30',
+        }
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+
+    assert module._windows_watchdog_identity_verified(
+        codex_home=codex_home,
+        watchdog_pid=4242,
+        runner=wrong_registration,
+        platform_name="nt",
+    ) is False
+
+
+def test_tailscale_manual_confirmation_cannot_bypass_bootstrap_receipt(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    state = module.start_onboarding(
+        provider="tailscale",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        hostname_discovery=lambda: "device.tailnet.ts.net",
+    )
+    state["stages"]["04_reboot_service"] = {
+        "status": "user_confirmed",
+        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    evaluated = module.evaluate_stages(
+        state,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        **environment["probes"],
+    )
+
+    assert evaluated["checks"]["bootstrap_recovery_verified"] is False
+    assert evaluated["checks"]["restart_persistence_verified"] is False
 
 
 def test_configure_app_name_is_atomic_and_contains_only_public_name(tmp_path: Path) -> None:
@@ -428,120 +632,213 @@ def _confirm_ready_manual_stages(
         assert result["accepted"] is True, result
 
 
-def _bound_final_gate_run(
-    environment: dict[str, object],
-    listing: list[str],
-    *,
-    registered_app_final_gate: bool = False,
-    source_thread_id: str | None = None,
-) -> Path:
-    codex_home = Path(environment["codex_home"])
-    project = Path(environment["project"])
-    run_dir = codex_home / "state" / "chatgpt-oracle" / "projects" / "test" / "runs" / ("f" * 32)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    mission_path = project / "missions" / "onboarding-final-gate.md"
-    mission_path.parent.mkdir(parents=True, exist_ok=True)
-    mission_path.write_text("# Final gate cryptographic read challenge\nnonce: 4d3a8f1c\n", encoding="utf-8")
-    mission_sha256 = hashlib.sha256(mission_path.read_bytes()).hexdigest()
-    output = run_dir / "output.md"
-    output.write_text(
-        f"App codex opened and separately read workspace. Listed: {', '.join(listing)}\n"
-        "Audit receipts: 00000000-0000-4000-8000-000000000001 "
-        "00000000-0000-4000-8000-000000000002 "
-        "00000000-0000-4000-8000-000000000003\n"
-        "TASK_OUTCOME: EXECUTED\n",
+
+
+
+
+
+
+def _lean_app_execution_run(environment: dict[str, object]) -> Path:
+    project = Path(environment["project"]).resolve()
+    proof_line = "Verified project content from the exact onboarding root."
+    (project / "README.md").write_text(proof_line + "\n", encoding="utf-8")
+    mission = project / "mission.md"
+    mission.write_text(
+        "Use the registered app to read README.md from this exact project root.\n",
         encoding="utf-8",
     )
-    output_sha256 = hashlib.sha256(output.read_bytes()).hexdigest()
+    run_dir = Path(environment["codex_home"]) / "state" / "chatgpt-oracle" / "lean-run"
+    run_dir.mkdir(parents=True)
+    output = run_dir / "output.md"
+    output.write_text(
+        "Authenticated codex app read completed.\n" + proof_line + "\n",
+        encoding="utf-8",
+    )
+    output_bytes = output.read_bytes()
     state = {
-        "schema": "codex.chatgpt.oracle-run-state/v1",
-        "run_id": "f" * 32,
-        "project_root": str(project.resolve()),
-        "transport": "devspace",
-        "app_name": "codex",
-        "profile": {"model": "gpt-5.6", "thinking_time": "extra-high"},
-        "status": "complete",
-        "transport_status": "complete",
-        "session_authority": "terminal",
-        "terminal_harvested": True,
-        "task_outcome": "executed",
-        "artifact_sha256": output_sha256,
-        "mission": {"path": str(mission_path.resolve()), "sha256": mission_sha256},
-        "oracle": {
-            "slug": "oracle-onboarding-final",
-            "conversation_url": "https://chatgpt.com/c/onboarding-final-test",
+        "schema": "codex.chatgpt.oracle-execution-state/v1",
+        "run_id": "lean-run",
+        "project_root": str(project),
+        "mission": {
+            "path": str(mission),
+            "sha256": hashlib.sha256(mission.read_bytes()).hexdigest(),
         },
-        "artifacts": {"output": str(output.resolve())},
-        **({"registered_app_final_gate": True} if registered_app_final_gate else {}),
-        **(
-            {
-                "ownership": {
-                    "schema": "codex.chatgpt.oracle-ownership/v1",
-                    "source_thread_id": source_thread_id,
-                }
-            }
-            if source_thread_id
-            else {}
-        ),
+        "selection": {"model": "latest", "effort": "pro", "app_name": "codex"},
+        "status": "captured",
+        "capture": "durable",
+        "semantic_outcome": "unknown",
+        "model_check": {
+            "verified": True,
+            "model": "latest",
+            "effort": "pro",
+            "source": "oracle-picker-dom-log",
+        },
+        "artifacts": {
+            "output": str(output),
+            "output_sha256": hashlib.sha256(output_bytes).hexdigest(),
+            "output_bytes": len(output_bytes),
+        },
     }
     (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
-    receipt_root = Path(environment["devspace_home"]) / "state" / "tool-read-receipts"
-    receipt_root.mkdir(parents=True, exist_ok=True)
-    common = {
-        "schema": "codex.devspace.tool-read-receipt/v1",
-        "auditNonce": state["run_id"],
-        "workspaceId": "ws_onboarding_test",
-        "canonicalRoot": str(project.resolve()),
-        "conversationScopeId": "v1/opaque-openai-session-scope",
-    }
-    receipts = (
-        ("00000000-0000-4000-8000-000000000001", "open_workspace", None, None, None, None, None, None, "2026-08-22T00:00:01Z"),
-        ("00000000-0000-4000-8000-000000000002", "read", "missions/onboarding-final-gate.md", None, None, None, None, None, "2026-08-22T00:00:02Z"),
-        ("00000000-0000-4000-8000-000000000003", "read_chunk", "missions/onboarding-final-gate.md", mission_sha256, 0, mission_path.stat().st_size, mission_path.stat().st_size, True, "2026-08-22T00:00:03Z"),
-    )
-    for audit_step, (receipt_id, tool, requested_path, chunk_sha256, offset, returned, total, eof, timestamp) in enumerate(receipts, 1):
-        payload = {
-            **common,
-            "receiptId": receipt_id,
-            "auditStep": audit_step,
-            "tool": tool,
-            "requestedRelativePath": requested_path,
-            "readChunkSha256": chunk_sha256,
-            "readChunkOffsetBytes": offset,
-            "readChunkBytesReturned": returned,
-            "readChunkTotalBytes": total,
-            "readChunkEof": eof,
-            "timestamp": timestamp,
-        }
-        (receipt_root / f"{receipt_id}.json").write_text(json.dumps(payload), encoding="utf-8")
     return run_dir
 
 
-def _rewrite_tool_read_receipt(receipt: Path, **updates: object) -> None:
-    payload = json.loads(receipt.read_text(encoding="utf-8"))
-    payload.update(updates)
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
+def test_lean_app_onboarding_uses_execute_reconnect_contract(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    mission = Path(environment["project"]) / "mission.md"
+    mission.write_text("Read this project and persist the result.\n", encoding="utf-8")
 
-
-def _tail_partial_chunk_receipt(receipts: list[Path]) -> None:
-    receipt = receipts[2]
-    payload = json.loads(receipt.read_text(encoding="utf-8"))
-    _rewrite_tool_read_receipt(
-        receipt,
-        readChunkOffsetBytes=1,
-        readChunkBytesReturned=payload["readChunkTotalBytes"] - 1,
-        readChunkEof=True,
+    plan = module.prepare_final_gate(
+        root=str(environment["project"]),
+        mission_path=mission,
+        codex_home=environment["codex_home"],
     )
 
+    assert plan["schema"] == "codex-web-gpt.onboarding-app-read-plan/v1"
+    assert "chatgpt_oracle_run.py execute" in plan["execute_command"]
+    assert "--project-root" in plan["execute_command"]
+    assert "--mission-path" in plan["execute_command"]
+    assert "--app-name codex" in plan["execute_command"]
+    assert "chatgpt_oracle_run.py reconnect --run-dir" in plan["reconnect_command_template"]
+    assert "<PROJECT_FILE_READ_THROUGH_REGISTERED_APP>" in plan["record_command_template"]
+    assert "--listing mission.md" not in plan["record_command_template"]
+    serialized = json.dumps(plan)
+    for retired in ("auditNonce", "read_chunk", "receipt", "fresh"):
+        assert retired not in serialized
 
-def _truncated_chunk_receipt(receipts: list[Path]) -> None:
-    receipt = receipts[2]
-    payload = json.loads(receipt.read_text(encoding="utf-8"))
-    _rewrite_tool_read_receipt(
-        receipt,
-        readChunkBytesReturned=payload["readChunkTotalBytes"] - 1,
-        readChunkEof=True,
+
+def test_lean_app_onboarding_records_one_durable_actual_model_result(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
     )
+    run_dir = _lean_app_execution_run(environment)
+
+    recorded = module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="The authenticated codex app captured the exact-root read result.",
+        listing=["README.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+    )
+
+    assert recorded["schema"] == "codex.chatgpt.registered-app-read-result/v1"
+    assert recorded["auth_verified"] is True
+    assert recorded["actual_model"] == "latest"
+    assert recorded["outcome"] == "captured"
+    assert recorded["read_proof"]["kind"] == "project-file-content-match"
+    assert recorded["read_proof"]["relative_path"] == "README.md"
+    state = module.load_state(codex_home=environment["codex_home"])
+    assert module._final_gate_receipt(
+        Path(environment["codex_home"]), Path(environment["devspace_home"]), state
+    ) == recorded
+    Path(recorded["output_path"]).write_text("changed after setup\n", encoding="utf-8")
+    assert module._final_gate_receipt(
+        Path(environment["codex_home"]), Path(environment["devspace_home"]), state
+    ) == recorded
+
+
+def test_lean_app_onboarding_rejects_uncaptured_or_unbound_execution(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _lean_app_execution_run(environment)
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["status"] = "attention_required"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_EXECUTION_NOT_DURABLY_CAPTURED"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="The authenticated codex app captured the exact-root read result.",
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+        )
+
+
+def test_final_gate_rejects_generic_workspace_open_without_project_file_content(
+    tmp_path: Path,
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _lean_app_execution_run(environment)
+    output = run_dir / "output.md"
+    output.write_text(
+        "Workspace opened successfully. The registered app is available.\n",
+        encoding="utf-8",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    output_bytes = output.read_bytes()
+    state["artifacts"]["output_sha256"] = hashlib.sha256(output_bytes).hexdigest()
+    state["artifacts"]["output_bytes"] = len(output_bytes)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_PROJECT_READ_NOT_PROVEN"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="The workspace opened but no file content was captured.",
+            listing=["README.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+        )
+
+
+def test_final_gate_never_accepts_echoed_mission_text_as_project_read_proof(
+    tmp_path: Path,
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _lean_app_execution_run(environment)
+    project = Path(environment["project"])
+    mission = project / "mission.md"
+    output = run_dir / "output.md"
+    output.write_text(mission.read_text(encoding="utf-8"), encoding="utf-8")
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    output_bytes = output.read_bytes()
+    state["artifacts"]["output_sha256"] = hashlib.sha256(output_bytes).hexdigest()
+    state["artifacts"]["output_bytes"] = len(output_bytes)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_PROJECT_READ_NOT_PROVEN"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(project),
+            evidence="The mission text was echoed without a separate project-file read.",
+            listing=["mission.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+        )
+
+
 
 
 def test_start_persists_resumable_state_without_secrets(tmp_path: Path) -> None:
@@ -681,7 +978,7 @@ def test_user_confirmation_alone_cannot_complete_a_stage(tmp_path: Path) -> None
     assert reloaded["stages"]["07_chatgpt_app"]["status"] == "pending"
 
 
-def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) -> None:
+def test_final_gate_requires_recorded_lean_app_exact_root_read(tmp_path: Path) -> None:
     environment = _wizard_environment(tmp_path, ready=True)
     module.start_onboarding(
         provider="custom",
@@ -698,12 +995,12 @@ def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) ->
     assert before["current_stage"] == "08_final_gate"
     assert before["completion_state"] == "awaiting_verification"
 
-    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
+    run_dir = _lean_app_execution_run(environment)
     module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
-        evidence="regular oracle listed the exact root",
-        listing=["AGENTS.md"],
+        evidence="The authenticated codex app captured the exact-root read result.",
+        listing=["README.md"],
         run_dir=run_dir,
         codex_home=environment["codex_home"],
         devspace_home=environment["devspace_home"],
@@ -719,179 +1016,22 @@ def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) ->
     assert after["completion_label"] == "전체 설치 및 실제 프로젝트 연결 검증 완료"
 
 
-def test_final_gate_rejects_self_authored_open_output_without_receipts(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
-    output = run_dir / "output.md"
-    output.write_text(
-        "App codex opened workspace and listed AGENTS.md\n"
-        "TASK_OUTCOME: EXECUTED\n",
-        encoding="utf-8",
-    )
-    state_path = run_dir / "state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["artifact_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    for receipt in (Path(environment["devspace_home"]) / "state" / "tool-read-receipts").glob("*.json"):
-        receipt.unlink()
-    with pytest.raises(module.OnboardingError, match="FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE"):
-        module.record_final_gate(
-            read_ok=True,
-            root=str(environment["project"]),
-            evidence="regular oracle opened but did not separately read",
-            listing=["AGENTS.md"],
-            run_dir=run_dir,
-            codex_home=environment["codex_home"],
-            devspace_home=environment["devspace_home"],
-        )
 
 
-def test_final_gate_accepts_valid_receipts_with_server_challenge_response(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
-    output = run_dir / "output.md"
-    output.write_text(
-        "App codex listed AGENTS.md after the connector calls.\n"
-        "Audit receipts: 00000000-0000-4000-8000-000000000001 "
-        "00000000-0000-4000-8000-000000000002 "
-        "00000000-0000-4000-8000-000000000003\n"
-        "TASK_OUTCOME: EXECUTED\n",
-        encoding="utf-8",
-    )
-    state_path = run_dir / "state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["artifact_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-
-    recorded = module.record_final_gate(
-        read_ok=True,
-        root=str(environment["project"]),
-        evidence="server receipts bind the exact mission read",
-        listing=["AGENTS.md"],
-        run_dir=run_dir,
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-    assert recorded["read_file_sha256"] == hashlib.sha256(
-        (Path(environment["project"]) / "missions" / "onboarding-final-gate.md").read_bytes()
-    ).hexdigest()
 
 
-def test_final_gate_rejects_receipts_not_echoed_by_exact_oracle_conversation(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
-    output = run_dir / "output.md"
-    output.write_text(
-        "App codex listed AGENTS.md but did not echo server challenges.\n"
-        "TASK_OUTCOME: EXECUTED\n",
-        encoding="utf-8",
-    )
-    state_path = run_dir / "state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["artifact_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-
-    with pytest.raises(module.OnboardingError, match="FINAL_GATE_CONVERSATION_RECEIPT_CHALLENGE_MISSING"):
-        module.record_final_gate(
-            read_ok=True,
-            root=str(environment["project"]),
-            evidence="different conversation cannot satisfy server challenge-response",
-            listing=["AGENTS.md"],
-            run_dir=run_dir,
-            codex_home=environment["codex_home"],
-            devspace_home=environment["devspace_home"],
-        )
 
 
-@pytest.mark.parametrize(
-    ("mutation", "error"),
-    [
-        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8")[:-1] + ', "unexpected": true}', encoding="utf-8"), "KEYSET_INVALID"),
-        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8")[:-1] + ', "tool": "open_workspace"}', encoding="utf-8"), "INVALID"),
-        (lambda receipts: receipts.append(receipts[2].with_name("duplicate.json")) or receipts[-1].write_text(receipts[2].read_text(encoding="utf-8"), encoding="utf-8"), "MISSING_OR_DUPLICATE"),
-        (lambda receipts: _rewrite_tool_read_receipt(receipts[1], auditStep=3), "ORDER_INVALID"),
-        (lambda receipts: receipts[1].write_text(receipts[1].read_text(encoding="utf-8").replace("ws_onboarding_test", "ws_other"), encoding="utf-8"), "WORKSPACE_MISMATCH"),
-        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8").replace('"canonicalRoot": "', '"canonicalRoot": "C:/wrong-root'), encoding="utf-8"), "ROOT_MISMATCH"),
-        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8").replace("v1/opaque-openai-session-scope", "other-scope"), encoding="utf-8"), "SCOPE_MISMATCH"),
-        (lambda receipts: receipts[1].write_text(receipts[1].read_text(encoding="utf-8").replace("missions/onboarding-final-gate.md", "README.md"), encoding="utf-8"), "PATH_MISMATCH"),
-        (lambda receipts: receipts[2].write_text(re.sub(r'("readChunkSha256": ")[0-9a-f]+', r'\g<1>' + "0" * 64, receipts[2].read_text(encoding="utf-8")), encoding="utf-8"), "SHA_MISMATCH"),
-        (lambda receipts: _rewrite_tool_read_receipt(receipts[0], readChunkOffsetBytes=0), "CHUNK_METADATA_INVALID"),
-        (_tail_partial_chunk_receipt, "CHUNK_METADATA_INVALID"),
-        (_truncated_chunk_receipt, "CHUNK_METADATA_INVALID"),
-        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8").replace('"auditNonce": "', '"auditNonce": "other-'), encoding="utf-8"), "MISSING_OR_DUPLICATE"),
-    ],
-)
-def test_final_gate_rejects_invalid_tool_read_receipts(
-    tmp_path: Path,
-    mutation: object,
-    error: str,
-) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
-    receipts = sorted((Path(environment["devspace_home"]) / "state" / "tool-read-receipts").glob("*.json"))
-    mutation(receipts)
-    with pytest.raises(module.OnboardingError, match=f"FINAL_GATE_TOOL_READ_RECEIPT.*{error}"):
-        module.record_final_gate(
-            read_ok=True,
-            root=str(environment["project"]),
-            evidence="receipt mutation must block the final gate",
-            listing=["AGENTS.md"],
-            run_dir=run_dir,
-            codex_home=environment["codex_home"],
-            devspace_home=environment["devspace_home"],
-        )
 
 
-def test_final_gate_rejects_symlink_tool_read_receipt(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
-    receipt_root = Path(environment["devspace_home"]) / "state" / "tool-read-receipts"
-    target = sorted(receipt_root.glob("*.json"))[0]
-    target.unlink()
-    try:
-        target.symlink_to(receipt_root / "00000000-0000-4000-8000-000000000002.json")
-    except OSError as exc:
-        pytest.skip(f"symlink unavailable: {exc}")
-    with pytest.raises(module.OnboardingError, match="FINAL_GATE_TOOL_READ_RECEIPT_SYMLINK_FORBIDDEN"):
-        module.record_final_gate(
-            read_ok=True,
-            root=str(environment["project"]),
-            evidence="a symlink receipt must not be accepted",
-            listing=["AGENTS.md"],
-            run_dir=run_dir,
-            codex_home=environment["codex_home"],
-            devspace_home=environment["devspace_home"],
-        )
+
+
+
+
+
+
+
+
 
 
 def test_final_gate_rejects_a_root_outside_the_allowed_list(tmp_path: Path) -> None:
@@ -983,7 +1123,7 @@ def test_every_stage_has_readable_instructions_in_both_languages(tmp_path: Path,
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])
-def test_final_gate_instructions_require_manual_registered_app_action_refresh_before_fresh_canary(
+def test_final_gate_instructions_describe_the_lean_registered_app_check(
     tmp_path: Path, language: str
 ) -> None:
     environment = _wizard_environment(tmp_path, ready=True)
@@ -996,96 +1136,13 @@ def test_final_gate_instructions_require_manual_registered_app_action_refresh_be
     )
     instructions = "\n".join(module.stage_instructions("08_final_gate", state, language))
 
-    assert "Action" in instructions
-    assert "Refresh" in instructions
-    assert "Business" in instructions
-    assert "https://chatgpt.com/#settings/Plugins/" in instructions
-    assert ("다시 연결" in instructions) if language == "ko" else ("Reconnect" in instructions)
-    assert ("삭제·재등록하지" in instructions) if language == "ko" else ("Do not delete or re-register" in instructions)
-    assert "read_chunk" in instructions
-    assert "post-register" in instructions
-    assert "open_workspace/read" in instructions
     assert "prepare-final-gate" in instructions
+    assert "execute" in instructions
+    assert "capture" in instructions
+    assert "durable" in instructions
+    assert "read_chunk" not in instructions
 
 
-def test_prepare_final_gate_writes_exact_host_state_manifest_and_commands(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        app_name="codex",
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-    mission = Path(environment["project"]) / "missions" / "onboarding-final-gate.md"
-    mission.parent.mkdir(parents=True, exist_ok=True)
-    mission.write_text("Read this exact file without mutation.\n", encoding="utf-8")
-    source_thread_id = "00000000-0000-4000-8000-000000000123"
-    monkeypatch.setenv("CODEX_THREAD_ID", source_thread_id)
-
-    result = module.prepare_final_gate(
-        root=str(environment["project"]),
-        mission_path=mission,
-        codex_home=environment["codex_home"],
-    )
-
-    manifest_path = Path(result["manifest_path"])
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest_path.is_relative_to(Path(environment["codex_home"]))
-    assert re.fullmatch(r"[0-9a-f]{32}\.json", manifest_path.name)
-    assert payload == {
-        "schema": "codex.chatgpt.oracle-run/v1",
-        "project_root": str(Path(environment["project"]).resolve()),
-        "mission_path": str(mission.resolve()),
-        "app_name": "codex",
-        "mode": "browser",
-        "transport": "devspace",
-        "model": "gpt-5.6",
-        "model_strategy": "select",
-        "thinking_time": "extra-high",
-        "research": "off",
-        "task_outcome_contract": "v1",
-        "archive": "never",
-        "registered_app_final_gate": True,
-        "source_thread_id": source_thread_id,
-    }
-    assert result["submission_action"] == "none"
-    assert result["dry_run_command"].endswith(" --dry-run")
-    assert "chatgpt_oracle_run.py run --manifest" in result["run_command"]
-    assert "missions/onboarding-final-gate.md" in result["record_command_template"]
-    first_manifest_bytes = manifest_path.read_bytes()
-
-    second_thread_id = "00000000-0000-4000-8000-000000000456"
-    monkeypatch.setenv("CODEX_THREAD_ID", second_thread_id)
-    second = module.prepare_final_gate(
-        root=str(environment["project"]),
-        mission_path=mission,
-        codex_home=environment["codex_home"],
-    )
-    assert second["manifest_path"] != result["manifest_path"]
-    assert Path(result["manifest_path"]).read_bytes() == first_manifest_bytes
-
-    same_bytes_different_path = mission.with_name("same-bytes-different-path.md")
-    same_bytes_different_path.write_bytes(mission.read_bytes())
-    third = module.prepare_final_gate(
-        root=str(environment["project"]),
-        mission_path=same_bytes_different_path,
-        codex_home=environment["codex_home"],
-    )
-    assert third["mission_sha256"] == result["mission_sha256"]
-    assert third["manifest_path"] != result["manifest_path"]
-
-    mission.write_bytes(b"z" * (24 * 1024))
-    exact_boundary = module.prepare_final_gate(
-        root=str(environment["project"]),
-        mission_path=mission,
-        codex_home=environment["codex_home"],
-    )
-    assert exact_boundary["manifest_path"] != result["manifest_path"]
-    assert exact_boundary["mission_sha256"] != result["mission_sha256"]
 
 
 def test_prepare_final_gate_rejects_mission_outside_exact_root(
@@ -1111,19 +1168,7 @@ def test_prepare_final_gate_rejects_mission_outside_exact_root(
         )
 
 
-@pytest.mark.parametrize(
-    ("payload", "error"),
-    [
-        (b"x" * (24 * 1024 + 1), "FINAL_GATE_MISSION_EXCEEDS_SINGLE_READ_CHUNK"),
-        (b"\xff\xfe", "FINAL_GATE_MISSION_MUST_BE_UTF8"),
-    ],
-)
-def test_prepare_final_gate_rejects_unreadable_single_chunk_mission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    payload: bytes,
-    error: str,
-) -> None:
+def test_prepare_final_gate_rejects_non_utf8_mission(tmp_path: Path) -> None:
     environment = _wizard_environment(tmp_path, ready=True)
     module.start_onboarding(
         provider="custom",
@@ -1134,10 +1179,9 @@ def test_prepare_final_gate_rejects_unreadable_single_chunk_mission(
     )
     mission = Path(environment["project"]) / "missions" / "onboarding-final-gate.md"
     mission.parent.mkdir(parents=True, exist_ok=True)
-    mission.write_bytes(payload)
-    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000123")
+    mission.write_bytes(b"\xff\xfe")
 
-    with pytest.raises(module.OnboardingError, match=error):
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_MISSION_UNREADABLE"):
         module.prepare_final_gate(
             root=str(environment["project"]),
             mission_path=mission,
@@ -1145,101 +1189,28 @@ def test_prepare_final_gate_rejects_unreadable_single_chunk_mission(
         )
 
 
-def test_prepare_final_gate_requires_current_codex_task_binding(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_prepare_final_gate_accepts_large_utf8_mission(tmp_path: Path) -> None:
     environment = _wizard_environment(tmp_path, ready=True)
     module.start_onboarding(
         provider="custom",
         registration_url="https://mcp.example.com/mcp",
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
     )
-    mission = Path(environment["project"]) / "missions" / "onboarding-final-gate.md"
-    mission.parent.mkdir(parents=True, exist_ok=True)
-    mission.write_text("read-only canary", encoding="utf-8")
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    mission = Path(environment["project"]) / "large-utf8.md"
+    mission.write_text("한글 mission\n" * 4096, encoding="utf-8")
 
-    with pytest.raises(module.OnboardingError, match="FINAL_GATE_CODEX_TASK_REQUIRED"):
-        module.prepare_final_gate(
-            root=str(environment["project"]),
-            mission_path=mission,
-            codex_home=environment["codex_home"],
-        )
-
-
-def test_registered_final_gate_record_requires_live_matching_codex_task(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        app_name="codex",
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-    owner = "00000000-0000-4000-8000-000000000123"
-    run_dir = _bound_final_gate_run(
-        environment,
-        ["missions/onboarding-final-gate.md"],
-        registered_app_final_gate=True,
-        source_thread_id=owner,
-    )
-
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    with pytest.raises(module.OnboardingError, match="FINAL_GATE_CURRENT_TASK_BINDING_REQUIRED"):
-        module.record_final_gate(
-            read_ok=True,
-            root=str(environment["project"]),
-            evidence="The exact registered-app final gate was independently verified.",
-            listing=["missions/onboarding-final-gate.md"],
-            run_dir=run_dir,
-            codex_home=environment["codex_home"],
-            devspace_home=environment["devspace_home"],
-        )
-
-    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000999")
-    with pytest.raises(module.OnboardingError, match="FINAL_GATE_FOREIGN_TASK_RUN"):
-        module.record_final_gate(
-            read_ok=True,
-            root=str(environment["project"]),
-            evidence="The exact registered-app final gate was independently verified.",
-            listing=["missions/onboarding-final-gate.md"],
-            run_dir=run_dir,
-            codex_home=environment["codex_home"],
-            devspace_home=environment["devspace_home"],
-        )
-
-    monkeypatch.setenv("CODEX_THREAD_ID", owner)
-    recorded = module.record_final_gate(
-        read_ok=True,
+    plan = module.prepare_final_gate(
         root=str(environment["project"]),
-        evidence="The exact registered-app final gate was independently verified.",
-        listing=["missions/onboarding-final-gate.md"],
-        run_dir=run_dir,
+        mission_path=mission,
         codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
     )
-    assert recorded["source_thread_id"] == owner
 
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    resumed = module.load_state(codex_home=environment["codex_home"])
-    assert (
-        module._final_gate_receipt(
-            environment["codex_home"], environment["devspace_home"], resumed
-        )
-        == resumed["stages"]["08_final_gate"]["evidence"]
-    )
-    monkeypatch.setenv("CODEX_THREAD_ID", "00000000-0000-4000-8000-000000000999")
-    assert (
-        module._final_gate_receipt(
-            environment["codex_home"], environment["devspace_home"], resumed
-        )
-        == resumed["stages"]["08_final_gate"]["evidence"]
-    )
+    assert plan["mission_sha256"] == hashlib.sha256(mission.read_bytes()).hexdigest()
+
+
+
+
 
 
 @pytest.mark.parametrize("provider", ["cloudflare", "ngrok", "custom"])
@@ -1264,8 +1235,16 @@ def test_non_tailscale_instructions_never_route_through_tailscale_helper(
     assert "OS login service" in rendered
 
 
-@pytest.mark.parametrize(("language", "needle"), [("ko", "현재 상태"), ("en", "Current state")])
-def test_render_step_is_human_readable_per_language(tmp_path: Path, language: str, needle: str) -> None:
+@pytest.mark.parametrize(
+    ("language", "needle", "name_index"),
+    [("ko", "사용자 확인 필요", 0), ("en", "Your action is needed", 1)],
+)
+def test_render_step_is_human_readable_per_language(
+    tmp_path: Path,
+    language: str,
+    needle: str,
+    name_index: int,
+) -> None:
     environment = _wizard_environment(tmp_path, ready=False)
     module.start_onboarding(
         provider="custom",
@@ -1281,7 +1260,8 @@ def test_render_step_is_human_readable_per_language(tmp_path: Path, language: st
     )
     rendered = module.render_step(step)
     assert needle in rendered
-    assert step["current_stage"] in rendered
+    assert module.UI.STAGE_NAMES[step["current_stage"]][name_index] in rendered
+    assert step["current_stage"] not in rendered
     assert "{" not in rendered
 
 
@@ -1314,6 +1294,7 @@ def test_final_gate_rejects_empty_or_too_short_evidence_without_completion(
         codex_home=environment["codex_home"],
     )
     _confirm_ready_manual_stages(environment)
+    run_dir = _lean_app_execution_run(environment)
 
     with pytest.raises(module.OnboardingError, match="FINAL_GATE_EVIDENCE_INSUFFICIENT"):
         module.record_final_gate(
@@ -1321,6 +1302,7 @@ def test_final_gate_rejects_empty_or_too_short_evidence_without_completion(
             root=str(environment["project"]),
             evidence=evidence,
             listing=["README.md"],
+            run_dir=run_dir,
             codex_home=environment["codex_home"],
         )
 
@@ -1333,26 +1315,9 @@ def test_final_gate_rejects_empty_or_too_short_evidence_without_completion(
     assert step["current_stage"] == "08_final_gate"
 
 
-def test_final_gate_rejects_empty_or_whitespace_only_listing(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-
-    with pytest.raises(module.OnboardingError, match="FINAL_GATE_EVIDENCE_INSUFFICIENT"):
-        module.record_final_gate(
-            read_ok=True,
-            root=str(environment["project"]),
-            evidence="The exact project directory was listed.",
-            listing=["", "   "],
-            codex_home=environment["codex_home"],
-        )
 
 
-def test_valid_final_gate_record_completes_onboarding_and_stores_listing_sample(tmp_path: Path) -> None:
+def test_valid_lean_final_gate_completes_onboarding_and_stores_listing_sample(tmp_path: Path) -> None:
     environment = _wizard_environment(tmp_path, ready=True)
     module.start_onboarding(
         provider="custom",
@@ -1362,7 +1327,7 @@ def test_valid_final_gate_record_completes_onboarding_and_stores_listing_sample(
     )
     _confirm_ready_manual_stages(environment)
     listing = ["README.md", "bin", "tests"]
-    run_dir = _bound_final_gate_run(environment, listing)
+    run_dir = _lean_app_execution_run(environment)
 
     recorded = module.record_final_gate(
         read_ok=True,
@@ -1393,8 +1358,8 @@ def test_final_gate_listing_sample_is_capped_at_ten_entries(tmp_path: Path) -> N
         codex_home=environment["codex_home"],
     )
     _confirm_ready_manual_stages(environment)
-    listing = [f"entry-{index}" for index in range(15)]
-    run_dir = _bound_final_gate_run(environment, listing)
+    listing = ["README.md", *(f"entry-{index}" for index in range(15))]
+    run_dir = _lean_app_execution_run(environment)
 
     recorded = module.record_final_gate(
         read_ok=True,
@@ -1409,7 +1374,7 @@ def test_final_gate_listing_sample_is_capped_at_ten_entries(tmp_path: Path) -> N
     assert recorded["listing_sample"] == listing[:10]
 
 
-def test_final_gate_rejects_non_regular_non_pro_transport(tmp_path: Path) -> None:
+def test_final_gate_rejects_non_registered_app_transport(tmp_path: Path) -> None:
     environment = _wizard_environment(tmp_path, ready=True)
     module.start_onboarding(
         provider="custom",
@@ -1419,7 +1384,7 @@ def test_final_gate_rejects_non_regular_non_pro_transport(tmp_path: Path) -> Non
     )
 
     with pytest.raises(
-        module.OnboardingError, match="FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE"
+        module.OnboardingError, match="FINAL_GATE_TRANSPORT_MUST_BE_REGISTERED_APP"
     ):
         module.record_final_gate(
             read_ok=True,
@@ -1587,7 +1552,7 @@ def test_clean_room_wizard_walks_every_user_boundary_to_hash_bound_completion(
         language=language, **probes
     )["current_stage"] == "08_final_gate"
 
-    run_dir = _bound_final_gate_run(environment, ["README.md"])
+    run_dir = _lean_app_execution_run(environment)
     module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
@@ -1741,12 +1706,24 @@ def test_load_state_rejects_banned_state_content_before_migration(tmp_path: Path
 
 def _final_gate_record(root: Path, **overrides: object) -> dict[str, object]:
     record: dict[str, object] = {
+        "schema": module.APP_READ_RESULT_SCHEMA,
         "read_ok": True,
         "root": str(root),
+        "app_name": "codex",
+        "auth_verified": True,
+        "actual_model": "latest",
+        "outcome": "captured",
+        "semantic_outcome": "unknown",
         "evidence": "The exact project directory was listed.",
         "listing_sample": ["README.md"],
+        "read_proof": {
+            "kind": "project-file-content-match",
+            "relative_path": "README.md",
+            "excerpt_sha256": "0" * 64,
+            "source_bytes": 64,
+        },
         "recorded_at": "2026-08-22T00:00:00Z",
-        "transport": "regular-non-pro-oracle",
+        "transport": "registered-app",
     }
     record.update(overrides)
     return record
@@ -1756,14 +1733,15 @@ def _final_gate_record(root: Path, **overrides: object) -> dict[str, object]:
     "tampered_record",
     [
         lambda _environment, _tmp_path: {"read_ok": True},
-        lambda environment, _tmp_path: _final_gate_record(environment["project"], listing_sample=[]),
+        lambda environment, _tmp_path: _final_gate_record(environment["project"], auth_verified=False),
+        lambda environment, _tmp_path: _final_gate_record(environment["project"], actual_model=""),
+        lambda environment, _tmp_path: _final_gate_record(environment["project"], outcome="failed"),
         lambda environment, _tmp_path: _final_gate_record(environment["project"], evidence="too short"),
         lambda environment, _tmp_path: _final_gate_record(environment["project"], transport="pro-devspace"),
+        lambda environment, _tmp_path: _final_gate_record(environment["project"], read_proof=None),
         lambda _environment, tmp_path: _final_gate_record(tmp_path / "outside-allowed-roots"),
         lambda environment, _tmp_path: _final_gate_record(environment["project"], recorded_at=""),
-        lambda environment, _tmp_path: _final_gate_record(
-            environment["project"], listing_sample=[" ", "\t"]
-        ),
+        lambda environment, _tmp_path: _final_gate_record(environment["project"], app_name="other"),
     ],
 )
 def test_next_rejects_tampered_final_gate_evidence_on_disk(
@@ -1792,34 +1770,6 @@ def test_next_rejects_tampered_final_gate_evidence_on_disk(
     assert step["current_stage"] == "08_final_gate"
 
 
-def test_honest_recorded_final_gate_still_completes_after_read_time_validation(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    _confirm_ready_manual_stages(environment)
-    run_dir = _bound_final_gate_run(environment, ["README.md"])
-    module.record_final_gate(
-        read_ok=True,
-        root=str(environment["project"]),
-        evidence="The exact project directory was listed.",
-        listing=["README.md"],
-        run_dir=run_dir,
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-
-    step = module.next_step(
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-        **environment["probes"],
-    )
-
-    assert step["done"] is True
-    assert step["completion_state"] == "verified"
 
 
 def test_final_gate_receipt_distinguishes_honest_and_tampered_evidence(tmp_path: Path) -> None:
@@ -1831,7 +1781,7 @@ def test_final_gate_receipt_distinguishes_honest_and_tampered_evidence(tmp_path:
         codex_home=environment["codex_home"],
     )
     _confirm_ready_manual_stages(environment)
-    run_dir = _bound_final_gate_run(environment, ["README.md"])
+    run_dir = _lean_app_execution_run(environment)
     module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
@@ -1846,100 +1796,15 @@ def test_final_gate_receipt_distinguishes_honest_and_tampered_evidence(tmp_path:
     assert module._final_gate_receipt(environment["codex_home"], environment["devspace_home"], honest) == honest["stages"]["08_final_gate"]["evidence"]
 
     honest["stages"]["08_final_gate"]["evidence"] = _final_gate_record(
-        environment["project"], listing_sample=[]
+        environment["project"], auth_verified=False
     )
     assert module._final_gate_receipt(environment["codex_home"], environment["devspace_home"], honest) is None
 
 
-def test_legacy_final_gate_record_revalidates_without_new_binding_keys(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-    _confirm_ready_manual_stages(environment)
-    run_dir = _bound_final_gate_run(environment, ["README.md"])
-    recorded = module.record_final_gate(
-        read_ok=True,
-        root=str(environment["project"]),
-        evidence="Legacy final gate remains valid after the opt-in extension.",
-        listing=["README.md"],
-        run_dir=run_dir,
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-
-    assert "registered_app_final_gate" not in recorded
-    assert "source_thread_id" not in recorded
-    state = module.load_state(codex_home=environment["codex_home"])
-    assert module._final_gate_receipt(
-        environment["codex_home"], environment["devspace_home"], state
-    ) == recorded
 
 
-def test_final_gate_hash_binding_rejects_output_tamper_after_recording(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    _confirm_ready_manual_stages(environment)
-    run_dir = _bound_final_gate_run(environment, ["README.md"])
-    module.record_final_gate(
-        read_ok=True,
-        root=str(environment["project"]),
-        evidence="The exact project directory was listed.",
-        listing=["README.md"],
-        run_dir=run_dir,
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-    (run_dir / "output.md").write_text("tampered\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
-
-    step = module.next_step(
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-        **environment["probes"],
-    )
-    assert step["done"] is False
-    assert step["current_stage"] == "08_final_gate"
 
 
-def test_final_gate_revalidation_rejects_receipt_path_or_hash_tamper(tmp_path: Path) -> None:
-    environment = _wizard_environment(tmp_path, ready=True)
-    module.start_onboarding(
-        provider="custom",
-        registration_url="https://mcp.example.com/mcp",
-        roots=[str(environment["project"])],
-        codex_home=environment["codex_home"],
-    )
-    _confirm_ready_manual_stages(environment)
-    run_dir = _bound_final_gate_run(environment, ["README.md"])
-    recorded = module.record_final_gate(
-        read_ok=True,
-        root=str(environment["project"]),
-        evidence="receipt paths and hashes must remain unchanged",
-        listing=["README.md"],
-        run_dir=run_dir,
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-    )
-    assert len(recorded["tool_read_receipts"]) == 3
-    receipt_path = Path(recorded["tool_read_receipts"][2]["path"])
-    receipt_path.write_text(receipt_path.read_text(encoding="utf-8").replace('"timestamp": "2026-08-22T00:00:03Z"', '"timestamp": "2026-08-22T00:00:04Z"'), encoding="utf-8")
-
-    step = module.next_step(
-        codex_home=environment["codex_home"],
-        devspace_home=environment["devspace_home"],
-        **environment["probes"],
-    )
-    assert step["done"] is False
-    assert step["current_stage"] == "08_final_gate"
 
 
 def test_load_state_reports_wrong_schema_as_corrupt(tmp_path: Path) -> None:
@@ -2016,7 +1881,11 @@ def test_cli_start_existing_state_requires_reset_and_corrupt_state_can_be_replac
         codex_home=codex_home,
     )
 
-    assert module.main(start_arguments) == 2
+    # Human mode resumes the saved wizard. Machine mode retains the explicit
+    # duplicate-start diagnostic for automation callers.
+    assert module.main(start_arguments) == 4
+    assert capsys.readouterr().out
+    assert module.main(["--json", *start_arguments]) == 2
     assert "ONBOARDING_ALREADY_STARTED" in capsys.readouterr().out
 
     state_file = module.state_path(codex_home=codex_home)
@@ -2024,9 +1893,9 @@ def test_cli_start_existing_state_requires_reset_and_corrupt_state_can_be_replac
     state.pop("provider")
     state_file.write_text(json.dumps(state), encoding="utf-8")
 
-    assert module.main(start_arguments) == 2
+    assert module.main(["--json", *start_arguments]) == 2
     assert "ONBOARDING_STATE_CORRUPT" in capsys.readouterr().out
 
     (codex_home / "receipts" / "codexpro-automation-1.json").unlink()
     assert module.main([*start_arguments, "--reset"]) != 2
-    assert "01_install" in capsys.readouterr().out
+    assert capsys.readouterr().out

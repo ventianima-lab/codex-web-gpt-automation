@@ -1,0 +1,348 @@
+diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions/thinkingTime.js
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -65,9 +65,12 @@
+     const strictProEffort = level === "pro" ||
++        (desiredModel == null && ['light', 'standard', 'extended', 'extra-high'].includes(level)) ||
+         ((targetModelKind === "pro" || observedModelKind === "pro") && level === "extended");
+     switch (result?.status) {
+         case "already-selected":
+             logger(formatBrowserThinkingLog(`${result.label ?? capitalizedLevel} (already selected)`));
++            if (result.observedPicker) logger("[browser] Picker DOM proof: " + JSON.stringify(result.observedPicker));
+             return;
+         case "switched":
+             logger(formatBrowserThinkingLog(result.label ?? capitalizedLevel));
++            if (result.observedPicker) logger("[browser] Picker DOM proof: " + JSON.stringify(result.observedPicker));
+             return;
+@@ -100,4 +103,4 @@
+             if (strictProEffort) {
+-                const target = level === "pro" ? "Pro" : "Pro Extended";
++                const target = desiredModel == null ? capitalizedLevel : level === "pro" ? "Pro" : "Pro Extended";
+                 throw new Error(`${message}; refusing to submit without confirmed ${target}.`);
+             }
+@@ -116,4 +119,4 @@
+             if (strictProEffort) {
+-                const target = level === "pro" ? "Pro" : "Pro Extended";
++                const target = desiredModel == null ? capitalizedLevel : level === "pro" ? "Pro" : "Pro Extended";
+                 throw new Error(`Thinking time: unknown outcome selecting ${capitalizedLevel}; refusing to submit without confirmed ${target}.`);
+             }
+@@ -849,6 +852,297 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       'effort', 'aufwand', '强度', '努力', '推論レベル',
+       'esfuerzo', 'esforco', 'sforzo', 'inspanning', 'wysilek',
+     ];
++    const POWER_SIMPLE_VIEW_SELECTOR =
++      '[data-testid="composer-model-picker-slider-simple-view"]';
++    const TARGET_IS_CURRENT = !TARGET_MODEL_KIND && !TARGET_IS_GPT56_MODEL;
++    const LATEST_ORDINAL = { light: 1, standard: 2, extended: 3, 'extra-high': 4, pro: 5 }[TARGET_LEVEL];
++    const LATEST_SELECTION_LABEL = TARGET_LEVEL === 'pro'
++      ? 'Latest / 6 Pro (Latest explicitly selected)'
++      : 'Latest / ' + TARGET_LEVEL + ' / ' + LATEST_ORDINAL + ' of 5 (Latest explicitly selected)';
++    const parsePowerInteger = (value) => {
++      const text = String(value ?? '').trim();
++      return /^-?\\d+$/.test(text) ? Number(text) : null;
++    };
++    const readPowerState = (view) => {
++      const control = view?.querySelector?.('[role="slider"], input[type="range"]');
++      if (!control) return null;
++      const minimum = parsePowerInteger(
++        control.getAttribute?.('aria-valuemin') ?? control.getAttribute?.('min'),
++      );
++      const maximum = parsePowerInteger(
++        control.getAttribute?.('aria-valuemax') ?? control.getAttribute?.('max'),
++      );
++      const current = parsePowerInteger(
++        control.getAttribute?.('aria-valuenow') ?? control.getAttribute?.('value'),
++      );
++      if (
++        minimum === null || maximum === null || current === null ||
++        maximum <= minimum || current < minimum || current > maximum
++      ) return null;
++      const ordinal = current - minimum + 1;
++      const total = maximum - minimum + 1;
++      const position = nodeLabel(view).match(/(?:^|\\s)(\\d+)\\s+of\\s+(\\d+)(?:\\s|$)/);
++      const koreanPosition = String(view?.textContent ?? '').match(/(\\d+)개\\s*중\\s*(\\d+)번째/);
++      const displayOrdinal = position ? Number(position[1]) : koreanPosition ? Number(koreanPosition[2]) : null;
++      const displayTotal = position ? Number(position[2]) : koreanPosition ? Number(koreanPosition[1]) : null;
++      if (displayOrdinal !== ordinal || displayTotal !== total) {
++        return null;
++      }
++      return {
++        control, minimum, maximum, current, ordinal, total, displayOrdinal, displayTotal,
++        atMaximum: current === maximum,
++      };
++    };
++    const visibleCurrentModelRows = (menu) => {
++      const direct = Array.from(
++        menu?.querySelectorAll?.('[role="menuitemradio"]') ?? [],
++      ).filter(isVisible);
++      if (!TARGET_IS_CURRENT || direct.length > 0) return direct;
++      const advancedViews = Array.from(document.querySelectorAll(ADVANCED_VIEW_SELECTOR))
++        .filter(isVisible);
++      if (advancedViews.length !== 1) return [];
++      return Array.from(advancedViews[0].querySelectorAll('[role="menuitemradio"]'))
++        .filter(isVisible);
++    };
++    const selectedModelState = (menu) => {
++      const selected = visibleCurrentModelRows(menu).filter(optionIsSelected);
++      if (selected.length === 0) return 'pending';
++      if (selected.length !== 1) return 'conflicting';
++      const selectedLabel = (TARGET_IS_CURRENT ? String(selected[0].textContent ?? '').toLowerCase() : nodeLabel(selected[0])).replace(/\\s+/g, '');
++      return (TARGET_IS_CURRENT ? ['latest', '최신'].includes(selectedLabel) : selectedLabel === 'gpt56sol')
++        ? 'exact'
++        : 'wrong';
++    };
++    const selectedModelIsExactGpt56Sol = (menu) => selectedModelState(menu) === 'exact';
++    const compactRenderedText = (node) => String(node?.textContent ?? '')
++      .toLowerCase().replace(/[\\s\\u200b-\\u200d\\ufeff]+/g, '');
++    const latestProModelSignal = (menu) => {
++      const pill = findComposerEffortPill();
++      if (isVisible(pill) && compactRenderedText(pill) === '6pro') return true;
++      const rows = Array.from(
++        menu?.querySelectorAll?.('[role="menuitem"], button') ?? [],
++      ).filter((item) =>
++        isVisible(item) && ['true', 'false'].includes(item.getAttribute?.('aria-expanded')) &&
++        compactRenderedText(item) === '6pro');
++      return rows.length === 1;
++    };
++    const listGpt56PowerSliderMenus = (preferred) => {
++      const candidates = [];
++      const addCandidate = (candidate) => {
++        if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
++      };
++      addCandidate(preferred);
++      for (const candidate of document.querySelectorAll(MENU_CONTAINER_SELECTOR)) addCandidate(candidate);
++      return candidates.filter((candidate) => {
++        if (!isVisible(candidate)) return false;
++        return isVisible(candidate.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR));
++      });
++    };
++    const findGpt56PowerSliderMenu = (preferred) => {
++      const matches = listGpt56PowerSliderMenus(preferred);
++      const exact = matches.filter((candidate) => selectedModelState(candidate) === 'exact');
++      const explicit = matches.filter((candidate) => selectedModelState(candidate) !== 'pending');
++      if (exact.length === 1 && explicit.length === 1) return exact[0];
++      if (exact.length > 0) return null;
++      if (explicit.length === 1) return explicit[0];
++      return matches.length === 1 ? matches[0] : null;
++    };
++    const evaluateGpt56ProPowerProof = (menu) => {
++      const view = menu?.querySelector?.(POWER_SIMPLE_VIEW_SELECTOR) ?? null;
++      const power = readPowerState(view);
++      const modelState = selectedModelState(menu);
++      const proLabel = isVisible(view) && hasToken(nodeLabel(view), 'pro');
++      const latestProSignal = latestProModelSignal(menu);
++      return {
++        menu, view, power, modelState, proLabel, latestProSignal,
++        exact: Boolean(
++          isVisible(menu) && isVisible(view) && modelState === 'exact' &&
++          (TARGET_IS_CURRENT
++            ? power?.total === 5 && power.ordinal === LATEST_ORDINAL &&
++              (TARGET_LEVEL === 'pro' ? proLabel && latestProSignal : !proLabel)
++            : TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'pro' && power?.atMaximum && proLabel)
++        ),
++      };
++    };
++    const powerProofEvidence = (proof) => ({
++      menuVisible: isVisible(proof?.menu),
++      viewVisible: isVisible(proof?.view),
++      modelState: proof?.modelState ?? 'pending',
++      proLabel: Boolean(proof?.proLabel),
++      latestProSignal: Boolean(proof?.latestProSignal),
++      range: proof?.power ? {
++        minimum: proof.power.minimum,
++        maximum: proof.power.maximum,
++        current: proof.power.current,
++        ordinal: proof.power.ordinal,
++        total: proof.power.total,
++        displayOrdinal: proof.power.displayOrdinal,
++        displayTotal: proof.power.displayTotal,
++        atMaximum: proof.power.atMaximum,
++      } : null,
++      exact: Boolean(proof?.exact),
++    });
++    const snapshotPickerNode = (node) => ({
++      text: String(node?.textContent ?? '').slice(0, 512),
++      ariaLabel: node?.getAttribute?.('aria-label') ?? null,
++      role: node?.getAttribute?.('role') ?? null,
++      checked: node?.getAttribute?.('aria-checked') ?? null,
++      expanded: node?.getAttribute?.('aria-expanded') ?? null,
++      visible: isVisible(node),
++    });
++    const observedPickerSnapshot = (proof, latestClicked, stableReads) => ({
++      schema: 'codex.oracle.picker-dom-proof/v1',
++      latestClicked,
++      stableReads,
++      modelRows: visibleCurrentModelRows(proof.menu).map(snapshotPickerNode),
++      composer: snapshotPickerNode(findComposerEffortPill()),
++      modelSignals: Array.from(proof.menu?.querySelectorAll?.('[role="menuitem"], button') ?? [])
++        .filter((item) => isVisible(item) && ['true', 'false'].includes(item.getAttribute?.('aria-expanded')))
++        .map(snapshotPickerNode),
++      slider: { ...powerProofEvidence(proof).range, text: String(proof.view?.textContent ?? '').slice(0, 512),
++        visible: isVisible(proof.view) },
++    });
++    const exactGpt56ProPowerProof = (menu) => evaluateGpt56ProPowerProof(menu).exact;
++    const selectGpt56ProPowerSlider = async (trigger, initialMenu) => {
++      if (!(TARGET_IS_CURRENT ? LATEST_ORDINAL : TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'pro')) return null;
++      const preferredMenu = () => findVisibleEffortMenu(trigger) || initialMenu;
++      const currentMenu = () => findGpt56PowerSliderMenu(preferredMenu());
++      const initialCandidates = listGpt56PowerSliderMenus(preferredMenu());
++      if (initialCandidates.length === 0) return TARGET_IS_CURRENT ? failure('selection-unverified') : null;
++      let modelToggleExpanded = false;
++      let latestSelectionDispatched = false;
++      const waitForStableReadyState = async () => {
++        let lastMenu = null;
++        let lastCurrent = null;
++        let readyConsecutive = 0;
++        let wrongConsecutive = 0;
++        let lastProof = evaluateGpt56ProPowerProof(currentMenu());
++        const deadline = performance.now() + INTELLIGENCE_WAIT_MS;
++        while (performance.now() < deadline) {
++          if (TARGET_IS_CURRENT) trigger = findComposerEffortPill() || trigger;
++          const proof = evaluateGpt56ProPowerProof(currentMenu());
++          lastProof = proof;
++          if (TARGET_IS_CURRENT && trigger.getAttribute?.('aria-expanded') === 'false') {
++            dispatchClickSequence(trigger);
++            modelToggleExpanded = false;
++            await sleep(100);
++            continue;
++          }
++          if (TARGET_IS_CURRENT && proof.modelState === 'pending' && !modelToggleExpanded) {
++            const directToggles = Array.from(
++              proof.menu?.querySelectorAll?.('[role="menuitem"], button') ?? [],
++            );
++            const togglePool = directToggles.length > 0
++              ? directToggles
++              : Array.from(document.querySelectorAll('[role="menuitem"], button'));
++            const toggles = togglePool.filter((item) => {
++              const label = String(item.getAttribute?.('aria-label') ?? item.textContent ?? '').trim();
++              return isVisible(item) && item.getAttribute?.('aria-expanded') === 'false' &&
++                /^(model selection|select model|모델 선택)$/i.test(label);
++            });
++            if (toggles.length === 1) { dispatchClickSequence(toggles[0]); modelToggleExpanded = true; }
++          }
++          if (TARGET_IS_CURRENT && !latestSelectionDispatched && proof.menu) {
++            const latestRows = visibleCurrentModelRows(proof.menu)
++              .filter((item) => /^(latest|최신)$/i.test(String(item.textContent ?? '').trim()));
++            if (latestRows.length === 1 && latestRows[0].getAttribute?.('aria-disabled') !== 'true') {
++              dispatchClickSequence(latestRows[0]);
++              latestSelectionDispatched = true;
++              modelToggleExpanded = false;
++              await sleep(100);
++              continue;
++            }
++            if (proof.modelState !== 'pending') return { status: 'wrong', proof };
++          }
++          if (proof.modelState === 'wrong' || proof.modelState === 'conflicting') {
++            wrongConsecutive += 1;
++            if (wrongConsecutive >= 2) return { status: 'wrong', proof };
++          } else {
++            wrongConsecutive = 0;
++          }
++          if (proof.modelState === 'exact' && proof.power && (!TARGET_IS_CURRENT || latestSelectionDispatched)) {
++            const stable = proof.menu === lastMenu && proof.power.current === lastCurrent;
++            readyConsecutive = stable ? readyConsecutive + 1 : 1;
++            lastMenu = proof.menu;
++            lastCurrent = proof.power.current;
++            if (readyConsecutive >= 2) return { status: 'ready', proof, stableReads: readyConsecutive };
++          } else {
++            readyConsecutive = 0;
++            lastMenu = null;
++            lastCurrent = null;
++          }
++          await sleep(100);
++        }
++        return { status: 'unverified', proof: lastProof };
++      };
++      let readiness = await waitForStableReadyState();
++      if (readiness.status !== 'ready') {
++        return failure('selection-unverified', {
++          modelKind: 'gpt56', powerEvidence: powerProofEvidence(readiness.proof),
++        });
++      }
++      let proof = readiness.proof;
++      if (proof.exact) {
++        const observedPicker = TARGET_IS_CURRENT && latestSelectionDispatched ? observedPickerSnapshot(proof, latestSelectionDispatched, readiness.stableReads) : null;
++        closeOpenMenus();
++        return {
++          observedPicker,
++          status: 'already-selected', label: TARGET_IS_CURRENT ? LATEST_SELECTION_LABEL : 'Pro, 5 of 5',
++          powerEvidence: powerProofEvidence(proof),
++        };
++      }
++      const moveLimit = proof.power.maximum - proof.power.minimum;
++      if (!Number.isInteger(moveLimit) || moveLimit < 1 || moveLimit > 16) {
++        return failure('selection-unverified', {
++          modelKind: 'gpt56', powerEvidence: powerProofEvidence(proof),
++        });
++      }
++      const targetOrdinal = TARGET_IS_CURRENT ? LATEST_ORDINAL : proof.power.total;
++      for (let attempt = 0; attempt < moveLimit && proof.power.ordinal !== targetOrdinal; attempt += 1) {
++        const control = proof.power.control;
++        const direction = proof.power.ordinal < targetOrdinal ? 'ArrowRight' : 'ArrowLeft';
++        try { control.focus?.(); } catch {}
++        control.dispatchEvent(
++          new KeyboardEvent('keydown', {
++            key: direction, code: direction, bubbles: true, cancelable: true,
++          }),
++        );
++        control.dispatchEvent(
++          new KeyboardEvent('keyup', {
++            key: direction, code: direction, bubbles: true, cancelable: true,
++          }),
++        );
++        await sleep(STEP_WAIT_MS);
++        readiness = await waitForStableReadyState();
++        if (readiness.status !== 'ready') {
++          return failure('selection-unverified', {
++            modelKind: 'gpt56', powerEvidence: powerProofEvidence(readiness.proof),
++          });
++        }
++        proof = readiness.proof;
++      }
++      let consecutive = 0;
++      const deadline = performance.now() + INTELLIGENCE_WAIT_MS;
++      while (performance.now() < deadline) {
++        proof = evaluateGpt56ProPowerProof(currentMenu());
++        consecutive = proof.exact ? consecutive + 1 : 0;
++        if (consecutive >= 2) {
++          const observedPicker = TARGET_IS_CURRENT && latestSelectionDispatched ? observedPickerSnapshot(proof, latestSelectionDispatched, consecutive) : null;
++          closeOpenMenus();
++          return {
++            observedPicker,
++            status: 'switched', label: TARGET_IS_CURRENT ? LATEST_SELECTION_LABEL : 'Pro, 5 of 5',
++            powerEvidence: powerProofEvidence(proof),
++          };
++        }
++        await sleep(100);
++      }
++      const result = failure('selection-unverified', {
++        modelKind: 'gpt56', powerEvidence: powerProofEvidence(proof),
++      });
++      closeOpenMenus();
++      return result;
++    };
+     const containsAny = (label, words) => words.some((word) => label.includes(word));
+     const findAdvancedToggle = (menu) => {
+       for (const item of (menu || document).querySelectorAll('[role="menuitem"]')) {
+@@ -970,6 +1264,7 @@ function buildThinkingTimeExpression(level, desiredModel) {
+             (TARGET_MODEL_KIND === 'pro' && hasToken(label, 'pro') && !hasToken(label, 'thinking')) ||
+             (TARGET_MODEL_KIND === 'thinking' && hasToken(label, 'thinking') && !hasToken(label, 'pro')) ||
+             (!TARGET_MODEL_KIND && hasToken(label, 'thinking')) ||
++            (TARGET_IS_CURRENT && LATEST_ORDINAL && /^(?:(?:6|5[.]6)\\s+)?pro$|^(?:thinking effort|추론 수준|사고 수준|성능)$/i.test(String(button.textContent ?? '').trim())) ||
+             (button.matches?.('button.__composer-pill') && matchesAnyEffortLevel(label))
+           ) {
+             return button;
+@@ -1069,6 +1364,13 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       while (performance.now() < deadline) {
+         const menu = findVisibleEffortMenu(composerEffortPill);
+         if (menu) {
++          const powerSliderResult = await selectGpt56ProPowerSlider(
++            composerEffortPill,
++            menu,
++          );
++          if (powerSliderResult) {
++            return powerSliderResult;
++          }
+           const proEffortResult = await selectProEffortFromSubmenu();
+           if (proEffortResult) {
+             return proEffortResult;

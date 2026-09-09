@@ -231,6 +231,10 @@ def make_saved_terminal_output_child(tmp_path: Path, monkeypatch: pytest.MonkeyP
         archive_contract=plan["round_receipt_plan"]["parent"]["archive_contract"],
     )
     manifest_payload["run_root"] = str(parent.run_dir.parent)
+    # Reconcile a persisted selector-era child; this fixture has no observed
+    # Latest picker proof and must not impersonate a newly verified current run.
+    manifest_payload["model_strategy"] = "select"
+    manifest_payload.pop("browser_intent", None)
     manifest = tmp_path / "saved-terminal-child.json"
     manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
     config = runner.STATE.load_manifest(manifest, bind_runtime_task=True)

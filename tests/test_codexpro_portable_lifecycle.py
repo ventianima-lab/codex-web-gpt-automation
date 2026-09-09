@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +35,21 @@ def test_portable_lifecycle_is_exact_inverse(tmp_path: Path) -> None:
     installed = module.install(ROOT, codex_home)
     assert installed["ok"] and installed["count"] > 120
     receipt = Path(installed["receipt"])
-    assert module.doctor(codex_home)["status"] == "PASS"
+    runtime_command = [str(tmp_path / "runtime" / "node"), str(tmp_path / "runtime" / "oracle-cli.js")]
+    probes = []
+
+    def runtime_probe(command, **kwargs):
+        assert command == [*runtime_command, "--version"]
+        assert kwargs["timeout"] == module.ORACLE_VERSION_PROBE_TIMEOUT_SECONDS
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, "oracle 0.18.0\n", "")
+
+    diagnosis = module.doctor(
+        codex_home, oracle_resolver=lambda: runtime_command, oracle_run_factory=runtime_probe,
+    )
+    assert diagnosis["status"] == "PASS", diagnosis
+    assert probes == [[*runtime_command, "--version"]]
 
     rolled_back = module.rollback(codex_home, receipt)
     assert rolled_back == {"ok": True, "status": "COMPLETE", "receipt": str(receipt), "conflicts": []}
@@ -105,3 +122,110 @@ def test_windows_doctor_accepts_the_active_python_executable(monkeypatch) -> Non
     result = module._resolve_python_tool(platform_name="nt", active_executable=sys.executable)
 
     assert result == str(Path(sys.executable).resolve())
+
+
+def retirement_repo(tmp_path: Path, retired_path: str) -> Path:
+    repo = tmp_path / "repo"
+    current = repo / "bin" / "current.py"
+    current.parent.mkdir(parents=True)
+    current.write_text("current\n", encoding="utf-8")
+    (repo / "install-manifest.json").write_text(
+        json.dumps({
+            "schema": "codexpro.install-manifest/v1",
+            "version": "test",
+            "include": ["bin/current.py"],
+            "retire": {"receipt_owned_files": [retired_path]},
+        }),
+        encoding="utf-8",
+    )
+    return repo
+
+
+def seed_owned_retirement(module, codex_home: Path, relative: str, content: bytes) -> Path:
+    destination = codex_home / relative
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(content)
+    backup = codex_home / "backups" / "prior"
+    backup.mkdir(parents=True)
+    receipt = codex_home / "receipts" / "codexpro-automation-prior.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({
+        "schema": module.RECEIPT_SCHEMA,
+        "backup": str(backup),
+        "files": [{
+            "path": relative,
+            "action": "created",
+            "installed_sha256": module.sha256_file(destination),
+            "backup_sha256": None,
+        }],
+    }), encoding="utf-8")
+    return destination
+
+
+def test_receipt_owned_unchanged_file_is_retired_and_rollback_restores_it(tmp_path: Path) -> None:
+    module = load("portable_lifecycle_retirement_test", ROOT / "bin" / "codexpro_lifecycle.py")
+    relative = "skills/legacy-mode/SKILL.md"
+    repo = retirement_repo(tmp_path, relative)
+    codex_home = tmp_path / "codex"
+    destination = seed_owned_retirement(module, codex_home, relative, b"old managed skill\n")
+
+    installed = module.install(repo, codex_home)
+
+    assert installed["retired"] == [relative]
+    assert not destination.exists()
+    receipt = json.loads(Path(installed["receipt"]).read_text(encoding="utf-8"))
+    record = next(item for item in receipt["files"] if item["path"] == relative)
+    assert record["action"] == "retired"
+    assert record["retired_sha256"] == record["backup_sha256"]
+
+    health = module.doctor(codex_home, oracle_resolver=lambda: [sys.executable],
+                           oracle_run_factory=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "0.18.0\n", ""))
+    assert not [issue for issue in health["issues"] if issue.get("path") == relative]
+
+    result = module.rollback(codex_home, Path(installed["receipt"]))
+    assert result["ok"] is True
+    assert destination.read_bytes() == b"old managed skill\n"
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_unowned_or_modified_retirement_conflicts_before_install_mutation(tmp_path: Path, owned: bool) -> None:
+    module = load(f"portable_lifecycle_retirement_conflict_{owned}", ROOT / "bin" / "codexpro_lifecycle.py")
+    relative = "skills/legacy-mode/SKILL.md"
+    repo = retirement_repo(tmp_path, relative)
+    codex_home = tmp_path / "codex"
+    if owned:
+        destination = seed_owned_retirement(module, codex_home, relative, b"old managed skill\n")
+        destination.write_bytes(b"locally modified\n")
+    else:
+        destination = codex_home / relative
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"user owned\n")
+
+    with pytest.raises(module.LifecycleError, match="RETIREMENT_CONFLICT"):
+        module.install(repo, codex_home)
+
+    assert destination.exists()
+    assert not (codex_home / "bin" / "current.py").exists()
+    assert not list((codex_home / "backups").glob("codexpro-automation-*"))
+
+
+def test_rollback_preserves_path_recreated_after_retirement(tmp_path: Path) -> None:
+    module = load("portable_lifecycle_retirement_recreated_test", ROOT / "bin" / "codexpro_lifecycle.py")
+    relative = "skills/legacy-mode/SKILL.md"
+    repo = retirement_repo(tmp_path, relative)
+    codex_home = tmp_path / "codex"
+    destination = seed_owned_retirement(module, codex_home, relative, b"old managed skill\n")
+    installed = module.install(repo, codex_home)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"new user file\n")
+
+    health = module.doctor(codex_home, oracle_resolver=lambda: [sys.executable],
+                           oracle_run_factory=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "0.18.0\n", ""))
+    assert {"code": "RETIRED_FILE_REAPPEARED", "path": relative} in health["issues"]
+
+    result = module.rollback(codex_home, Path(installed["receipt"]))
+
+    assert result["ok"] is False
+    assert {"path": relative, "action": "preserved_recreated_retired_path"} in result["conflicts"]
+    assert destination.read_bytes() == b"new user file\n"
+    assert (codex_home / "bin" / "current.py").read_text(encoding="utf-8").splitlines() == ["current"]

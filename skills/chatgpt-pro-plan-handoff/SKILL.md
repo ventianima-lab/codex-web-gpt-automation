@@ -1,25 +1,43 @@
 ---
 name: chatgpt-pro-plan-handoff
-description: Run staged work with explicitly authorized read-only DevSpace Pro design, advice, or review and Oracle-based regular comprehensive stages.
+description: Route standing non-implementation cognition through Oracle @codex Latest then 6 Pro, hand implementation to native Sol, and preserve explicit comprehensive and exact-recovery compatibility workflows.
 ---
 
 # Pro and comprehensive handoff
 
-Pro uses Oracle and is quota-limited. A standard comprehensive workflow may
-select it only when its manifest has `allow_pro: true` after an explicit user
-request; regular work remains at the highest supported non-Pro reasoning tier.
-Every new qualified `GPT-5.6 Sol` Pro stage uses `pro-devspace-readonly`
-read-only DevSpace at the exact project root for design, advice, or review and
-must not create, edit, or
-remove files or run commands. A regular `GPT-5.6` `extra-high` DevSpace stage
-owns all such work under the repository safety policy. Explicit
-`pro-attachment` remains a separate read-only immutable/external-evidence
-route and is never an automatic fallback. Persisted legacy `pro-devspace`
-write runs retain their exact authority only during recovery. CodexPro and all
-agbrowse creation are frozen; legacy files remain only for exact persisted-run
-recovery.
+## Standing default
 
-New GPT comprehensive work uses
+Every non-implementation cognitive requirement uses Oracle with the manually
+registered `@codex` app. Browser proof requires exact `Latest` checked, full
+`5/5` qualification, the composer's `Thinking effort` control, and a `6 Pro`
+signal in either the model menu or composer. The user has granted standing authorization, so this default requires
+neither per-run Pro opt-in nor an `allow_pro` decision. Requirements analysis,
+design, architecture, planning, research and source synthesis, comparison,
+advice, critique, review, adjudication, and semantic verification all use this
+route. Never fall back to GPT-5.6 or GPT-5.5 when Latest/6 Pro cannot be proven,
+and never route through CGW or `chatgpt-web/*`.
+
+Latest/6 Pro is non-implementation and read-only at the exact approved
+DevSpace root. Native `gpt-5.6-sol` owns implementation, repair, file changes,
+and commands; native Luna owns chores and focused testing. Astra owns
+orchestration, exact Oracle recovery, deterministic receipt/hash/process
+verification, integration, release, and final reporting. A normal handoff is:
+
+```text
+Oracle Latest/6 Pro cognitive mission -> native Sol implementation
+-> Luna/local focused tests -> Oracle Latest/6 Pro semantic verification
+-> Astra deterministic/release gate
+```
+
+The Oracle CLI manifest uses only the validated carrier fields
+`model: gpt-5.6-sol`, `model_strategy: current`, and `thinking_time: pro`.
+`current` is the compatibility carrier for the browser's explicit Latest then
+6 Pro selection; do not pass invented `gpt-6` or `latest` CLI model slugs or
+claim a new Oracle engine.
+
+## Explicit compatibility workflows
+
+The existing comprehensive runner uses
 `bin/chatgpt_oracle_comprehensive.py` with schema
 `codex.chatgpt.oracle-comprehensive/v1`:
 
@@ -28,8 +46,17 @@ plan -> optional Pro or Oracle Web Multi -> review
      -> implementation -> final web gate -> one local deterministic gate
 ```
 
-The optional `ultra-economy` profile is itself an explicit Pro request. It
-starts with qualified Pro design, then uses separate regular web review, implementation, and final
+This is an explicit compatibility workflow, not the standing default. Its
+schema, stage names, receipt contracts, and persisted authorities remain exact
+for explicitly selected workflows and recovery. Do not rewrite a recovered
+stage's implementation authority to match the standing split. Within this
+compatibility schema, `allow_pro: true` and selector-era profiles retain their
+existing validation meaning; they are not per-run approval gates for the
+standing Latest/6 Pro cognitive route.
+
+The optional `ultra-economy` profile is an explicit compatibility workflow,
+not the standing routing default. It starts with its recorded qualified-Pro
+design stage, then uses separate regular web review, implementation, and final
 gate sessions. On the first activation request in a Codex task, the local
 commander gives one unconditional instruction to select `gpt-5.6-luna` with
 `max` reasoning and waits for confirmation. It does not inspect the runtime or
@@ -37,14 +64,16 @@ repeat that question later in the same task. Follow
 `skills/ultra-economy-mode/SKILL.md` for the local commander and Luna Max
 subagent contract.
 
-The optional `ultra-gpt` profile replaces every semantic native Codex
+The optional `ultra-gpt` compatibility profile replaces every semantic native Codex
 subagent role with a separate regular web GPT session. Local Codex remains a
 deterministic controller only. The enforced path is plan, independent web
 review and partitioning, bounded parallel isolated-worktree Web Multi lanes plus
 merger, final web verification, and the local deterministic gate. Pro is not a
 stage inside this profile. When the user separately requests design advice,
-run at most one explicit Pro advisory before starting a fresh `ultra-gpt`
-workflow. Follow `skills/ultra-gpt-mode/SKILL.md` for the full contract.
+run at most one explicit Pro advisory under that profile's recorded contract
+before starting a fresh `ultra-gpt` workflow. Follow
+`skills/ultra-gpt-mode/SKILL.md` for the full compatibility contract. Do not
+infer either profile from ordinary cognitive or implementation work.
 
 Comprehensive mode is a staged workflow, not a prompt variant. Its
 implementation stage carries the same orchestrator ownership contract used by
@@ -54,13 +83,13 @@ structural: comprehensive mode makes several separate web submissions, each
 authoring the next mission and a hash-bound receipt, and it can only complete
 through a final web PASS plus a zero-exit local gate.
 
-Use single-submission `orchestrator` when the goal and approach are settled and
-one authorized pass should finish the work at the lowest cost. Use
-comprehensive mode when the plan needs an independent review stage, when Pro or
-Web Multi must participate, or when completion must be proven deterministically.
-Do not emulate comprehensive staging by chaining `orchestrator` submissions by
-hand; same-task submissions against one project stay serialized while foreign task owners remain isolated, and the workflow engine owns
-stage identity and recovery.
+When an explicit compatibility request selects single-submission
+`orchestrator`, use it for one authorized pass under its existing contract.
+When an explicit compatibility request selects comprehensive mode, use the
+workflow engine rather than emulating its stages by chaining `orchestrator`
+submissions by hand. Same-task submissions against one project stay serialized
+while foreign task owners remain isolated, and the workflow engine owns stage
+identity and recovery.
 
 The manifest supplies absolute `project_root`, `workflow_dir`,
 `initial_mission_path`, stable `workflow_id`, and a nonempty
@@ -69,19 +98,21 @@ bound `codex.chatgpt.oracle-stage-result/v1` receipt. The host validates
 workflow/stage/attempt/input hashes, UTF-8 paths, output hashes, PASS status,
 and the transition; it never rewrites the semantic prompt.
 
-An explicitly authorized new Pro stage runs through Oracle with read-only
-DevSpace for design, advice, or review. Any resulting file mutation or command
-belongs to a regular `GPT-5.6` `extra-high` stage. Pro returns one strict
-identity-bound JSON envelope containing its output and next-mission text. The
-host mechanically preserves those strings as UTF-8 files and computes the
-standard receipt; it does not summarize or rewrite them.
+Within a selected comprehensive compatibility workflow, a Pro stage runs
+through Oracle with its recorded read-only DevSpace authority. It returns one
+strict identity-bound JSON envelope containing its output and next-mission
+text. The host mechanically preserves those strings as UTF-8 files and
+computes the standard receipt; it does not summarize, rewrite, or widen their
+authority. Outside exact compatibility execution or recovery, native Sol owns
+all resulting file mutations and commands.
 
-When a plan explicitly selects `pro-attachment`, its next mission declares one
+When an explicit compatibility plan selects `pro-attachment`, its next mission declares one
 closed `[PRO_ATTACHMENT_CONTRACT]` block for immutable/external evidence. The
 host attaches only the declared project-contained regular non-symlink files
 and validates optional SHA-256 values; it never discovers attachments from
-prose. New DevSpace Pro remains read-only, and regular non-Pro DevSpace stages
-perform any required mutation or command.
+prose. The attachment stage remains read-only. Preserve the recorded next-stage
+authority inside that compatibility workflow; for standing-default work,
+native Sol performs every required mutation or command.
 
 Plan receipts should use `PLAN_READY`. For compatibility, `completed` is
 accepted only when the plan receipt is otherwise a fully ready, blocker-free,
@@ -122,10 +153,9 @@ Transport or runner recovery keeps the same workflow and stage identity. It
 must never create a `workflow-retryN` replacement. The revision budget and
 remaining critical finding set are persisted in the workflow state for
 operator visibility. Only final web PASS plus a zero-exit local gate can
-complete. An explicitly authorized new Pro selection launches the qualified
-read-only DevSpace design/advice/review stage and waits for a bound receipt;
-the plan sends mutations and commands to a regular `GPT-5.6` `extra-high`
-stage. Missing receipt/output,
+complete. A Pro selection recorded by the compatibility manifest launches its
+qualified read-only DevSpace stage and waits for a bound receipt; its next
+stage keeps the authority recorded by that exact workflow. Missing receipt/output,
 crash, or ambiguity returns attention-required without a replacement submit.
 Regular-stage `--browser-timeout` is a browser observation window, not a work
 termination deadline. At 4,800 seconds comprehensive mode performs a caution

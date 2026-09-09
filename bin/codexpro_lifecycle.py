@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import locale as locale_module
 import os
@@ -19,7 +20,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 RECEIPT_SCHEMA = "codexpro.install-receipt/v3"
@@ -48,6 +49,8 @@ SUPPORTED_ROOTS = {
 ROOT_FILE_ALLOWLIST = frozenset(
     {"upstream-runtime-policy.json", "upstream-runtime-maintainer-automation.json"}
 )
+ORACLE_SUPPORTED_VERSION = "0.18.0"
+ORACLE_VERSION_PROBE_TIMEOUT_SECONDS = 30
 
 
 class LifecycleError(RuntimeError):
@@ -149,6 +152,31 @@ def manifest_files(repo_root: Path, *, include_local_multi_gpt: bool = False) ->
     return sorted(result)
 
 
+def manifest_retirements(repo_root: Path) -> list[str]:
+    manifest = json.loads((repo_root / "install-manifest.json").read_text(encoding="utf-8"))
+    retire = manifest.get("retire") or {}
+    if not isinstance(retire, dict):
+        raise LifecycleError("manifest retire must be an object")
+    paths = retire.get("receipt_owned_files") or []
+    if not isinstance(paths, list):
+        raise LifecycleError("manifest retire.receipt_owned_files must be an array")
+    result: set[str] = set()
+    for value in paths:
+        if not isinstance(value, str) or not value or "\\" in value:
+            raise LifecycleError(f"invalid retirement path: {value}")
+        path = Path(value)
+        if (
+            path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or any(character in value for character in "*?[]")
+            or not path.parts
+            or path.parts[0] not in SUPPORTED_ROOTS
+        ):
+            raise LifecycleError(f"unsafe retirement path: {value}")
+        result.add(path.as_posix())
+    return sorted(result)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -166,6 +194,60 @@ def _active_wals(codex_home: Path) -> Iterable[Path]:
     return sorted(backup_root.glob("**/install.wal.json"))
 
 
+def _receipt_owned_hashes(codex_home: Path, wanted: set[str]) -> dict[str, dict[str, str]]:
+    owned: dict[str, dict[str, str]] = {relative: {} for relative in wanted}
+    receipt_root = codex_home / "receipts"
+    if not receipt_root.is_dir():
+        return owned
+    for receipt_path in sorted(receipt_root.glob("codexpro-automation-*.json"), reverse=True):
+        if receipt_path.is_symlink():
+            continue
+        try:
+            receipt = _read_json(receipt_path)
+        except LifecycleError:
+            continue
+        if receipt.get("schema") not in {"codexpro.install-receipt/v2", RECEIPT_SCHEMA}:
+            continue
+        backup_text = str(receipt.get("backup") or "")
+        try:
+            backup_root = Path(backup_text).expanduser().resolve()
+        except OSError:
+            continue
+        if not _is_within((codex_home / "backups").resolve(), backup_root):
+            continue
+        for record in receipt.get("files") or []:
+            if not isinstance(record, dict) or record.get("action") not in {"created", "overwritten"}:
+                continue
+            relative = str(record.get("path") or "")
+            digest = str(record.get("installed_sha256") or "").lower()
+            if relative in owned and len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
+                owned[relative].setdefault(digest, str(receipt_path))
+    return owned
+
+
+def plan_retirements(codex_home: Path, paths: Sequence[str]) -> list[dict[str, str]]:
+    wanted = set(paths)
+    owned = _receipt_owned_hashes(codex_home, wanted)
+    planned: list[dict[str, str]] = []
+    conflicts: list[dict[str, str]] = []
+    for relative in sorted(wanted):
+        destination = safe_child(codex_home, relative)
+        if not destination.exists():
+            continue
+        if not destination.is_file():
+            conflicts.append({"path": relative, "action": "preserved_non_file_retirement_target"})
+            continue
+        actual = sha256_file(destination)
+        source_receipt = owned[relative].get(actual)
+        if source_receipt is None:
+            conflicts.append({"path": relative, "action": "preserved_unowned_or_modified_retirement_target"})
+            continue
+        planned.append({"path": relative, "retired_sha256": actual, "source_receipt": source_receipt})
+    if conflicts:
+        raise LifecycleError("RETIREMENT_CONFLICT: " + json.dumps(conflicts, separators=(",", ":")))
+    return planned
+
+
 def recover_pending_installs(codex_home: Path) -> list[str]:
     recovered: list[str] = []
     for wal_path in _active_wals(codex_home):
@@ -176,9 +258,37 @@ def recover_pending_installs(codex_home: Path) -> list[str]:
         if not _is_within((codex_home / "backups").resolve(), backup):
             raise LifecycleError("interrupted install backup escapes CODEX_HOME")
         conflicts: list[str] = []
+        for entry in wal.get("files") or []:
+            if entry.get("action") != "retired":
+                continue
+            relative = str(entry.get("path") or "")
+            destination = safe_child(codex_home, relative)
+            retired_hash = str(entry.get("retired_sha256") or entry.get("installed_sha256") or "")
+            if destination.exists():
+                if not destination.is_file() or sha256_file(destination) != retired_hash:
+                    conflicts.append(relative)
+                continue
+            source = safe_child(backup, relative)
+            if not source.is_file() or sha256_file(source) != entry.get("backup_sha256"):
+                conflicts.append(relative)
+        if conflicts:
+            raise LifecycleError(f"INSTALL_CRASH_RECOVERY_CONFLICT: {','.join(conflicts)}")
         for entry in reversed(list(wal.get("files") or [])):
             relative = str(entry.get("path") or "")
             destination = safe_child(codex_home, relative)
+            if entry.get("action") == "retired":
+                retired_hash = str(entry.get("retired_sha256") or entry.get("installed_sha256") or "")
+                if destination.exists():
+                    if destination.is_file() and sha256_file(destination) == retired_hash:
+                        continue
+                    conflicts.append(relative)
+                    continue
+                source = safe_child(backup, relative)
+                if not source.is_file() or sha256_file(source) != entry.get("backup_sha256"):
+                    conflicts.append(relative)
+                    continue
+                _copy_file_atomic(source, destination)
+                continue
             installed_hash = str(entry.get("installed_sha256") or "")
             if not destination.exists():
                 continue
@@ -209,10 +319,16 @@ def install(repo_root: Path, codex_home: Path, *, dry_run: bool = False, local_m
     repo_root = repo_root.resolve()
     codex_home = codex_home.expanduser().resolve()
     files = manifest_files(repo_root, include_local_multi_gpt=local_multi_gpt)
+    retirement_paths = manifest_retirements(repo_root)
+    overlap = sorted(set(files) & set(retirement_paths))
+    if overlap:
+        raise LifecycleError("manifest installs and retires the same path: " + ",".join(overlap))
     if dry_run:
-        return {"ok": True, "action": "install-plan", "codex_home": str(codex_home), "files": files}
+        retirements = plan_retirements(codex_home, retirement_paths)
+        return {"ok": True, "action": "install-plan", "codex_home": str(codex_home), "files": files, "retirements": retirements}
     codex_home.mkdir(parents=True, exist_ok=True)
     recovered = recover_pending_installs(codex_home)
+    retirements = plan_retirements(codex_home, retirement_paths)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
     nonce = uuid.uuid4().hex
     backup_root = codex_home / "backups" / f"codexpro-automation-{stamp}-{nonce}"
@@ -280,6 +396,51 @@ def install(repo_root: Path, codex_home: Path, *, dry_run: bool = False, local_m
                 entry["transitions"].append("COMPLETE")
                 _write_json_atomic(wal_path, wal)
                 records.append({key: entry[key] for key in ("path", "action", "installed_sha256", "backup_sha256")})
+            for retirement in retirements:
+                relative = retirement["path"]
+                destination = safe_child(codex_home, relative)
+                retired_hash = retirement["retired_sha256"]
+                if not destination.is_file() or sha256_file(destination) != retired_hash:
+                    raise LifecycleError(f"RETIREMENT_CONFLICT: changed during install: {relative}")
+                backup = safe_child(backup_root, relative)
+                _copy_file_atomic(destination, backup)
+                backup_hash = sha256_file(backup)
+                replacement_path = backup_root / "steps" / str(len(wal["files"])) / "replacement.json"
+                entry = {
+                    "path": relative,
+                    "action": "retired",
+                    "installed_sha256": retired_hash,
+                    "retired_sha256": retired_hash,
+                    "backup_sha256": backup_hash,
+                    "source_receipt": retirement["source_receipt"],
+                    "phase": "INTENT",
+                    "transitions": ["INTENT"],
+                    "replacement": str(replacement_path),
+                }
+                wal["files"].append(entry)
+                _write_json_atomic(wal_path, wal)
+                receipt_record = {
+                    key: entry[key]
+                    for key in ("path", "action", "installed_sha256", "retired_sha256", "backup_sha256", "source_receipt")
+                }
+                records.append(receipt_record)
+                destination.unlink()
+                entry["phase"] = "MUTATED"
+                entry["transitions"].append("MUTATED")
+                _write_json_atomic(wal_path, wal)
+                _write_json_atomic(replacement_path, {
+                    "schema": "codexpro.install-replacement/v1",
+                    **receipt_record,
+                    "mutated_at": utc_now(),
+                })
+                if destination.exists():
+                    raise LifecycleError(f"retirement verification failed: {relative}")
+                entry["phase"] = "VERIFIED"
+                entry["transitions"].append("VERIFIED")
+                _write_json_atomic(wal_path, wal)
+                entry["phase"] = "COMPLETE"
+                entry["transitions"].append("COMPLETE")
+                _write_json_atomic(wal_path, wal)
         except Exception:
             _rollback_records(codex_home, backup_root, records)
             raise
@@ -331,14 +492,43 @@ def install(repo_root: Path, codex_home: Path, *, dry_run: bool = False, local_m
         wal["status"] = "ROLLED_BACK_AFTER_FAILURE"
         _write_json_atomic(wal_path, wal)
         raise
-    return {"ok": True, "action": "installed", "count": len(records), "receipt": str(receipt_path), "recovered": recovered}
+    return {"ok": True, "action": "installed", "count": len(records), "retired": [item["path"] for item in retirements], "receipt": str(receipt_path), "recovered": recovered}
 
 
 def _rollback_records(codex_home: Path, backup_root: Path, records: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    records = list(records)
     conflicts: list[dict[str, str]] = []
-    for record in reversed(list(records)):
+    for record in records:
+        if record.get("action") != "retired":
+            continue
         relative = str(record["path"])
         destination = safe_child(codex_home, relative)
+        retired_hash = str(record.get("retired_sha256") or record.get("installed_sha256") or "")
+        if destination.exists():
+            if not destination.is_file() or sha256_file(destination) != retired_hash:
+                conflicts.append({"path": relative, "action": "preserved_recreated_retired_path"})
+            continue
+        backup = safe_child(backup_root, relative)
+        if not backup.is_file() or sha256_file(backup) != record.get("backup_sha256"):
+            conflicts.append({"path": relative, "action": "missing_retirement_backup"})
+    if conflicts:
+        return conflicts
+    for record in reversed(records):
+        relative = str(record["path"])
+        destination = safe_child(codex_home, relative)
+        if record.get("action") == "retired":
+            retired_hash = str(record.get("retired_sha256") or record.get("installed_sha256") or "")
+            if destination.exists():
+                if destination.is_file() and sha256_file(destination) == retired_hash:
+                    continue
+                conflicts.append({"path": relative, "action": "preserved_recreated_retired_path"})
+                continue
+            backup = safe_child(backup_root, relative)
+            if not backup.is_file() or sha256_file(backup) != record.get("backup_sha256"):
+                conflicts.append({"path": relative, "action": "missing_retirement_backup"})
+                continue
+            _copy_file_atomic(backup, destination)
+            continue
         if not destination.exists() or sha256_file(destination) != record.get("installed_sha256"):
             conflicts.append({"path": relative, "action": "preserved_modified_or_missing"})
             continue
@@ -403,19 +593,100 @@ def _resolve_python_tool(*, platform_name: str = os.name, active_executable: str
     return python_tool
 
 
-def doctor(codex_home: Path) -> dict[str, Any]:
+def _load_oracle_runtime_module(codex_home: Path) -> Any:
+    helper = codex_home / "bin" / "chatgpt_oracle_runtime.py"
+    if not helper.is_file():
+        raise LifecycleError(f"Oracle runtime resolver missing: {helper}")
+    spec = importlib.util.spec_from_file_location(
+        f"chatgpt_oracle_runtime_doctor_{hashlib.sha256(str(helper).encode('utf-8')).hexdigest()[:12]}",
+        helper,
+    )
+    if spec is None or spec.loader is None:
+        raise LifecycleError(f"Oracle runtime resolver unavailable: {helper}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _oracle_version_from_output(stdout: str | None, stderr: str | None) -> str | None:
+    for line in f"{stdout or ''}\n{stderr or ''}".splitlines():
+        value = line.strip().removeprefix("oracle ").strip()
+        if value:
+            return value
+    return None
+
+
+def _probe_oracle_runtime(
+    command: Sequence[str],
+    *,
+    run_factory: Callable[..., Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    evidence: dict[str, Any] = {
+        "command": list(command),
+        "version": None,
+        "exit_code": None,
+        "timeout_seconds": ORACLE_VERSION_PROBE_TIMEOUT_SECONDS,
+    }
+    try:
+        completed = run_factory(
+            [*command, "--version"],
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            timeout=ORACLE_VERSION_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return evidence, {
+            "code": "ORACLE_VERSION_TIMEOUT",
+            "timeout_seconds": ORACLE_VERSION_PROBE_TIMEOUT_SECONDS,
+        }
+    except OSError as exc:
+        return evidence, {"code": "ORACLE_EXECUTION_FAILED", "detail": str(exc)}
+    evidence["exit_code"] = int(completed.returncode)
+    evidence["version"] = _oracle_version_from_output(completed.stdout, completed.stderr)
+    if completed.returncode != 0:
+        return evidence, {"code": "ORACLE_VERSION_FAILED", "exit_code": int(completed.returncode)}
+    if evidence["version"] != ORACLE_SUPPORTED_VERSION:
+        return evidence, {
+            "code": "ORACLE_VERSION_MISMATCH",
+            "actual": evidence["version"],
+            "expected": ORACLE_SUPPORTED_VERSION,
+        }
+    return evidence, None
+
+
+def doctor(
+    codex_home: Path,
+    *,
+    oracle_resolver: Callable[[], list[str]] | None = None,
+    oracle_run_factory: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
     codex_home = codex_home.expanduser().resolve()
     issues: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     receipt_path: Path | None = None
     local_multi_gpt: dict[str, Any] = {"enabled": False, "doctor": None}
     devspace_native_runtime: dict[str, Any] | None = None
+    oracle_runtime: dict[str, Any] = {
+        "command": None,
+        "version": None,
+        "exit_code": None,
+        "timeout_seconds": ORACLE_VERSION_PROBE_TIMEOUT_SECONDS,
+    }
     try:
         receipt_path = latest_receipt(codex_home)
         receipt = _read_json(receipt_path)
         local_multi_gpt["enabled"] = bool(receipt.get("optional_components", {}).get("local_multi_gpt", {}).get("enabled"))
         for record in receipt.get("files") or []:
             path = safe_child(codex_home, str(record.get("path") or ""))
+            if record.get("action") == "retired":
+                if path.exists() or path.is_symlink():
+                    issues.append({"code": "RETIRED_FILE_REAPPEARED", "path": str(record.get("path"))})
+                continue
             if not path.is_file():
                 issues.append({"code": "FILE_MISSING", "path": str(record.get("path"))})
             elif sha256_file(path) != record.get("installed_sha256"):
@@ -435,9 +706,28 @@ def doctor(codex_home: Path) -> dict[str, Any]:
         if completed is None or completed.returncode != 0 or not local_multi_gpt["doctor"] or not local_multi_gpt["doctor"].get("ok"):
             issues.append({"code": "LOCAL_MULTI_GPT_MCP_INVALID", "detail": completed.stderr.strip() if completed else "helper missing"})
     required = {"python3": _resolve_python_tool(), "node": shutil.which("node"), "npx": shutil.which("npx")}
-    for name, path in required.items():
-        if path is None:
-            issues.append({"code": "TOOL_MISSING", "tool": name})
+    if required["python3"] is None:
+        issues.append({"code": "TOOL_MISSING", "tool": "python3"})
+    try:
+        if oracle_resolver is None:
+            oracle_resolver = _load_oracle_runtime_module(codex_home).resolve_default_oracle_command
+        command = oracle_resolver()
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(value, str) and value for value in command)
+            or not Path(command[0]).is_absolute()
+        ):
+            raise LifecycleError("Oracle runtime resolver returned an invalid command")
+        oracle_runtime, oracle_issue = _probe_oracle_runtime(
+            command,
+            run_factory=oracle_run_factory or subprocess.run,
+        )
+        if oracle_issue is not None:
+            issues.append(oracle_issue)
+    except Exception as exc:
+        code = str(getattr(exc, "code", "") or "ORACLE_RUNTIME_UNRESOLVED")
+        issues.append({"code": code, "detail": str(exc)})
     compat_helper = codex_home / "bin" / "chatgpt_devspace_compat.py"
     if compat_helper.is_file() and required.get("node"):
         native = subprocess.run(
@@ -489,6 +779,7 @@ def doctor(codex_home: Path) -> dict[str, Any]:
         "issues": issues,
         "warnings": warnings,
         "tools": required,
+        "oracle_runtime": oracle_runtime,
         "local_multi_gpt": local_multi_gpt,
         "devspace_native_runtime": devspace_native_runtime,
     }

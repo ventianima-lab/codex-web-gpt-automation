@@ -68,6 +68,60 @@ def test_redaction_covers_quoted_authorization_tokens(value: str, secret: str) -
     assert redacted.endswith("[REDACTED]")
 
 
+def test_managed_command_timeout_is_bounded_stage_specific_and_redacted() -> None:
+    module = load_module()
+    seen: dict[str, object] = {}
+
+    def runner(argv, **kwargs):
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(
+            argv,
+            kwargs["timeout"],
+            output="ownerToken=must-not-leak",
+            stderr="Authorization: Bearer also-secret",
+        )
+
+    with pytest.raises(module.SetupError) as raised:
+        module.run_checked_result(
+            ["example-command"],
+            runner=runner,
+            stage="native-runtime-check",
+        )
+
+    message = str(raised.value)
+    assert message.startswith("DEVSPACE_STAGE_TIMEOUT:native-runtime-check:")
+    assert "must-not-leak" not in message
+    assert "also-secret" not in message
+    assert seen["timeout"] == module.MANAGED_COMMAND_TIMEOUT_SECONDS
+
+
+def test_native_runtime_is_resolved_from_persistent_user_path_without_global_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module()
+    runtime = tmp_path / "네이티브 Node 경로"
+    runtime.mkdir()
+    npx = runtime / "npx.cmd"
+    npx.write_text("@exit /b 0\n", encoding="utf-8")
+    stale = str(tmp_path / "stale path")
+    monkeypatch.setattr(module, "_persistent_windows_user_path", lambda: str(runtime))
+
+    environment = module.runtime_subprocess_environment(
+        {"PATH": stale, "UNCHANGED": "yes"},
+        platform_name="nt",
+    )
+    resolved = module.resolve_runtime_executable(
+        "npx",
+        environment=environment,
+        platform_name="nt",
+    )
+
+    assert environment["PATH"].split(";") == [stale, str(runtime)]
+    assert environment["UNCHANGED"] == "yes"
+    assert resolved == str(npx.resolve())
+
+
 def test_streaming_supervisor_rotates_and_redacts_before_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     module = load_module()
     monkeypatch.setattr(module, "SERVICE_LOG_MAX_BYTES", 32)
@@ -179,7 +233,15 @@ def test_existing_setup_config_is_backed_up_and_atomically_replaced_without_init
         "device.tailnet.ts.net",
     )
     config_path = tmp_path / "config.json"
-    original = {"allowedRoots": [str(requested)], "toolMode": "full", "custom": "preserved"}
+    original = {
+        "allowedRoots": [str(requested)],
+        "publicBaseUrl": "https://old.tailnet.ts.net",
+        "host": "custom-bind",
+        "port": 9000,
+        "toolMode": "full",
+        "auth": {"ownerToken": "preserved-in-place"},
+        "custom": "preserved",
+    }
     config_path.write_text(json.dumps(original), encoding="utf-8")
 
     backup = module.persist_existing_setup_config(config_path, current)
@@ -190,9 +252,205 @@ def test_existing_setup_config_is_backed_up_and_atomically_replaced_without_init
     assert json.loads(backup.read_text(encoding="utf-8")) == original
     assert persisted["allowedRoots"] == [str(existing.resolve()), str(requested.resolve())]
     assert persisted["publicBaseUrl"] == "https://device.tailnet.ts.net"
-    assert persisted["port"] == 7676
+    assert persisted["host"] == "custom-bind"
+    assert persisted["port"] == 9000
     assert persisted["toolMode"] == "full"
+    assert persisted["auth"] == {"ownerToken": "preserved-in-place"}
     assert persisted["custom"] == "preserved"
+
+
+def test_partial_first_init_config_resumes_with_only_nonsecret_fields_filled(tmp_path: Path) -> None:
+    module = load_module()
+    requested = tmp_path / "한국어 프로젝트 with spaces"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net", public_port=8443)
+    config_path = tmp_path / "config.json"
+    original = {
+        "host": "existing-bind",
+        "port": 8123,
+        "ownerAuth": {"token": "leave-this-secret-alone"},
+        "custom": ["untouched"],
+    }
+    config_path.write_text(json.dumps(original, ensure_ascii=False), encoding="utf-8")
+
+    merged, preserved = module.merge_persisted_setup_roots(current, config_path)
+    backup = module.persist_existing_setup_config(config_path, merged)
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert preserved == ()
+    assert merged.roots == current.roots
+    assert json.loads(backup.read_text(encoding="utf-8")) == original
+    assert persisted == {
+        **original,
+        "allowedRoots": [str(requested.resolve())],
+        "publicBaseUrl": "https://device.tailnet.ts.net:8443",
+    }
+    assert config_path.read_bytes().isascii()
+
+
+def _stub_apply_setup_runtime(module, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "funnel_status", lambda *args, **kwargs: {"ok": True, "mapping": "absent"})
+    monkeypatch.setattr(module, "run_checked", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "launch_managed_devspace_service", lambda *args, **kwargs: {"supervisor_pid": 1})
+    monkeypatch.setattr(module, "wait_for_local_readiness", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(module, "ensure_public_route", lambda *args, **kwargs: {"ok": True})
+
+
+def test_existing_config_with_valid_auth_preserves_auth_bytes_and_skips_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    requested = tmp_path / "project"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"allowedRoots": [], "custom": "preserved"}), encoding="utf-8"
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_bytes(b'{"ownerToken":"valid-existing-secret","other":"keep"}\r\n')
+    auth_before = auth_path.read_bytes()
+    _stub_apply_setup_runtime(module, monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "run_interactive_checked",
+        lambda *args, **kwargs: pytest.fail("valid auth must not rerun devspace init"),
+    )
+
+    module.apply_setup(
+        current,
+        config_path=config_path,
+        terminal_check=lambda: False,
+        owner_password_reviewer=lambda **kwargs: pytest.fail("valid existing auth must not be displayed again"),
+    )
+
+    assert auth_path.read_bytes() == auth_before
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["allowedRoots"] == [str(requested.resolve())]
+    assert persisted["publicBaseUrl"] == "https://device.tailnet.ts.net"
+    assert persisted["custom"] == "preserved"
+
+
+def test_existing_config_missing_auth_resumes_interactively_and_merges_without_losing_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    requested = tmp_path / "한국어 project"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net", public_port=8443)
+    config_path = tmp_path / "config.json"
+    original = {"host": "preserve-host", "custom": {"owner": "user"}}
+    config_path.write_text(json.dumps(original), encoding="utf-8")
+    auth_path = tmp_path / "auth.json"
+    _stub_apply_setup_runtime(module, monkeypatch)
+    init_calls: list[tuple[list[str], str]] = []
+    review_calls: list[Path] = []
+
+    def resume_init(argv, **kwargs):
+        init_calls.append((list(argv), kwargs["stage"]))
+        config_path.write_text(
+            json.dumps({
+                "allowedRoots": [str(tmp_path / "generated-root")],
+                "publicBaseUrl": "https://generated.invalid",
+                "generatedOnly": True,
+                "custom": {"owner": "generated"},
+            }),
+            encoding="utf-8",
+        )
+        auth_path.write_text(
+            json.dumps({"ownerToken": "generated-owner-secret", "oauth": {"preserve": True}}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(module, "run_interactive_checked", resume_init)
+
+    module.apply_setup(
+        current,
+        config_path=config_path,
+        terminal_check=lambda: True,
+        owner_password_reviewer=lambda **kwargs: review_calls.append(kwargs["auth_path"]) or {"ok": True},
+    )
+
+    assert len(init_calls) == 1
+    assert init_calls[0][1] == "devspace-init-resume-auth"
+    assert review_calls == [auth_path]
+    assert json.loads(auth_path.read_text(encoding="utf-8")) == {
+        "ownerToken": "generated-owner-secret",
+        "oauth": {"preserve": True},
+    }
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["generatedOnly"] is True
+    assert persisted["host"] == "preserve-host"
+    assert persisted["custom"] == {"owner": "user"}
+    assert persisted["allowedRoots"] == [str(requested.resolve())]
+    assert persisted["publicBaseUrl"] == "https://device.tailnet.ts.net:8443"
+
+
+@pytest.mark.parametrize(
+    "auth_bytes, error",
+    [
+        (b"{broken", "DEVSPACE_AUTH_UNREADABLE"),
+        (b'{"ownerToken":""}', "DEVSPACE_OWNER_PASSWORD_MISSING"),
+    ],
+)
+def test_existing_config_malformed_auth_fails_before_any_config_or_auth_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    auth_bytes: bytes,
+    error: str,
+) -> None:
+    module = load_module()
+    requested = tmp_path / "project"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net")
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(b'{"custom":"exact-original-bytes"}\r\n')
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_bytes(auth_bytes)
+    config_before = config_path.read_bytes()
+    auth_before = auth_path.read_bytes()
+    _stub_apply_setup_runtime(module, monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "run_interactive_checked",
+        lambda *args, **kwargs: pytest.fail("malformed auth must not be overwritten by init"),
+    )
+
+    with pytest.raises(module.SetupError, match=error):
+        module.apply_setup(current, config_path=config_path, terminal_check=lambda: True)
+
+    assert config_path.read_bytes() == config_before
+    assert auth_path.read_bytes() == auth_before
+    assert list(tmp_path.glob("config.json.bak-*")) == []
+    assert list(tmp_path.glob(".config.json.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    "contents",
+    (
+        "{malformed",
+        json.dumps({"allowedRoots": "not-a-list", "custom": "preserve"}),
+        json.dumps({"allowedRoots": ["relative/path"], "custom": "preserve"}),
+    ),
+)
+def test_malformed_partial_config_fails_safe_without_backup_or_replacement(
+    tmp_path: Path,
+    contents: str,
+) -> None:
+    module = load_module()
+    requested = tmp_path / "requested"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(contents, encoding="utf-8")
+    before = config_path.read_bytes()
+
+    with pytest.raises(module.SetupError):
+        module.merge_persisted_setup_roots(current, config_path)
+
+    assert config_path.read_bytes() == before
+    assert list(tmp_path.glob("config.json.bak-*")) == []
+    assert list(tmp_path.glob(".config.json.tmp-*")) == []
 
 
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="PowerShell is unavailable")
@@ -251,6 +509,37 @@ def test_existing_bootstrap_config_is_only_a_synchronized_mirror(tmp_path: Path)
     assert persisted["local_port"] == 7676
     assert persisted["public_port"] == 443
     assert persisted["python_path"] == sys.executable
+
+
+def test_missing_bootstrap_config_is_created_atomically_and_verified(tmp_path: Path) -> None:
+    module = load_module()
+    roots = [tmp_path / "one with spaces", tmp_path / "한국어"]
+    for root in roots:
+        root.mkdir()
+    current = module.validate_config(
+        [str(root) for root in roots],
+        "device.tailnet.ts.net",
+        public_port=8443,
+    )
+    bootstrap = tmp_path / "nested" / "bootstrap.json"
+
+    backup = module.synchronize_existing_bootstrap_config(bootstrap, current)
+    verified = module.verify_bootstrap_config(bootstrap, current)
+    persisted = json.loads(bootstrap.read_text(encoding="utf-8"))
+
+    assert backup is None
+    assert verified["ok"] is True
+    assert verified["roots_match"] is True
+    assert persisted == {
+        "schema": "codexpro.devspace-bootstrap/v1",
+        "python_path": sys.executable,
+        "roots": [str(root.resolve()) for root in roots],
+        "hostname": "device.tailnet.ts.net",
+        "local_port": 7676,
+        "public_port": 8443,
+    }
+    assert bootstrap.read_bytes().isascii()
+    assert list(bootstrap.parent.glob(".bootstrap.json.tmp-*")) == []
 
 
 def test_doctor_orders_local_funnel_public_and_manual_failure_branch(tmp_path: Path) -> None:
@@ -756,10 +1045,7 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
         terminal_check=lambda: True,
     )
 
-    assert calls[1][1:3] == [
-        "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.8 init",
-    ]
+    assert calls[1] == module.devspace_npx_argv("init", platform_name="nt")
     assert "creationflags" not in call_kwargs[1]
     assert "startupinfo" not in call_kwargs[1]
     assert calls[2] == module.devspace_package_prepare_argv(platform_name="nt")
@@ -798,6 +1084,9 @@ def test_windows_startup_watchdog_registration_is_hidden_and_deterministic(tmp_p
     )
 
     assert result["mode"] == "per-user-login-watchdog"
+    assert result["registration_verified"] is True
+    assert result["restart_persistence_verified"] is False
+    assert result["persistence_verified"] is False
     assert result["watch_interval_seconds"] == 30
     assert runs[0][0][:3] == [
         "reg.exe",
@@ -899,6 +1188,64 @@ def test_owner_password_review_keeps_or_atomically_replaces_secret(tmp_path: Pat
     assert not list(tmp_path.glob("*.tmp-*"))
 
 
+def test_owner_password_custom_flow_explains_rules_and_retries_in_same_terminal(
+    tmp_path: Path,
+) -> None:
+    module = load_module()
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"ownerToken": "generated-high-entropy-owner-token"}), encoding="utf-8")
+    hidden_answers = iter(
+        [
+            "too-short",
+            "First-Valid-Password-2026!",
+            "Different-Password-2026!",
+            "Final-Owner-Password-2026!",
+            "Final-Owner-Password-2026!",
+        ]
+    )
+    shown: list[str] = []
+
+    result = module.review_owner_password_interactive(
+        auth_path=auth,
+        input_fn=lambda _prompt: "custom",
+        getpass_fn=lambda _prompt: next(hidden_answers),
+        output_fn=shown.append,
+        interactive=True,
+    )
+
+    transcript = "\n".join(shown)
+    assert result["changed"] is True
+    assert "16자 이상" in transcript
+    assert "공백" in transcript
+    assert "3종류" in transcript
+    assert "유지" in transcript
+    assert "취소" in transcript
+    assert "too-short" not in transcript
+    assert "First-Valid-Password-2026!" not in transcript
+    assert "Different-Password-2026!" not in transcript
+    assert shown.count("Final-Owner-Password-2026!") == 1
+    assert json.loads(auth.read_text(encoding="utf-8"))["ownerToken"] == "Final-Owner-Password-2026!"
+
+
+def test_owner_password_review_has_explicit_cancel_and_keeps_existing_secret(tmp_path: Path) -> None:
+    module = load_module()
+    auth = tmp_path / "auth.json"
+    original = {"ownerToken": "generated-high-entropy-owner-token", "other": "preserved"}
+    auth.write_text(json.dumps(original), encoding="utf-8")
+    shown: list[str] = []
+
+    with pytest.raises(module.SetupError, match="DEVSPACE_OWNER_PASSWORD_REVIEW_CANCELLED"):
+        module.review_owner_password_interactive(
+            auth_path=auth,
+            input_fn=lambda _prompt: "cancel",
+            output_fn=shown.append,
+            interactive=True,
+        )
+
+    assert json.loads(auth.read_text(encoding="utf-8")) == original
+    assert "generated-high-entropy-owner-token" not in "\n".join(shown)
+
+
 def test_owner_password_review_requires_tty_and_rejects_numeric_only(tmp_path: Path) -> None:
     module = load_module()
     auth = tmp_path / "auth.json"
@@ -906,13 +1253,10 @@ def test_owner_password_review_requires_tty_and_rejects_numeric_only(tmp_path: P
     with pytest.raises(module.SetupError, match="REQUIRES_INTERACTIVE_TTY"):
         module.review_owner_password_interactive(auth_path=auth, interactive=False)
     with pytest.raises(module.SetupError, match="STRENGTH_INVALID"):
-        module.review_owner_password_interactive(
-            auth_path=auth,
-            input_fn=lambda _prompt: "custom",
-            getpass_fn=lambda _prompt: "0" * 16,
-            output_fn=lambda _value: None,
-            interactive=True,
-        )
+        module._validate_custom_owner_password("0" * 16)
+    assert json.loads(auth.read_text(encoding="utf-8"))["ownerToken"] == (
+        "generated-high-entropy-owner-token"
+    )
 
 
 def test_posix_setup_invokes_pinned_devspace_directly(tmp_path: Path) -> None:

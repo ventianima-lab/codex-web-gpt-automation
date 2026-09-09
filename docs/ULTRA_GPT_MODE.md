@@ -1,3 +1,7 @@
+> Historical reference only. Do not use this execution mode for new work.
+> Follow [the shared automation policy](AUTOMATION_POLICY.md). Preserve existing
+> run records and their original recovery authority.
+
 # 울트라 GPT 모드
 
 울트라 GPT 모드는 Codex Ultra/Multi-agent의 역할 분해 방식을 Oracle 웹 GPT

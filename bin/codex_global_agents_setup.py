@@ -25,10 +25,6 @@ from typing import Any
 MANAGED_BEGIN = "<!-- BEGIN CODEX WEB GPT SUBAGENT POLICY -->"
 MANAGED_END = "<!-- END CODEX WEB GPT SUBAGENT POLICY -->"
 ROLE_NAMES = ("scout", "implementer", "verifier")
-TOP_LEVEL_SETTINGS = {
-    "model": '"gpt-5.6-sol"',
-    "model_reasoning_effort": '"high"',
-}
 AGENT_SETTINGS = {
     "enabled": "true",
     "max_concurrent_threads_per_session": "3",
@@ -79,30 +75,9 @@ def _load_templates(source_root: Path | None = None) -> tuple[dict[str, str], st
     return roles, policy + "\n"
 
 
-def _replace_top_level_setting(text: str, key: str, rendered_value: str) -> str:
-    lines = text.splitlines()
-    header_at = next((i for i, line in enumerate(lines) if re.match(r"^\s*\[", line)), len(lines))
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
-    matches = [i for i in range(header_at) if pattern.match(lines[i])]
-    if len(matches) > 1:
-        raise AgentSetupError(f"duplicate top-level setting: {key}")
-    replacement = f"{key} = {rendered_value}"
-    if matches:
-        lines[matches[0]] = replacement
-    else:
-        insert_at = header_at
-        while insert_at > 0 and not lines[insert_at - 1].strip():
-            insert_at -= 1
-        lines.insert(insert_at, replacement)
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def merge_config(text: str) -> str:
-    """Merge only the main model settings and the global ``[agents]`` table."""
+    """Preserve commander settings and merge only the global ``[agents]`` table."""
     merged = text.replace("\r\n", "\n")
-    for key, value in TOP_LEVEL_SETTINGS.items():
-        merged = _replace_top_level_setting(merged, key, value)
-
     lines = merged.splitlines()
     headers = [i for i, line in enumerate(lines) if re.match(r"^\s*\[", line)]
     agents_headers = [i for i in headers if re.match(r"^\s*\[agents\]\s*(?:#.*)?$", lines[i])]
@@ -216,10 +191,10 @@ def doctor(codex_home: Path, *, source_root: Path | None = None) -> dict[str, An
     except Exception as exc:  # pragma: no cover - defensive error reporting
         config = {}
         errors.append(f"CONFIG_TOML_INVALID:{exc}")
-    expected_top = {"model": "gpt-5.6-sol", "model_reasoning_effort": "high"}
-    for key, value in expected_top.items():
-        if config.get(key) != value:
-            errors.append(f"TOP_LEVEL_MISMATCH:{key}")
+    observed_main = {
+        "model": config.get("model"),
+        "model_reasoning_effort": config.get("model_reasoning_effort"),
+    }
     agents = config.get("agents") if isinstance(config.get("agents"), dict) else {}
     expected_agents = {
         "enabled": True,
@@ -249,7 +224,7 @@ def doctor(codex_home: Path, *, source_root: Path | None = None) -> dict[str, An
         "schema": "codex.web-gpt.global-agents-doctor/v1",
         "ok": not errors,
         "codex_home": str(codex_home),
-        "main": expected_top,
+        "main": observed_main,
         "defaults": expected_agents,
         "roles": list(ROLE_NAMES),
         "multi_agent_v2_enabled": features.get("multi_agent_v2") is True,

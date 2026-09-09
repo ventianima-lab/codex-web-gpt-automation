@@ -243,19 +243,30 @@ PATCHES = {
     "dist/src/browser/chromeLifecycle.js": {
         "patch": "chromeLifecycle.disable-session-crash-bubble.patch",
         "pristine": "312b45c44d4cd69a3a057e7bd1584b58182b4b37bc88f6ce6c7d11e216267c81",
-        "patched": "f3b405464515e858c9f773d67fa0e94bca07dadff8ea49caa7859ad37e730ff7",
+        "patched": "97720774ecf76dfddcea5649f1fcd5123a3e70bac562dc4518b0bd5cbd0a1bda",
+        "legacy_patched": ["f3b405464515e858c9f773d67fa0e94bca07dadff8ea49caa7859ad37e730ff7"],
+        "legacy_patch": "chromeLifecycle.pre-startup-hygiene.patch",
     },
     "dist/src/browser/actions/thinkingTime.js": {
         "patch": "thinkingTime.gpt56-pro-power-slider.patch",
         "pristine": "3d9d06b08417bca3b2d646eb4d46887d26c5de7c068d1e995c73b6b6e2f61199",
-        "patched": "1aa1a216f71e1213c2056efb0db4c4de7c2b2c505311e1be98c2b6a2784521dd",
+        "patched": "b11673daaaf45e1ad749c44b3119c1ab71f8d84c0217f379c6e79b03d7b49761",
         "legacy_patched": [
+            "96062af32028119878570c5f3c81a01a5109576b6f2ebe51f30236385a96137c",
+            "1aa1a216f71e1213c2056efb0db4c4de7c2b2c505311e1be98c2b6a2784521dd",
             "978f754ba4011957790530474d27d629a8d353dd449f8e2636e02a9abd27b81a",
             "a19ce77fe57b4fa1a290e130da323377ed69b6e51b1ad133b1ab5355ead59345",
+            "43b866d19344f9e2a3e7cd9bdaac46faead998fbae978c1c63c6a3b183bd1af8",
         ],
         "legacy_patches": {
+            "96062af32028119878570c5f3c81a01a5109576b6f2ebe51f30236385a96137c":
+                "thinkingTime.gpt56-pro-power-slider.pre-dom-proof.patch",
+            "1aa1a216f71e1213c2056efb0db4c4de7c2b2c505311e1be98c2b6a2784521dd":
+                "thinkingTime.gpt56-pro-power-slider.pre-latest.patch",
             "a19ce77fe57b4fa1a290e130da323377ed69b6e51b1ad133b1ab5355ead59345":
                 "thinkingTime.gpt56-pro-power-slider.pre-aria-range.patch",
+            "43b866d19344f9e2a3e7cd9bdaac46faead998fbae978c1c63c6a3b183bd1af8":
+                "thinkingTime.gpt56-pro-power-slider.pre-personalization.patch",
         },
         "legacy_patch": "thinkingTime.gpt56-pro-power-slider.v1.20.15.patch",
     },
@@ -366,15 +377,49 @@ def _safe_archive_relative(name: str) -> str | None:
     return PurePosixPath(*path.parts[1:]).as_posix()
 
 
-def _verify_node_runtime(minimum: int, maximum: int, *, contract: str) -> None:
-    node = shutil.which("node")
+def node_runtime_kwargs(command: Sequence[str]) -> dict[str, str]:
+    """Bind a direct Node launch to the same executable during validation.
+
+    Wrappers (including pinned offline npx) keep the historical PATH lookup.
+    Never infer Node from an arbitrary argument or reinterpret a command string.
+    """
+    if len(command) >= 2:
+        executable = Path(command[0])
+        if executable.is_absolute() and executable.name.casefold() in {"node", "node.exe"}:
+            return {"node_executable": str(executable)}
+    return {}
+
+
+def _verify_node_runtime(
+    minimum: int, maximum: int, *, contract: str, node_executable: str | None = None,
+) -> None:
+    node = node_executable if node_executable is not None else shutil.which("node")
     if not node:
         raise OracleCompatError(
             "ORACLE_NODE_VERSION_UNSUPPORTED",
             "Oracle compatibility requires its validated Node.js runtime",
             {"contract": contract, "required": f">={minimum} <{maximum}"},
         )
-    resolved = subprocess.run([node, "--version"], capture_output=True, text=True, check=False)
+    if node_executable is not None and (
+        not Path(node).is_absolute() or not Path(node).is_file()
+    ):
+        raise OracleCompatError(
+            "ORACLE_NODE_VERSION_UNSUPPORTED",
+            "The selected Oracle Node executable is absent or not absolute",
+            {"contract": contract, "node_executable": node},
+        )
+    try:
+        resolved = subprocess.run(
+            [node, "--version"], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=10, **_git_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OracleCompatError(
+            "ORACLE_NODE_VERSION_UNSUPPORTED",
+            "The selected Oracle Node executable could not be verified",
+            {"contract": contract, "node_executable": node},
+        ) from exc
     value = resolved.stdout.strip().removeprefix("v")
     try:
         major = int(value.split(".", 1)[0])
@@ -574,9 +619,26 @@ def _candidate_roots() -> list[Path]:
     override = str(os.environ.get("ORACLE_PACKAGE_ROOT") or "").strip()
     if override:
         return [Path(override).expanduser().resolve()]
+
     local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    roots = list((local / "npm-cache" / "_npx").glob("*/node_modules/@steipete/oracle"))
-    return sorted((path.resolve() for path in roots if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True)
+    cache_roots = [
+        Path(value).expanduser()
+        for name in ("npm_config_cache", "NPM_CONFIG_CACHE")
+        if (value := str(os.environ.get(name) or "").strip())
+    ]
+    cache_roots.extend((local / "npm-cache", Path.home() / ".npm"))
+    cache_roots.extend(
+        (local / "Packages").glob("OpenAI.Codex_*/LocalCache/Local/npm-cache")
+    )
+
+    roots: dict[Path, float] = {}
+    for cache_root in cache_roots:
+        for path in (cache_root / "_npx").glob("*/node_modules/@steipete/oracle"):
+            if not path.is_dir():
+                continue
+            resolved = path.resolve()
+            roots[resolved] = resolved.stat().st_mtime
+    return sorted(roots, key=roots.__getitem__, reverse=True)
 
 
 def resolve_package_root(version: str = SUPPORTED_VERSION) -> Path:
@@ -816,6 +878,7 @@ def ensure_oracle_compatibility(
     *,
     package_root: Path | None = None,
     backup_root: Path | None = None,
+    node_executable: str | None = None,
 ) -> dict[str, Any]:
     """Apply only the default comprehensive-workflow Oracle contract."""
     version = resolved_version.strip().removeprefix("oracle ").strip()
@@ -827,7 +890,9 @@ def ensure_oracle_compatibility(
         )
     if version == SUPPORTED_VERSION:
         minimum, maximum = CURRENT_NODE_MAJOR_RANGE
-        _verify_node_runtime(minimum, maximum, contract=f"current:{version}")
+        _verify_node_runtime(
+            minimum, maximum, contract=f"current:{version}", node_executable=node_executable,
+        )
     contracts = PATCHES if version == SUPPORTED_VERSION else LKG_PATCHES
     return _apply_oracle_compatibility(
         version,

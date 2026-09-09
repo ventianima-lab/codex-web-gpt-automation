@@ -252,7 +252,6 @@ def test_scoped_package_tree_rejects_directory_links_and_junctions(tmp_path: Pat
         created = subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(external)],
             capture_output=True,
-            text=True,
             check=False,
         )
         assert created.returncode == 0, created.stderr
@@ -295,6 +294,43 @@ def test_scoped_profile_rejects_missing_node_runtime(monkeypatch: pytest.MonkeyP
         compat._verify_scoped_node_runtime("webjjonku-linux")
     assert unsupported.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
     assert unsupported.value.evidence["required"] == ">=24 <27"
+
+
+def test_explicit_discovered_node_is_verified_without_path_lookup(tmp_path, monkeypatch):
+    compat = load_compat()
+    node = tmp_path / "Node 런타임" / "node.exe"
+    node.parent.mkdir()
+    node.write_bytes(b"fixture")
+    monkeypatch.setattr(compat.shutil, "which", lambda name: pytest.fail("must use selected Node"))
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "v24.19.0\n", "")
+    monkeypatch.setattr(compat.subprocess, "run", run)
+    compat._verify_node_runtime(24, 27, contract="current:0.18.0", node_executable=str(node))
+    assert calls[0][0] == [str(node), "--version"]
+    assert calls[0][1]["timeout"] == 10
+    assert calls[0][1]["encoding"] == "utf-8"
+
+
+def test_explicit_node_timeout_never_falls_back_to_another_runtime(tmp_path, monkeypatch):
+    compat = load_compat()
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"fixture")
+    monkeypatch.setattr(compat.shutil, "which", lambda name: pytest.fail("must not fall back"))
+    def timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, 10)
+    monkeypatch.setattr(compat.subprocess, "run", timeout)
+    with pytest.raises(compat.OracleCompatError) as failure:
+        compat._verify_node_runtime(24, 27, contract="current:0.18.0", node_executable=str(node))
+    assert failure.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
+
+
+def test_node_binding_does_not_treat_wrappers_or_arguments_as_executables():
+    compat = load_compat()
+    assert compat.node_runtime_kwargs(["npx", "--offline", "--yes", "@steipete/oracle@0.18.0"]) == {}
+    assert compat.node_runtime_kwargs(["oracle", "node.exe"]) == {}
+    assert compat.node_runtime_kwargs(["node", "oracle-cli.js"]) == {}
 
 
 @pytest.mark.parametrize(
@@ -586,6 +622,10 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
         (Path(__file__).parent / "fixtures" / "oracle-0180-gpt56-sol-power-slider-delayed-model.json")
         .read_text(encoding="utf-8")
     )
+    latest_fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "oracle-0180-latest-pro-power-slider.json")
+        .read_text(encoding="utf-8")
+    )
     assert fixture["model_button"]["text"] == "Thinking effort"
     assert fixture["simple_view"]["text"].startswith("Pro, 5 of 5")
     assert fixture["slider_control"] == {
@@ -605,6 +645,11 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
         "label": "GPT-5.6 Sol",
         "ariaChecked": True,
     }
+    assert latest_fixture["requested_model"] == "gpt-5.6-sol"
+    assert [row["label"] for row in latest_fixture["model_rows"]] == [
+        "Latest", "GPT-5.6 Sol", "GPT-5.5",
+    ]
+    assert [row["label"] for row in latest_fixture["model_rows"] if row["ariaChecked"]] == ["Latest"]
     node = shutil.which("node")
     assert node is not None
     source_text = target.read_text(encoding="utf-8")
@@ -635,11 +680,13 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
     fixture_literal = json.dumps(fixture)
     one_based_fixture_literal = json.dumps(one_based_fixture)
     delayed_model_fixture_literal = json.dumps(delayed_model_fixture)
+    latest_fixture_literal = json.dumps(latest_fixture)
     script = f"""
 import {{ ensureThinkingTime }} from {json.dumps(test_module.as_uri())};
 const fixture = {fixture_literal};
 const oneBasedFixture = {one_based_fixture_literal};
 const delayedModelFixture = {delayed_model_fixture_literal};
+const latestFixture = {latest_fixture_literal};
 class FakeElement extends EventTarget {{
   constructor(text, attrs = {{}}, visible = true) {{
     super(); this._text = text; this.attrs = attrs; this.visible = visible;
@@ -668,21 +715,30 @@ globalThis.window = globalThis;
     }};
 
 const runCase = async ({{rangeFixture = fixture, validModel = true, controlledFragment = false,
-  modelRowsMountAfter = 0, contradictoryDisplay = false, duplicateExplicitMenu = false}} = {{}}) => {{
+  modelRowsMountAfter = 0, contradictoryDisplay = false, duplicateExplicitMenu = false,
+  latest = false, korean = false, missingLatest = false, wrongPill = false, level = 'pro',
+  blockedSlider = false, splitCurrentPicker = false, latestInitiallySelected = false,
+  composerStaleWhileOpen = false}} = {{}}) => {{
   const sliderFixture = rangeFixture.slider_control;
   let rawValue = sliderFixture.ariaValueNow;
   let keydowns = 0;
   let modelReads = 0;
+  let latestClicks = 0;
+  let selectedLatest = latestInitiallySelected;
+  let modelToggleClicks = 0;
+  globalThis.dispatchClickSequence = (item) => item.dispatchEvent(new Event('click'));
   const ordinal = () => rawValue - sliderFixture.ariaValueMin + 1;
   const total = sliderFixture.ariaValueMax - sliderFixture.ariaValueMin + 1;
-  const pill = new FakeElement(fixture.model_button.text, {{
+  const pill = new FakeElement(() => latest && composerStaleWhileOpen ? 'Thinking effort' : latest ?
+    (selectedLatest && rawValue === sliderFixture.ariaValueMax ? (wrongPill ? '5.6 Pro' : '6 Pro') : selectedLatest ? (korean ? '추론 수준' : 'Thinking effort') : '5.6 Pro') : fixture.model_button.text, {{
     'aria-haspopup': fixture.model_button.ariaHaspopup,
     'aria-expanded': fixture.model_button.ariaExpanded,
     'aria-controls': controlledFragment ? 'controlled-effort-fragment' : null,
   }});
   const view = new FakeElement(() =>
     (rawValue === sliderFixture.ariaValueMax || contradictoryDisplay ? 'Pro' : 'Extra High') + ', ' +
-      (contradictoryDisplay ? total : ordinal()) + ' of ' + total +
+      (korean ? total + '개 중 ' + (contradictoryDisplay ? total : ordinal()) + '번째' :
+        (contradictoryDisplay ? total : ordinal()) + ' of ' + total) +
       '.Use Left and Right arrow keys to adjust power.',
     {{'data-testid': fixture.simple_view.testid}},
   );
@@ -695,21 +751,37 @@ const runCase = async ({{rangeFixture = fixture, validModel = true, controlledFr
   view.queryOne = (selector) => selector.includes('[role="slider"]') ? slider : null;
   const power = new FakeElement('', {{role: 'menuitem', 'aria-label': fixture.power_control.ariaLabel}});
   slider.addEventListener('keydown', (event) => {{
+    if (blockedSlider) return;
+    if (event.key === 'ArrowLeft') {{
+      rawValue = Math.max(sliderFixture.ariaValueMin, rawValue - 1);
+      keydowns += 1;
+    }}
     if (event.key === 'ArrowRight') {{
       rawValue = Math.min(sliderFixture.ariaValueMax, rawValue + 1);
       keydowns += 1;
     }}
   }});
-  const model56 = new FakeElement(fixture.model_rows[0].label, {{
-    role: 'menuitemradio', 'aria-checked': validModel ? 'true' : 'false',
-    'data-state': validModel ? 'checked' : null,
+  const model56 = new FakeElement(latest ? (missingLatest ? 'Unavailable' : korean ? '최신' : 'Latest') : fixture.model_rows[0].label, {{
+    role: 'menuitemradio', 'aria-checked': () => (latest ? selectedLatest : validModel) ? 'true' : 'false',
+    'data-state': () => (latest ? selectedLatest : validModel) ? 'checked' : null,
   }});
-  const model55 = new FakeElement(fixture.model_rows[1].label, {{
-    role: 'menuitemradio', 'aria-checked': validModel ? 'false' : 'true',
-    'data-state': validModel ? null : 'checked',
+  model56.addEventListener('click', () => {{ latestClicks++; selectedLatest = true; }});
+  const model55 = new FakeElement(latest ? 'GPT-5.6 Sol' : fixture.model_rows[1].label, {{
+    role: 'menuitemradio', 'aria-checked': () => (latest ? selectedLatest : validModel) ? 'false' : 'true',
+    'data-state': () => (latest ? selectedLatest : validModel) ? null : 'checked',
   }});
+  const modelToggle = new FakeElement(splitCurrentPicker ? '6Pro' : 'Select model', {{
+    role: 'menuitem', 'aria-expanded': 'false', 'aria-label': 'Select model',
+  }});
+  modelToggle.addEventListener('click', () => {{ modelToggleClicks++; }});
+  const advancedView = new FakeElement('LatestGPT-5.6 Sol', {{
+    'data-testid': 'composer-model-picker-slider-advanced-view',
+  }});
+  advancedView.queryMany = (selector) =>
+    selector.includes('[role="menuitemradio"]') ? [model56, model55] : [];
   const menu = new FakeElement('ProPro, 5 of 5.GPT-5.6 SolGPT-5.5', {{
-    role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
+    role: splitCurrentPicker ? 'group' : 'menu',
+    'data-testid': 'composer-intelligence-picker-content',
   }});
   const fragment = new FakeElement('Pro, 5 of 5.', {{
     role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
@@ -722,8 +794,8 @@ const runCase = async ({{rangeFixture = fixture, validModel = true, controlledFr
     selector.includes('composer-intelligence-picker-content') ? menu : null;
   menu.queryMany = (selector) =>
     selector === '[role="menuitemradio"]' ?
-      (++modelReads <= modelRowsMountAfter ? [] : [model56, model55]) :
-    selector.includes('[role="menuitem"], button') ? [power] :
+      (splitCurrentPicker ? [] : (++modelReads <= modelRowsMountAfter ? [] : [model56, model55])) :
+    selector.includes('[role="menuitem"], button') ? (splitCurrentPicker ? [power, modelToggle] : [power]) :
     selector.includes('[role="menuitem"]') ? [power] :
     selector.includes('[role="menuitemradio"]') ? [model56, model55] :
     selector.includes('[data-testid]') ? [view] : [];
@@ -732,6 +804,12 @@ const runCase = async ({{rangeFixture = fixture, validModel = true, controlledFr
   }});
   duplicateMenu.queryOne = menu.queryOne;
   duplicateMenu.queryMany = menu.queryMany;
+  const outerMenu = new FakeElement('LatestGPT-5.6 Sol', {{role: 'menu'}});
+  outerMenu.queryOne = (selector) =>
+    selector.includes('composer-model-picker-slider-advanced-view') ? advancedView : null;
+  outerMenu.queryMany = (selector) =>
+    selector.includes('[role="menuitemradio"]') ? [model56, model55] :
+    selector.includes('[data-testid]') ? [advancedView] : [];
   globalThis.document = {{
     body: new FakeElement('body'),
     querySelector: (selector) =>
@@ -739,21 +817,50 @@ const runCase = async ({{rangeFixture = fixture, validModel = true, controlledFr
       selector.includes('composer-intelligence-picker-content') ? menu : null,
     querySelectorAll: (selector) =>
       selector.includes('button.__composer-pill') ? [pill] :
-      selector === '[role=menu]' ? (duplicateExplicitMenu ? [menu, duplicateMenu] : [menu]) :
+      selector === '[role=menu]' ? (splitCurrentPicker ? [outerMenu] :
+        (duplicateExplicitMenu ? [menu, duplicateMenu] : [menu])) :
+      selector.includes('composer-model-picker-slider-advanced-view') ?
+        (splitCurrentPicker ? [advancedView] : []) :
+      selector === '[role="menuitem"], button' ? (splitCurrentPicker ? [power, modelToggle] : [power]) :
       selector.includes('form button[aria-haspopup="menu"]') ? [pill] : [],
-    getElementById: (id) => id === 'controlled-effort-fragment' ? fragment : null,
+    getElementById: (id) => id === 'controlled-effort-fragment' ? fragment :
+      id === 'split-current-picker' ? menu : null,
     dispatchEvent: () => true,
   }};
   const logs = [];
+  const domProofs = [];
   const Runtime = {{evaluate: async ({{expression}}) => ({{result: {{value: await eval(expression)}}}})}};
   try {{
-    await ensureThinkingTime(Runtime, 'pro', (message) => logs.push(message), 'gpt-5.6-sol');
-    return {{ok: true, logs, rawValue, ordinal: ordinal(), keydowns}};
+    if (splitCurrentPicker) pill.attrs['aria-controls'] = 'split-current-picker';
+    await ensureThinkingTime(Runtime, level, (message) => {{
+      if (message.startsWith('[browser] Picker DOM proof: ')) domProofs.push(JSON.parse(message.slice('[browser] Picker DOM proof: '.length)));
+      else logs.push(message);
+    }}, latest ? null : 'gpt-5.6-sol');
+    return {{ok: true, logs, domProofs, rawValue, ordinal: ordinal(), keydowns,
+      ...(latest ? {{latestClicks, modelToggleClicks}} : {{}})}};
   }} catch (error) {{
     return {{ok: false, message: error.message, logs, rawValue, ordinal: ordinal(), keydowns}};
   }}
 }};
 console.log(JSON.stringify({{
+  latestLiveFixture: await runCase({{latest: true, rangeFixture: latestFixture}}),
+  latestFrom56: await runCase({{latest: true}}),
+  latestKoreanFrom56: await runCase({{latest: true, korean: true, rangeFixture: oneBasedFixture}}),
+  latestSplitCurrentPicker: await runCase({{
+    latest: true, level: 'extra-high', splitCurrentPicker: true, latestInitiallySelected: true,
+    rangeFixture: {{...fixture, slider_control: {{...fixture.slider_control, ariaValueNow: 3}}}},
+  }}),
+  latestSplitProOpen: await runCase({{
+    latest: true, splitCurrentPicker: true, latestInitiallySelected: true,
+    composerStaleWhileOpen: true,
+  }}),
+  missingLatest: await runCase({{latest: true, missingLatest: true}}),
+  latestWrongPill: await runCase({{latest: true, wrongPill: true}}),
+  latestLight: await runCase({{latest: true, level:'light'}}),
+  latestStandard: await runCase({{latest: true, level:'standard'}}),
+  latestExtended: await runCase({{latest: true, level:'extended'}}),
+  latestExtraHigh: await runCase({{latest: true, level:'extra-high'}}),
+  blockedExtraHigh: await runCase({{latest: true, level:'extra-high', blockedSlider:true}}),
   selectedZeroBased: await runCase(),
   controlledPortal: await runCase({{controlledFragment: true}}),
   delayedModelRows: await runCase({{
@@ -777,9 +884,72 @@ console.log(JSON.stringify({{
         text=True,
         check=False,
         timeout=30,
+        encoding="utf-8",
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
+    for case, outcome in result.items():
+        proofs = outcome.pop('domProofs', [])
+        if outcome['ok'] and case.startswith('latest'):
+            assert len(proofs) == 1, case
+            proof = proofs[0]
+            assert proof['schema'] == 'codex.oracle.picker-dom-proof/v1'
+            assert proof['latestClicked'] is True
+            assert proof['stableReads'] >= 2
+            assert proof['slider']['ordinal'] == outcome['ordinal']
+            assert proof['slider']['current'] == outcome['rawValue']
+            assert [row['text'] for row in proof['modelRows'] if row['checked'] == 'true'] == [('최신' if 'Korean' in case else 'Latest')]
+            if case == 'latestSplitProOpen':
+                assert proof['composer']['text'] == 'Thinking effort'
+                assert proof['modelSignals'][0]['text'] == '6Pro'
+                assert proof['slider']['displayOrdinal'] == 5
+                from test_chatgpt_oracle_state import load_state
+                state = load_state()
+                parsed = state._observed_picker_from_stdout(
+                    state.PICKER_DOM_LOG_PREFIX + json.dumps(proof),
+                    state.current_browser_intent('pro'),
+                )
+                assert parsed is not None
+                assert parsed['dom_proof'] == proof
+        else:
+            assert proofs == [], case
+    for case in ('latestFrom56', 'latestKoreanFrom56'):
+        assert result[case]['ok'] is True, result[case]
+        assert result[case]['latestClicks'] == 1
+        assert 'Latest explicitly selected' in result[case]['logs'][0]
+    assert result['latestSplitCurrentPicker'] == {
+        'ok': True,
+        'logs': [
+            '[browser] Thinking time: Latest / extra-high / 4 of 5 '
+            '(Latest explicitly selected) (already selected)'
+        ],
+        'rawValue': 3,
+        'ordinal': 4,
+        'keydowns': 0,
+        'latestClicks': 1,
+        'modelToggleClicks': 0,
+    }
+    assert result['latestSplitProOpen'] == {
+        'ok': True,
+        'logs': [
+            '[browser] Thinking time: Latest / 6 Pro '
+            '(Latest explicitly selected) (already selected)'
+        ],
+        'rawValue': 4,
+        'ordinal': 5,
+        'keydowns': 0,
+        'latestClicks': 1,
+        'modelToggleClicks': 0,
+    }
+    for case in ('missingLatest', 'latestWrongPill'):
+        assert result[case]['ok'] is False, result[case]
+    for ordinal, case in enumerate(('latestLight', 'latestStandard', 'latestExtended', 'latestExtraHigh'), 1):
+        assert result[case]['ok'] is True, result[case]
+        assert result[case]['ordinal'] == ordinal
+        assert result[case]['latestClicks'] == 1
+    assert result['blockedExtraHigh']['ok'] is False
+    assert 'without confirmed Extra-high' in result['blockedExtraHigh']['message']
+    assert 'Pro Extended' not in result['blockedExtraHigh']['message']
     assert result["selectedZeroBased"] == {
         "ok": True,
         "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
@@ -836,14 +1006,19 @@ def test_published_0180_pro_power_slider_migrates_known_exact_bytes(
     contract = compat.PATCHES[relative]
     legacy_hashes = list(contract["legacy_patched"])
     assert legacy_hashes == [
+        "96062af32028119878570c5f3c81a01a5109576b6f2ebe51f30236385a96137c",
+        "1aa1a216f71e1213c2056efb0db4c4de7c2b2c505311e1be98c2b6a2784521dd",
         "978f754ba4011957790530474d27d629a8d353dd449f8e2636e02a9abd27b81a",
         "a19ce77fe57b4fa1a290e130da323377ed69b6e51b1ad133b1ab5355ead59345",
+        "43b866d19344f9e2a3e7cd9bdaac46faead998fbae978c1c63c6a3b183bd1af8",
     ]
     legacy_patches = {
         legacy_hash: str(contract.get("legacy_patches", {}).get(legacy_hash) or contract["legacy_patch"])
         for legacy_hash in legacy_hashes
     }
-    assert legacy_patches[legacy_hashes[1]] == (
+    assert legacy_patches[legacy_hashes[0]] == "thinkingTime.gpt56-pro-power-slider.pre-dom-proof.patch"
+    assert legacy_patches[legacy_hashes[1]] == "thinkingTime.gpt56-pro-power-slider.pre-latest.patch"
+    assert legacy_patches[legacy_hashes[3]] == (
         "thinkingTime.gpt56-pro-power-slider.pre-aria-range.patch"
     )
 

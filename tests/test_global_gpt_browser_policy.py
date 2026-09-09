@@ -12,6 +12,10 @@ MULTI = ROOT / "skills" / "web-multi-gpt" / "SKILL.md"
 RESEARCH = ROOT / "skills" / "chatgpt-deep-research-browser" / "SKILL.md"
 ORACLE = ROOT / "skills" / "chatgpt-oracle-runtime" / "SKILL.md"
 DESIGNER = ROOT / "skills" / "chatgpt-question-designer" / "SKILL.md"
+SETUP = ROOT / "skills" / "chatgpt-workspace-setup" / "SKILL.md"
+GUARD = ROOT / "skills" / "mcp-update-guard" / "SKILL.md"
+AGENTS = ROOT / "AGENTS.md"
+POLICY = ROOT / "docs" / "AUTOMATION_POLICY.md"
 
 
 def text(path: Path) -> str:
@@ -27,25 +31,39 @@ def test_new_regular_modes_route_only_to_oracle_devspace() -> None:
     assert "app picker" not in value.casefold()
 
 
-def test_qualified_pro_requires_explicit_opt_in_and_uses_readonly_devspace() -> None:
-    value = text(PRO)
-    flat = " ".join(value.split())
-    assert "Oracle is the only backend for a new Pro run" in flat
-    assert "Pro is quota-limited" in flat
-    assert "never infer Pro from task difficulty" in flat
-    assert "exact absolute project root" in flat
-    assert "read-only and limited to design, advice, or review" in flat
-    assert "regular `GPT-5.6` `extra-high` DevSpace stage owns any required mutation or command" in flat
-    assert "`pro-attachment` remains an explicit, read-only route" in flat
-    assert "never an automatic fallback" in flat
-    assert "There is no new agbrowse,\nCodexPro" in value
-    handoff = text(HANDOFF)
-    assert "allow_pro: true" in handoff
-    assert "`pro-devspace-readonly`" in handoff
-    assert "regular `GPT-5.6` `extra-high` DevSpace stage" in handoff
-    assert "`pro-attachment`" in handoff
-    assert "read-only immutable/external-evidence" in handoff
-    assert "Persisted legacy `pro-devspace`" in handoff
+def test_current_policy_is_one_mission_latest_effort_with_default_pro() -> None:
+    values = [text(path) for path in (POLICY, AGENTS, ORACLE, DESIGNER, SETUP, GUARD)]
+    combined = " ".join(" ".join(value.split()) for value in values)
+    assert "one mission-based flow" in combined
+    assert "planning, research, review, and editing are prompt content, not modes" in combined
+    assert "Select Latest explicitly before the requested effort" in combined
+    assert "default is Pro, observed as **6 Pro**" in combined
+    assert "`gpt-5.6-sol` with `model_strategy=current`" in combined
+    assert "temporary chats" in combined
+    assert "Save the complete answer durably before closing the exact owned tab" in combined
+    assert "never automatically replay a prompt" in combined
+    assert "Preserve the configured native commander" in combined
+    assert "Never restore removed CGW routing" in combined
+    assert "pro-attachment" not in combined
+    assert "must not create, edit, or remove files or run commands" not in combined
+    assert "comprehensive mode" not in combined
+
+
+def test_compatibility_workflows_keep_schema_and_recovered_authority() -> None:
+    combined = "\n".join(text(path) for path in (AGENTS, DESIGNER, HANDOFF, GUARD))
+    assert "codex.chatgpt.oracle-comprehensive/v1" in combined
+    assert "allow_pro: true" in combined
+    assert "selector-era" in combined
+    assert "explicit compatibility" in combined
+    assert "Do not rewrite a recovered" in combined
+    assert "Existing v1-v4 agbrowse comprehensive state" in combined
+    assert "--retry-final-receipt" in combined
+    assert "settle-no-submission" in combined
+    assert "regular web work defaults to the highest supported non-Pro" not in combined
+    assert "only explicit user opt-in selects new qualified Pro" not in combined
+    assert "regular `GPT-5.6` `extra-high` DevSpace stage owns" not in combined
+    assert "Pro is quota-limited" not in text(PRO)
+    assert "Invoke this skill only after an explicit user request" not in text(PRO)
 
 
 def test_qualified_pro_has_exact_root_readonly_authority() -> None:
@@ -111,8 +129,8 @@ def test_comprehensive_is_web_native_relay_with_one_local_gate() -> None:
 
 
 def test_host_control_state_is_outside_devspace_project() -> None:
-    value = text(ORACLE)
-    assert "%USERPROFILE%\\.codex\\state\\chatgpt-oracle" in value
+    value = text(POLICY)
+    assert "owning task, exact project root, mission, and browser tab" in value
     source = text(ROOT / "bin" / "chatgpt_oracle_state.py")
     assert "HOST_STATE_OVERLAPS_PROJECT" in source
 
@@ -125,8 +143,9 @@ def test_oracle_recovery_is_exact_slug_no_restart_and_monotonic() -> None:
     assert "exact persisted" in value
     assert "replacement" in value
     runtime = text(ORACLE)
-    assert "`recovery_binding_unavailable`" in runtime
-    assert "restore the\nexact persisted conversation URL" in runtime
+    assert "reconnect --run-dir C:\\exact\\run --dry-run" in runtime
+    assert "Reconnection is prompt-free" in runtime
+    assert "never automatically replay a prompt or adopt another task's tab" in runtime
 
 
 def test_oracle_runs_use_isolated_profile_copies_and_owned_hidden_windows() -> None:
@@ -196,52 +215,45 @@ def test_readme_declares_manual_one_time_registration_not_ui_automation() -> Non
     value = text(ROOT / "README.md")
     assert "최초 한 번 수동 등록" in value
     assert "ChatGPT 설정·앱 목록·권한·삭제·선택 UI를 자동화하지 않습니다" in value
-    assert "실행 신원으로 정확히 복구" in value
-    assert "최초 설치 가이드" in value
     assert "ChatGPT 앱 `codex` 등록" in value
+    assert "공통 자동화 규칙" in value
 
 
-def test_english_readme_maps_modes_to_the_same_oracle_routes() -> None:
+def test_english_readme_declares_current_single_mission_policy() -> None:
     value = text(ROOT / "README.en.md")
-    assert "Oracle + DevSpace" in value
-    assert "`orchestrator` / orchestrator" in value
-    assert "`deep-research` / deep research" in value
-    assert "comprehensive mode" in value
-    assert "Web Multi-GPT" in value
-    assert "Pro is quota-limited, never auto-selected" in value
-    assert "Oracle + read-only DevSpace" in value
-    assert "regular `GPT-5.6` `extra-high` DevSpace stage performs any file creation" in value
-    assert "never resubmits the task" in value
+    assert "One mission-based flow with explicit model and effort selection" in value
+    assert "**Latest → Pro (6 Pro)**" in value
+    assert "Use temporary chats" in value
+    assert "save the result durably, then close only the owned tab" in value
+    assert "do not automatically\nresubmit, archive, or restore conversations" in value
 
 
-def test_question_designer_cannot_route_new_work_through_codexpro_or_legacy_sessions() -> None:
+def test_question_designer_uses_missions_instead_of_execution_modes() -> None:
     value = text(DESIGNER)
-    assert "CodexPro is frozen for new work" in value
-    assert "never design a new prompt around CodexPro" in value
-    assert "Every new Oracle stage is a one-shot session" in value
-    assert "Do not add legacy `session_policy`" in value
-    assert "verified CodexPro live connector context remains the default" not in value
+    assert "single Oracle execution flow without adding modes or audit stages" in value
+    assert "These are\nprompt choices, not execution modes" in value
+    assert "Use only the selected model and effort" in value
+    assert "this skill does not require web delegation" in value
 
 
 def test_agent_metadata_exposes_oracle_active_routes() -> None:
     thinking = text(ROOT / "skills" / "chatgpt-thinking-browser" / "agents" / "openai.yaml")
     multi = text(ROOT / "skills" / "web-multi-gpt" / "agents" / "openai.yaml")
     pro = text(ROOT / "skills" / "chatgpt-pro-browser" / "agents" / "openai.yaml")
-    designer = text(ROOT / "skills" / "chatgpt-question-designer" / "agents" / "openai.yaml")
     runtime = text(ROOT / "skills" / "chatgpt-oracle-runtime" / "agents" / "openai.yaml")
     assert "Oracle and DevSpace" in thinking
     assert "parallel Oracle GPT sessions" in multi
     assert "read-only DevSpace" in pro
     assert "allow_implicit_invocation: false" in pro
-    assert "read-only Pro" in designer and "read/write Pro" not in designer
-    assert "read-only Pro" in runtime and "read/write Pro" not in runtime
+    assert "Run one temporary-chat mission with explicit model and effort" in runtime
+    assert "allow_implicit_invocation: false" in runtime
 
 
-def test_question_designer_preserves_explicit_readonly_attachment_route() -> None:
+def test_question_designer_leaves_recovery_and_cleanup_to_the_owner() -> None:
     value = text(DESIGNER)
-    assert "A separately explicit `pro-attachment` request" in value
-    assert "never an automatic fallback from DevSpace" in value
-    assert "attachment evidence is a persisted-legacy recovery concern, not a new-work route" not in value
+    assert "The owning local task handles submission, same-tab recovery, durable capture" in value
+    assert "and tab cleanup" in value
+    assert "Do not demand a magic completion marker" in value
 
 
 def test_standalone_pro_never_transitions_into_comprehensive_implementation() -> None:

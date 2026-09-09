@@ -14,33 +14,9 @@ from typing import Any, Callable
 
 
 QUALIFICATION_SCHEMA = "codex.chatgpt.devspace-root-qualification/v1"
-PRO_APP_READ_GATE_SCHEMA = "codex.chatgpt.pro-devspace-app-read-gate/v1"
-PRO_APP_READ_GATE_MAX_AGE_SECONDS = 24 * 60 * 60
-REGISTERED_APP_ACTION_SNAPSHOT_GATE_ERRORS = frozenset(
-    {
-        "FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE",
-        "FINAL_GATE_TOOL_READ_RECEIPT_AUDIT_NONCE_MISSING",
-        "FINAL_GATE_CONVERSATION_RECEIPT_CHALLENGE_MISSING",
-    }
-)
-
-
-REGISTERED_APP_ACTION_SNAPSHOT_GUIDANCE = {
-    "ko": [
-        "새 일반 비-Pro canary에서 read_chunk 또는 서버 생성 Audit receipt ID가 보이지 않으면, 서버가 아니라 ChatGPT의 등록 앱 Action 스냅샷이 오래된 상태로 취급합니다.",
-        "정확한 기존 codex 앱의 이름과 /mcp URL은 보존합니다. 앱 상세에서 보이는 Refresh 또는 새로 고침을 직접 눌러 Action을 갱신한 뒤 새 Action을 검토·활성화합니다. 이 ChatGPT 설정은 자동화하지 않습니다.",
-        "OAuth 또는 도구 호출이 계속 오래되면 https://chatgpt.com/#settings/Plugins/ 에서 기존 codex 앱을 선택하고 Reconnect(다시 연결)를 직접 실행합니다. Business라는 이유나 Refresh가 보이지 않는다는 이유만으로 앱을 삭제·재등록하지 않습니다.",
-        "post-register는 방금 등록했거나 다시 연결한 뒤 단계/진단이 요구할 때만 정확히 한 번 실행합니다. 이어서 새 일반 비-Pro auditNonce canary에서 open_workspace, read, read_chunk 및 세 서버 생성 receipt ID를 다시 증명합니다. open_workspace/read만으로는 통과하지 않습니다.",
-        "앱 레코드가 실제로 없거나 손상되어 기존 앱을 선택·갱신·재연결할 수 없을 때만 예외적으로 같은 정확한 이름과 /mcp URL로 다시 만듭니다.",
-    ],
-    "en": [
-        "If a fresh regular non-Pro canary exposes no read_chunk or server-generated Audit receipt IDs, treat the registered ChatGPT app Action snapshot as stale rather than accepting the partial tool surface.",
-        "Keep the exact existing codex app name and /mcp URL. In the app detail, manually use the visible Refresh or New refresh control to update Actions, then review and enable the new Actions. Do not automate this ChatGPT setting.",
-        "If OAuth or tool calls remain stale, manually open https://chatgpt.com/#settings/Plugins/, select the existing codex app, and use Reconnect. Do not delete or re-register the app merely because the workspace is Business or Refresh is unavailable.",
-        "Run post-register exactly once only when the stage or diagnosis requires it after registration or reconnection. Then run a fresh regular non-Pro auditNonce canary proving open_workspace, read, read_chunk, and all three server-generated receipt IDs. open_workspace/read alone never passes.",
-        "Recreate with the same exact name and /mcp URL only as an exception when the app record is actually absent or corrupt and the existing app cannot be selected, refreshed, or reconnected.",
-    ],
-}
+APP_READ_RESULT_SCHEMA = "codex.chatgpt.registered-app-read-result/v1"
+# Compatibility export for callers that have not yet renamed the factory.
+PRO_APP_READ_GATE_SCHEMA = APP_READ_RESULT_SCHEMA
 
 
 class DevSpacePreflightError(RuntimeError):
@@ -62,42 +38,22 @@ def _load_onboarding_module() -> Any:
     return module
 
 
-def _parse_utc(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(timezone.utc)
-
-
-def ensure_recent_registered_app_read_gate(
+def ensure_registered_app_read_result(
     project_root: Path,
     app_name: str,
     *,
     codex_home: Path | None = None,
-    devspace_home: Path | None = None,
-    now: datetime | None = None,
-    max_age_seconds: int = PRO_APP_READ_GATE_MAX_AGE_SECONDS,
     onboarding_loader: Callable[[], Any] = _load_onboarding_module,
 ) -> dict[str, Any]:
-    """Require a recent cryptographic regular-run read proof before Pro.
+    """Validate the durable, one-time registered-app read result for a root.
 
-    The proof is deliberately produced by the ordinary non-Pro onboarding
-    final gate.  A local HTTP health check, allowedRoots entry, successful
-    ``open_workspace`` call, or model-authored marker is not enough: the gate
-    revalidates the exact open/read/read_chunk receipts and conversation echo.
-    This function is read-only and is safe to call from ``--dry-run``.
+    The setup result is intentionally small: exact root, app identity,
+    authenticated access, one observed model, and a terminal outcome.  It does
+    not prescribe a tool sequence and does not expire merely because a later
+    run starts.
     """
-    if not isinstance(max_age_seconds, int) or max_age_seconds <= 0:
-        raise ValueError("max_age_seconds must be a positive integer")
     root = project_root.expanduser().resolve()
     expected_app = str(app_name or "").strip()
-    checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     state_file = (
         (codex_home or (Path.home() / ".codex")).expanduser().resolve()
         / "state"
@@ -106,38 +62,21 @@ def ensure_recent_registered_app_read_gate(
         / "state.json"
     )
 
-    reason = "missing-or-invalid-final-gate"
-    final_gate_error = None
+    reason = "missing-or-invalid-app-read-result"
     recorded: dict[str, Any] | None = None
     state: dict[str, Any] | None = None
     try:
         onboarding = onboarding_loader()
         state = onboarding.load_state(codex_home=codex_home)
         resolved_home = onboarding._codex_home(codex_home)
-        resolved_devspace = (
-            devspace_home or (Path.home() / ".devspace")
-        ).expanduser().resolve()
         candidate = onboarding._final_gate_receipt(
             resolved_home,
-            resolved_devspace,
+            Path.home() / ".devspace",
             state,
         )
         if isinstance(candidate, dict):
             recorded = candidate
-    except Exception as exc:
-        # Preserve only a stable, non-secret verifier code.  This lets callers
-        # distinguish an absent final-gate proof from the common case where a
-        # registered app still exposes an old Action snapshot without relaxing
-        # the proof requirement.
-        candidate_code = str(getattr(exc, "code", "") or "").strip()
-        if not candidate_code:
-            candidate_code = str(exc).strip()
-        if (
-            candidate_code.startswith("FINAL_GATE_")
-            and candidate_code == candidate_code.upper()
-            and candidate_code.replace("_", "").isalnum()
-        ):
-            final_gate_error = candidate_code
+    except Exception:
         recorded = None
 
     if isinstance(state, dict) and recorded is not None:
@@ -150,77 +89,72 @@ def ensure_recent_registered_app_read_gate(
             recorded_root = Path(str(recorded.get("root") or "")).expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
             recorded_root = None
-        recorded_at = _parse_utc(recorded.get("recorded_at"))
-        age_seconds = (
-            (checked_at - recorded_at).total_seconds()
-            if recorded_at is not None
-            else None
-        )
+        actual_model = str(recorded.get("actual_model") or "").strip()
+        recorded_at = str(recorded.get("recorded_at") or "").strip()
         if configured_app != expected_app:
             reason = "registered-app-name-mismatch"
         elif _path_key(root) not in roots:
             reason = "exact-root-not-covered-by-verified-app"
         elif recorded_root is None or _path_key(recorded_root) != _path_key(root):
-            reason = "final-gate-root-mismatch"
-        elif age_seconds is None or age_seconds < -300:
-            reason = "final-gate-time-invalid"
-        elif age_seconds > max_age_seconds:
-            reason = "final-gate-expired"
+            reason = "app-read-root-mismatch"
+        elif recorded.get("auth_verified") is not True:
+            reason = "app-auth-not-verified"
+        elif not actual_model or len(actual_model) > 128 or any(ord(char) < 32 for char in actual_model):
+            reason = "actual-model-invalid"
+        elif recorded.get("read_ok") is not True or recorded.get("outcome") != "captured":
+            reason = "app-read-outcome-not-captured"
+        elif not recorded_at:
+            reason = "app-read-recorded-at-missing"
         else:
             return {
-                "schema": PRO_APP_READ_GATE_SCHEMA,
+                "schema": APP_READ_RESULT_SCHEMA,
                 "qualified": True,
                 "project_root": str(root),
                 "app_name": configured_app,
-                "evidence_root": str(recorded.get("root") or ""),
-                "recorded_at": recorded_at.isoformat(),
-                "checked_at": checked_at.isoformat(),
-                "age_seconds": max(0, int(age_seconds)),
-                "max_age_seconds": max_age_seconds,
-                "run_id": str(recorded.get("run_id") or ""),
-                "conversation_url": str(recorded.get("conversation_url") or ""),
+                "auth_verified": True,
+                "actual_model": actual_model,
+                "outcome": "captured",
+                "recorded_at": recorded_at,
                 "state_path": str(state_file),
-                "receipt_count": len(recorded.get("tool_read_receipts") or []),
+                "setup_once": True,
             }
 
-    manual_snapshot_action_required = (
-        final_gate_error in REGISTERED_APP_ACTION_SNAPSHOT_GATE_ERRORS
-    )
     evidence = {
         "project_root": str(root),
         "app_name": expected_app,
         "state_path": str(state_file),
         "reason": reason,
-        "max_age_seconds": max_age_seconds,
-        "required_transport": "devspace",
-        "required_model": "gpt-5.6",
-        "required_thinking_time": "extra-high",
-        "required_tools": ["open_workspace", "read", "read_chunk"],
-        "next_action": "RUN_FRESH_REGULAR_NON_PRO_FINAL_GATE_CANARY",
-        "instructions": "Complete or refresh onboarding stage 08_final_gate, then rerun the same Pro dry-run.",
-        "final_gate_error": final_gate_error,
-        "manual_chatgpt_action_required": manual_snapshot_action_required,
-        # A failed canary is intentionally not persisted as successful final-gate
-        # evidence. Keep the generic error useful without inferring that a
-        # manual settings change is authorized: callers may show this branch
-        # only when their observed canary matches its explicit condition.
-        "conditional_registered_app_action_snapshot_guidance": REGISTERED_APP_ACTION_SNAPSHOT_GUIDANCE,
+        "required": {
+            "exact_root": True,
+            "registered_app": True,
+            "auth_verified": True,
+            "actual_model": "one non-empty observed model",
+            "outcome": "captured",
+        },
+        "next_action": "COMPLETE_REGISTERED_APP_READ_CHECK_ONCE",
+        "instructions": "Complete onboarding stage 08_final_gate once for this app and exact root.",
     }
-    if manual_snapshot_action_required:
-        evidence.update(
-            {
-                "registered_app_action_snapshot_guidance": REGISTERED_APP_ACTION_SNAPSHOT_GUIDANCE,
-                "post_refresh_actions": [
-                    "RUN_POST_REGISTER_ONCE",
-                    "RUN_FRESH_REGULAR_NON_PRO_AUDIT_NONCE_CANARY",
-                ],
-            }
-        )
 
     raise DevSpacePreflightError(
-        "PRO_DEVSPACE_APP_READ_GATE_REQUIRED",
-        "read-only Pro is blocked until a fresh regular non-Pro registered-app canary proves open_workspace, read, and read_chunk",
+        "REGISTERED_APP_READ_RESULT_REQUIRED",
+        "the registered app needs one successful authenticated read result for this exact root",
         evidence,
+    )
+
+
+def ensure_recent_registered_app_read_gate(
+    project_root: Path,
+    app_name: str,
+    *,
+    codex_home: Path | None = None,
+    onboarding_loader: Callable[[], Any] = _load_onboarding_module,
+) -> dict[str, Any]:
+    """Compatibility alias; the durable setup result has no freshness gate."""
+    return ensure_registered_app_read_result(
+        project_root,
+        app_name,
+        codex_home=codex_home,
+        onboarding_loader=onboarding_loader,
     )
 
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+"""Convenience entry point for the single ordinary Oracle execution flow."""
+
 import argparse
 import importlib.util
 import json
 import sys
 from pathlib import Path
 from typing import Any, Iterable
+
 
 BIN = Path(__file__).resolve().parent
 
@@ -20,94 +23,65 @@ def _load(name: str, path: Path):
     return module
 
 
-PROFILES = _load("oracle_dispatch_profiles", BIN / "chatgpt_oracle_profiles.py")
-RUNNER = _load("oracle_dispatch_runner", BIN / "chatgpt_oracle_run.py")
+EXECUTOR = _load("chatgpt_oracle_dispatch_executor", BIN / "chatgpt_oracle_execute.py")
 
 
 def compile_manifest(
     *,
-    mode: str,
     project_root: Path,
-    mission_path: Path | None,
-    output_path: Path,
-    reasoning_level: str | None = None,
-    attachment_paths: Iterable[Path] | None = None,
-    app_name: str | None = None,
+    mission_path: Path,
+    run_root: Path | None = None,
+    run_id: str | None = None,
+    source_thread_id: str | None = None,
+    model: str = EXECUTOR.DEFAULT_MODEL,
+    effort: str = EXECUTOR.DEFAULT_EFFORT,
+    app_name: str = EXECUTOR.DEFAULT_APP_NAME,
 ) -> dict[str, Any]:
-    contract = PROFILES.build_launch_contract(
-        mode,
+    config = EXECUTOR.make_config(
+        project_root=project_root,
         mission_path=mission_path,
-        reasoning_level=reasoning_level,
-        attachment_paths=list(attachment_paths or ()),
+        run_root=run_root,
+        run_id=run_id,
+        source_thread_id=source_thread_id,
+        model=model,
+        effort=effort,
         app_name=app_name,
     )
-    result = {"ok": True, "contract": contract, "oracle_manifest_path": None}
-    if not contract["oracle_launch"]:
-        return result
-    root = project_root.expanduser().resolve(strict=True)
-    target = output_path.expanduser().resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    manifest: dict[str, Any] = {
-        "schema": RUNNER.STATE.SCHEMA,
-        "project_root": str(root),
-        "mission_path": contract["mission_path"],
-        "mode": "browser",
-        "task_kind": contract["task_kind"],
-        "transport": {
-            "oracle-pro-attachment-only": "pro-attachment-only",
-            "oracle-pro-devspace": "pro-devspace",
-            "oracle-pro-devspace-readonly": "pro-devspace-readonly",
-            "oracle-devspace": "devspace",
-        }[contract["route"]],
-        "model": contract.get("model") or "gpt-5.6",
-        "model_strategy": "select",
-        "thinking_time": contract["thinking_time"],
-        "research": "deep" if contract["research"] else "off",
-        "archive": "auto",
-    }
-    source_thread_id = RUNNER.STATE.current_source_thread_id()
-    if source_thread_id is not None:
-        manifest["source_thread_id"] = source_thread_id
-    if contract["route"] == "oracle-pro-attachment-only":
-        manifest["attachments"] = contract["attachments"]
-    else:
-        manifest["app_name"] = contract["app_name"]
-        manifest["task_outcome_contract"] = "v1"
-    target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    result["oracle_manifest_path"] = str(target)
-    return result
+    return {"config": config, "manifest": EXECUTOR.manifest_payload(config), "contract": EXECUTOR.public_contract(config)}
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Resolve a GPT mode and dispatch it to Oracle + DevSpace.")
-    parser.add_argument("--mode", required=True)
+    parser = argparse.ArgumentParser(description="Execute one mission through the lean Oracle + @codex flow.")
     parser.add_argument("--project-root", type=Path, required=True)
-    parser.add_argument("--mission-path", type=Path)
-    parser.add_argument("--manifest-output", type=Path, required=True)
-    parser.add_argument("--reasoning-level")
-    parser.add_argument("--attachment", type=Path, action="append", default=[])
-    parser.add_argument("--app-name")
+    parser.add_argument("--mission-path", type=Path, required=True)
+    parser.add_argument("--run-root", type=Path)
+    parser.add_argument("--run-id")
+    parser.add_argument("--model", choices=EXECUTOR.SUPPORTED_MODELS, default=EXECUTOR.DEFAULT_MODEL)
+    parser.add_argument("--effort", choices=EXECUTOR.SUPPORTED_EFFORTS, default=EXECUTOR.DEFAULT_EFFORT)
+    parser.add_argument("--app-name", default=EXECUTOR.DEFAULT_APP_NAME)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         compiled = compile_manifest(
-            mode=args.mode,
             project_root=args.project_root,
             mission_path=args.mission_path,
-            output_path=args.manifest_output,
-            reasoning_level=args.reasoning_level,
-            attachment_paths=args.attachment,
+            run_root=args.run_root,
+            run_id=args.run_id,
+            model=args.model,
+            effort=args.effort,
             app_name=args.app_name,
         )
-        if compiled["oracle_manifest_path"]:
-            run = RUNNER.execute_run(Path(compiled["oracle_manifest_path"]), dry_run=args.dry_run)
-            value = {**compiled, "run": run, "ok": bool(run.get("ok"))}
-        else:
-            value = compiled
+        run = EXECUTOR.execute_config(compiled.pop("config"), dry_run=args.dry_run)
+        value = {"ok": bool(run.get("ok")), **compiled, "run": run}
+    except EXECUTOR.ExecutionError as exc:
+        value = exc.envelope()
     except Exception as exc:
-        value = {"ok": False, "error": {"code": "ORACLE_DISPATCH_FAILED", "message": str(exc)}}
+        value = ExecutionError("ORACLE_DISPATCH_FAILED", str(exc)).envelope()
     print(json.dumps(value, ensure_ascii=False, indent=2))
     return 0 if value.get("ok") else 1
+
+
+ExecutionError = EXECUTOR.ExecutionError
 
 
 if __name__ == "__main__":

@@ -27,17 +27,22 @@ def test_bootstrap_script_uses_live_devspace_allowed_roots_contract() -> None:
     assert "watchdog remains active" in text
     assert "WatchIntervalSeconds = 30" in text
     assert "ConfigSha256" in text
+    assert "mode = [string]$Mode" in text
+    assert "watch_interval_seconds = [int]$WatchIntervalSeconds" in text
 
 
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="PowerShell is unavailable")
-def test_bootstrap_smoke_passes_every_live_devspace_root_to_recover(tmp_path: Path) -> None:
+@pytest.mark.parametrize('complete_proof', [True, False, None])
+def test_bootstrap_smoke_passes_every_live_devspace_root_to_recover(tmp_path: Path, complete_proof: bool | None) -> None:
     codex_home = tmp_path / "codex-home"
     helper = codex_home / "skills" / "chatgpt-workspace-setup" / "scripts" / "devspace_tailscale_setup.py"
     helper.parent.mkdir(parents=True)
     capture = tmp_path / "captured.json"
     helper.write_text(
         "import json, sys\n"
-        f"open({str(capture)!r}, 'w', encoding='utf-8').write(json.dumps(sys.argv[1:], ensure_ascii=False))\n",
+        f"open({str(capture)!r}, 'w', encoding='utf-8').write(json.dumps(sys.argv[1:], ensure_ascii=False))\n"
+        + ("print('invalid-json')\n" if complete_proof is None else
+           f"print(json.dumps({{'ok': True, 'local_readiness': {{'ok': True}}, 'public': {{'ok': {complete_proof!r}}}}}))\n"),
         encoding="utf-8",
     )
     bootstrap = tmp_path / "bootstrap.json"
@@ -88,7 +93,18 @@ def test_bootstrap_smoke_passes_every_live_devspace_root_to_recover(tmp_path: Pa
         check=False,
     )
 
+    receipt = json.loads((codex_home / 'state/devspace-service/bootstrap-recovery.json').read_text(encoding='utf-8'))
+    if not complete_proof:
+        assert completed.returncode != 0
+        assert receipt['healthy'] is False
+        assert receipt['reason'] == ('recovery-json-invalid' if complete_proof is None else 'recovery-proof-incomplete')
+        return
     assert completed.returncode == 0, completed.stderr
+    assert receipt['healthy'] is True
+    assert receipt['hostname'] == 'device.example.ts.net'
+    assert receipt['mode'] == 'Once'
+    assert receipt['watch_interval_seconds'] == 30
+    assert len(receipt['config_sha256']) == 64
     argv = json.loads(capture.read_text(encoding="utf-8"))
     passed_roots = [argv[index + 1] for index, value in enumerate(argv) if value == "--root"]
     assert passed_roots == [str(root.resolve()) for root in roots]
@@ -112,7 +128,8 @@ def test_watch_mode_rechecks_health_without_losing_live_roots(tmp_path: Path) ->
     helper.write_text(
         "import json, sys\n"
         f"with open({str(capture)!r}, 'a', encoding='utf-8') as stream:\n"
-        "    stream.write(json.dumps(sys.argv[1:], ensure_ascii=False) + '\\n')\n",
+        "    stream.write(json.dumps(sys.argv[1:], ensure_ascii=False) + '\\n')\n"
+        "print(json.dumps({'ok': True, 'local_readiness': {'ok': True}, 'public': {'ok': True}}))\n",
         encoding="utf-8",
     )
     root = tmp_path / "unicode-여행"
@@ -170,6 +187,9 @@ def test_watch_mode_rechecks_health_without_losing_live_roots(tmp_path: Path) ->
     calls = [json.loads(line) for line in capture.read_text(encoding="utf-8").splitlines()]
     assert len(calls) == 2
     assert all(str(root.resolve()) in call for call in calls)
+    receipt = json.loads((codex_home / 'state/devspace-service/bootstrap-recovery.json').read_text(encoding='utf-8'))
+    assert receipt['mode'] == 'Watch'
+    assert receipt['watch_interval_seconds'] == 0
 
 
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="PowerShell is unavailable")
@@ -190,7 +210,8 @@ def test_watch_mode_reloads_allowed_roots_each_cycle(tmp_path: Path) -> None:
         "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
         f"config = pathlib.Path({str(devspace)!r})\n"
         "if len(capture.read_text(encoding='utf-8').splitlines()) == 1:\n"
-        f"    config.write_text(json.dumps({{'allowedRoots': [{str(first.resolve())!r}, {str(second.resolve())!r}]}}), encoding='utf-8')\n",
+        f"    config.write_text(json.dumps({{'allowedRoots': [{str(first.resolve())!r}, {str(second.resolve())!r}]}}), encoding='utf-8')\n"
+        "print(json.dumps({'ok': True, 'local_readiness': {'ok': True}, 'public': {'ok': True}}))\n",
         encoding="utf-8",
     )
     bootstrap = tmp_path / "bootstrap.json"

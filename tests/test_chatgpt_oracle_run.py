@@ -49,18 +49,33 @@ def manifest(tmp_path: Path, **extra) -> Path:
     return path.resolve()
 
 
+def latest_pro_browser_intent() -> dict[str, object]:
+    return {
+        "schema": "codex.chatgpt.oracle-browser-intent/v1",
+        "model_row": "Latest",
+        "model_selection": "explicit",
+        "thinking_time": "pro",
+        "slider_ordinal": 5,
+        "slider_total": 5,
+        "displayed_effort": "6 Pro",
+        "verification": "observed-log-required",
+    }
+
+
 def pro_manifest(tmp_path: Path, **extra) -> Path:
     prompt = tmp_path / "prompt.txt"
     packet = tmp_path / "packet.zip"
     prompt.write_text("pro instructions", encoding="utf-8")
     packet.write_bytes(b"PK\x03\x04packet")
+    model_strategy = extra.pop("model_strategy", "current")
     return manifest(
         tmp_path,
         transport="pro-attachment-only",
         app_name=None,
         model="gpt-5.6-sol",
-        model_strategy="select",
+        model_strategy=model_strategy,
         thinking_time="pro",
+        **({"browser_intent": latest_pro_browser_intent()} if model_strategy == "current" else {}),
         attachments=[str(prompt.resolve()), str(packet.resolve())],
         mission_path=str(prompt.resolve()),
         **extra,
@@ -69,13 +84,19 @@ def pro_manifest(tmp_path: Path, **extra) -> Path:
 
 def pro_readonly_manifest(tmp_path: Path, **extra) -> Path:
     thinking_time = extra.pop("thinking_time", "pro")
+    model_strategy = extra.pop("model_strategy", "current")
     return manifest(
         tmp_path,
         transport="pro-devspace-readonly",
         app_name="DevSpace",
         model="gpt-5.6-sol",
-        model_strategy="select",
+        model_strategy=model_strategy,
         thinking_time=thinking_time,
+        **(
+            {"browser_intent": latest_pro_browser_intent()}
+            if model_strategy == "current" and thinking_time == "pro"
+            else {}
+        ),
         research="off",
         task_outcome_contract="v1",
         **extra,
@@ -148,12 +169,12 @@ def test_version_resolution_recovers_current_oracle_from_exact_cached_package() 
     assert resolved == "oracle 0.18.0"
 
 
-def test_default_oracle_command_is_pinned_to_the_hash_validated_version() -> None:
+def test_explicit_oracle_command_validation_keeps_current_and_lkg_pins() -> None:
     runner = load_runner()
 
-    assert runner.STATE.default_oracle_command(platform_name="nt") == (
-        "npx.cmd", "-y", "@steipete/oracle@0.18.0",
-    )
+    assert runner.STATE.validate_oracle_command(
+        ["npx.cmd", "-y", "@steipete/oracle@0.18.0"]
+    ) == ("npx.cmd", "-y", "@steipete/oracle@0.18.0")
     with pytest.raises(runner.STATE.OracleStateError, match="0.17.1.*0.18.0|0.18.0.*0.17.1"):
         runner.STATE.validate_oracle_command(["npx.cmd", "-y", "@steipete/oracle@0.17.0"])
 
@@ -516,6 +537,9 @@ def cdp_disconnect_pre_submit_popen(session_root: Path, *, variation: str | None
         slug = command[command.index("--slug") + 1]
         output_path = Path(command[command.index("--write-output") + 1]).resolve()
         expected_profile = (Path.home() / ".oracle" / "browser-profile").resolve()
+        model_strategy = command[command.index("--browser-model-strategy") + 1]
+        thinking_time = command[command.index("--browser-thinking-time") + 1]
+        desired_model = None if model_strategy == "current" else "GPT-5.6 Sol"
         error_message = (
             "Chrome DevTools client disconnected before oracle finished; "
             "the browser target appears still alive."
@@ -556,9 +580,9 @@ def cdp_disconnect_pre_submit_popen(session_root: Path, *, variation: str | None
             "browser": {
                 "config": {
                     "copyProfileSource": str(expected_profile),
-                    "desiredModel": "GPT-5.6 Sol",
-                    "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "desiredModel": desired_model,
+                    "modelStrategy": model_strategy,
+                    "thinkingTime": thinking_time,
                 },
                 "runtime": {
                     "chromePid": 12816,
@@ -574,9 +598,9 @@ def cdp_disconnect_pre_submit_popen(session_root: Path, *, variation: str | None
                 "writeOutputPath": str(output_path),
                 "browserConfig": {
                     "copyProfileSource": str(expected_profile),
-                    "desiredModel": "GPT-5.6 Sol",
-                    "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "desiredModel": desired_model,
+                    "modelStrategy": model_strategy,
+                    "thinkingTime": thinking_time,
                 },
             },
             "completedAt": "2026-08-13T00:24:24.835Z",
@@ -618,6 +642,9 @@ def model_selector_button_pre_submit_popen(
         slug = command[command.index("--slug") + 1]
         output_path = Path(command[command.index("--write-output") + 1]).resolve()
         expected_profile = (Path.home() / ".oracle" / "browser-profile").resolve()
+        model_strategy = command[command.index("--browser-model-strategy") + 1]
+        thinking_time = command[command.index("--browser-thinking-time") + 1]
+        desired_model = None if model_strategy == "current" else "GPT-5.6 Sol"
         error_message = (
             "Unable to locate the ChatGPT model selector button. If the desired model is "
             "already selected in the browser, retry with --browser-model-strategy current; "
@@ -663,9 +690,9 @@ def model_selector_button_pre_submit_popen(
             "browser": {
                 "config": {
                     "copyProfileSource": str(expected_profile),
-                    "desiredModel": "GPT-5.6 Sol",
-                    "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "desiredModel": desired_model,
+                    "modelStrategy": model_strategy,
+                    "thinkingTime": thinking_time,
                 },
                 "runtime": {
                     "chromePid": 16424,
@@ -682,9 +709,9 @@ def model_selector_button_pre_submit_popen(
                 "writeOutputPath": str(output_path),
                 "browserConfig": {
                     "copyProfileSource": str(expected_profile),
-                    "desiredModel": "GPT-5.6 Sol",
-                    "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "desiredModel": desired_model,
+                    "modelStrategy": model_strategy,
+                    "thinkingTime": thinking_time,
                 },
             },
             "errorMessage": error_message,
@@ -1040,8 +1067,9 @@ def test_dry_run_never_executes_and_has_no_file_flag(tmp_path: Path) -> None:
     assert Path(result["mission_path"]).is_absolute()
     assert str((tmp_path / "mission.md").resolve()) in result["argv"][result["argv"].index("--prompt") + 1]
     assert "--file" not in result["argv"]
-    assert result["argv"][result["argv"].index("--browser-model-strategy") + 1] == "select"
-    assert result["argv"][result["argv"].index("--browser-thinking-time") + 1] == "heavy"
+    assert result["argv"][result["argv"].index("--model") + 1] == "gpt-5.6-sol"
+    assert result["argv"][result["argv"].index("--browser-model-strategy") + 1] == "current"
+    assert result["argv"][result["argv"].index("--browser-thinking-time") + 1] == "extra-high"
     assert result["argv"].count("--browser-hide-window") == 1
     assert calls == []
     assert not (tmp_path / "runs").exists()
@@ -1283,6 +1311,44 @@ def test_new_pro_readonly_heavy_manifest_is_rejected_before_layout_or_subprocess
     assert not (tmp_path / "runs").exists()
 
 
+def test_default_command_is_resolved_only_at_live_version_boundary(tmp_path: Path) -> None:
+    runner = load_runner()
+    manifest_path = manifest(tmp_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload.pop("oracle_command")
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    resolved = [r"C:\Codex\node.exe", r"C:\cache\oracle\dist\bin\oracle-cli.js"]
+    resolver_calls: list[bool] = []
+
+    dry_run = execute_run(
+        runner,
+        manifest_path,
+        dry_run=True,
+        default_command_resolver=lambda: (_ for _ in ()).throw(
+            AssertionError("dry-run must not inspect installed runtime")
+        ),
+    )
+    assert dry_run["argv"][:3] == [
+        "npx.cmd" if os.name == "nt" else "npx", "-y", "@steipete/oracle@0.18.0",
+    ]
+
+    observed_version_commands: list[list[str]] = []
+    def stop_at_version(command, **_kwargs):
+        observed_version_commands.append(list(command))
+        raise RuntimeError("stop after observing the version boundary")
+
+    result = execute_run(
+        runner,
+        manifest_path,
+        default_command_resolver=lambda: resolver_calls.append(True) or resolved,
+        version_resolver=stop_at_version,
+        devspace_qualification_factory=lambda _root: {"qualified": True},
+    )
+    assert resolver_calls == [True]
+    assert observed_version_commands == [resolved]
+    assert result["ok"] is False
+
+
 def test_pro_readonly_dry_run_fails_before_layout_without_fresh_app_read_gate(
     tmp_path: Path,
 ) -> None:
@@ -1334,8 +1400,9 @@ def test_new_writable_pro_manifest_is_rejected_before_layout_or_browser(tmp_path
         transport="pro-devspace",
         app_name="DevSpace",
         model="gpt-5.6-sol",
-        model_strategy="select",
+        model_strategy="current",
         thinking_time="pro",
+        browser_intent=latest_pro_browser_intent(),
         research="off",
         task_outcome_contract="v1",
     )
@@ -1351,6 +1418,18 @@ def test_new_writable_pro_manifest_is_rejected_before_layout_or_browser(tmp_path
         "write_model": "gpt-5.6",
         "write_thinking_time": "extra-high",
     }
+
+
+def test_new_selector_era_pro_launch_is_rejected_before_layout(tmp_path: Path) -> None:
+    runner = load_runner()
+    manifest_path = pro_readonly_manifest(tmp_path, model_strategy="select")
+    run_root = runner.STATE.load_manifest(manifest_path).run_root
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.execute_run(manifest_path, dry_run=True)
+
+    assert exc.value.code == "PRO_MODEL_STRATEGY_LEGACY_FORBIDDEN"
+    assert not run_root.exists()
     assert not (tmp_path.parent / f"{tmp_path.name}-host-state" / "runs").exists()
 
 
@@ -2111,8 +2190,10 @@ def test_registered_app_final_gate_prompt_binds_exact_generated_layout_run_id_an
         tmp_path,
         app_name="codex",
         registered_app_final_gate=True,
-        model="gpt-5.6",
-        thinking_time="extra-high",
+        model="gpt-5.6-sol",
+        model_strategy="current",
+        thinking_time="pro",
+        browser_intent=latest_pro_browser_intent(),
         task_outcome_contract="v1",
         source_thread_id=source_thread_id,
     ))
@@ -2177,7 +2258,8 @@ def test_registered_app_final_gate_rejects_pro_and_ordinary_prompts_remain_uncha
         runner.STATE.load_manifest(manifest(
             invalid_profile_root,
             registered_app_final_gate=True,
-            model="gpt-5.6",
+            model="gpt-5.6-sol",
+            model_strategy="current",
             thinking_time="heavy",
             task_outcome_contract="v1",
         ))
@@ -2207,8 +2289,10 @@ def test_registered_app_final_gate_requires_live_matching_source_task(
     payload = dict(
         app_name="codex",
         registered_app_final_gate=True,
-        model="gpt-5.6",
-        thinking_time="extra-high",
+        model="gpt-5.6-sol",
+        model_strategy="current",
+        thinking_time="pro",
+        browser_intent=latest_pro_browser_intent(),
         task_outcome_contract="v1",
         source_thread_id=source_thread_id,
     )
@@ -2795,6 +2879,28 @@ def test_model_switcher_failure_with_a_conversation_url_does_not_release_lock(tm
     assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
 
 
+def persisted_legacy_selector_failure(runner, tmp_path, session_root, *, run_id, variation=None):
+    """Build historical select/heavy evidence without executing a new legacy launch."""
+    config = runner.STATE.load_manifest(pro_readonly_manifest(
+        tmp_path, run_id=run_id, model_strategy="select", thinking_time="heavy",
+    ))
+    layout = runner.STATE.create_layout(config, run_id=run_id)
+    layout.run_dir.mkdir(parents=True)
+    (layout.run_dir / "mission.md").write_bytes(config.mission_path.read_bytes())
+    payload = runner.STATE.state_payload(
+        config, layout, status="attention_required", resolved_version="0.17.1", exit_code=1,
+    )
+    payload.update(session_authority="submitted_unknown", transport_status="failed")
+    runner.STATE.write_json_atomic(layout.state_path, payload)
+    argv = runner.build_oracle_argv(config, layout, "historical fixture")
+    with layout.stdout_path.open("wb") as stdout, layout.stderr_path.open("wb"):
+        model_selector_button_pre_submit_popen(session_root, variation=variation)(
+            argv, cwd=str(config.project_root), stdout=stdout,
+        )
+    runner.STATE.write_transcript(layout)
+    return {"run_dir": str(layout.run_dir), "result": payload}
+
+
 def test_user_confirmed_model_selector_button_failure_is_hash_bound_and_releases_project(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2803,11 +2909,8 @@ def test_user_confirmed_model_selector_button_failure_is_hash_bound_and_releases
     isolated_default_oracle_profile(tmp_path, monkeypatch)
     session_root = tmp_path / "oracle-sessions"
     monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
-    initial = execute_run(
-        runner,
-        pro_readonly_manifest(tmp_path, run_id="7" * 32),
-        run_factory=version_0171_runner,
-        popen_factory=model_selector_button_pre_submit_popen(session_root),
+    initial = persisted_legacy_selector_failure(
+        runner, tmp_path, session_root, run_id="7" * 32,
     )
     run_dir = Path(initial["run_dir"])
     state_path = run_dir / "state.json"
@@ -2879,14 +2982,8 @@ def test_model_selector_button_user_settlement_keeps_lock_on_incomplete_evidence
     isolated_default_oracle_profile(tmp_path, monkeypatch)
     session_root = tmp_path / "oracle-sessions"
     monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
-    initial = execute_run(
-        runner,
-        pro_readonly_manifest(tmp_path, run_id="8" * 32),
-        run_factory=version_0171_runner,
-        popen_factory=model_selector_button_pre_submit_popen(
-            session_root,
-            variation=variation,
-        ),
+    initial = persisted_legacy_selector_failure(
+        runner, tmp_path, session_root, run_id="8" * 32, variation=variation,
     )
     run_dir = Path(initial["run_dir"])
     state_path = run_dir / "state.json"
@@ -5424,6 +5521,69 @@ def test_live_recovery_cli_defaults_to_eighty_minute_status_audit() -> None:
     ])
     assert args.settle_timeout_seconds == 4800
     assert args.settle_interval_seconds == 15
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        ["--model", "gpt-5.6-sol"],
+        ["--effort", "extra-high"],
+        ["--app-name", "different-app"],
+    ],
+)
+def test_execute_manifest_rejects_selection_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    override: list[str],
+) -> None:
+    runner = load_runner()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner.EXECUTOR,
+        "execute_manifest",
+        lambda *args, **kwargs: pytest.fail("selection conflict must fail before manifest execution"),
+    )
+
+    exit_code = runner.main(["execute", "--manifest", str(manifest_path), *override])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["error"]["code"] == "EXECUTE_ARGUMENTS_CONFLICT"
+
+
+def test_direct_execute_keeps_default_selection_when_flags_are_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    observed: dict[str, object] = {}
+
+    def make_config(**kwargs):
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(runner.EXECUTOR, "make_config", make_config)
+    monkeypatch.setattr(
+        runner.EXECUTOR,
+        "execute_config",
+        lambda config, *, dry_run: {"ok": True, "status": "dry-run"},
+    )
+
+    exit_code = runner.main([
+        "execute",
+        "--project-root", "project",
+        "--mission-path", "mission.md",
+        "--dry-run",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "dry-run"
+    assert observed["model"] == runner.EXECUTOR.DEFAULT_MODEL
+    assert observed["effort"] == runner.EXECUTOR.DEFAULT_EFFORT
+    assert observed["app_name"] == runner.EXECUTOR.DEFAULT_APP_NAME
 
 
 def test_live_recovery_reopens_only_the_exact_slug_after_each_status_audit(

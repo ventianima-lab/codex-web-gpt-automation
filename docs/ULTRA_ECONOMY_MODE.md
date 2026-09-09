@@ -1,3 +1,7 @@
+> Historical reference only. Do not use this execution mode for new work.
+> Follow [the shared automation policy](AUTOMATION_POLICY.md). Preserve existing
+> run records and their original recovery authority.
+
 # 초절약모드
 
 초절약모드는 로컬 Codex 비용을 최소화하면서 설계·구현·검토 품질을 웹

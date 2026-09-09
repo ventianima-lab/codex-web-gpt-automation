@@ -43,7 +43,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "refs/tags/${tag}")"
           python scripts/check_docs.py --root .
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-      - name: Require reviewed validation PR and exact-commit portability CI
+      - name: Require merged PR and exact-commit portability CI
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -73,28 +73,12 @@ jobs:
 
           pulls="$(gh api -H "Accept: application/vnd.github+json" \
             "repos/${GITHUB_REPOSITORY}/commits/${release_commit}/pulls?per_page=100")"
-          reviewed=false
-          while IFS=$'\t' read -r number head_sha; do
-            [[ -n "${number}" && -n "${head_sha}" ]] || continue
-            reviews="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}/reviews?per_page=100")"
-            if jq -e --arg sha "${head_sha}" '
-              ([.[] | select(.commit_id == $sha and .state == "CHANGES_REQUESTED")] | length) == 0 and
-              any(.[];
-                .commit_id == $sha and
-                (.state == "APPROVED" or
-                 (.state == "COMMENTED" and
-                  ((.body // "") | test("(^|\\n)INDEPENDENT_REVIEW: PASS($|\\n)")) and
-                  ((.body // "") | gsub("^\\s+|\\s+$"; "") | length) >= 40)))
-            ' <<<"${reviews}" >/dev/null; then
-              reviewed=true
-              break
-            fi
-          done < <(jq -r --arg sha "${release_commit}" '.[] |
-            select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha) |
-            [.number, .head.sha] | @tsv' <<<"${pulls}")
-
-          if [[ "${reviewed}" != true ]]; then
-            echo "Exact release commit ${release_commit} is not bound to a merged, final-head-reviewed validation PR." >&2
+          if ! jq -e --arg sha "${release_commit}" '
+            any(.[];
+              .merged_at != null and .base.ref == "main" and
+              .merge_commit_sha == $sha)
+          ' <<<"${pulls}" >/dev/null; then
+            echo "Exact release commit ${release_commit} is not bound to a merged main PR." >&2
             exit 1
           fi
       - name: Publish GitHub Release

@@ -1,3 +1,7 @@
+> Historical reference only. Do not use this execution mode for new work.
+> Follow [the shared automation policy](AUTOMATION_POLICY.md). Preserve existing
+> run records and their original recovery authority.
+
 # Ultra GPT closed workflow audit
 
 > New workflows use `workflow_profile: ultra-gpt` and opt in with

@@ -1,75 +1,36 @@
 # Release checklist
 
-New submissions use Oracle only. CodexPro and agbrowse checks below apply only
-to packaging integrity and exact recovery of already-persisted legacy runs;
-they are not active routing prerequisites.
+Follow [the shared automation policy](AUTOMATION_POLICY.md). Release checks
+protect shipped behavior and publication identity; they are not per-project
+execution audits.
 
-The default installer must leave both frozen dependencies untouched.
-`-InstallLegacyRecoveryDependency` is the only opt-in that may install or
-contract-validate agbrowse for an old persisted run.
+## Verify the change
 
-## Version and presentation
+- Inspect the actual diff and preserve unrelated user work and historical state.
+- Run focused tests for changed behavior. Use required cross-platform CI for
+  the release commit; broaden local testing only for unresolved risk.
+- For browser changes, exercise a bounded no-submission check and relevant
+  owned-tab lifecycle behavior. For access changes, verify an actual app read.
+  Do not require a tool-call sequence, three audit receipts, or a magic answer.
+- Test lifecycle changes in a temporary installation, including preservation
+  and rollback. Do not interrupt foreign active runs or mutate credentials.
+- Check package inventory, public links, and version consistency.
 
-- Choose the SemVer impact using [VERSIONING.md](VERSIONING.md).
-- Require the same version in `package.json`, the root `package-lock.json`
-  entries, `install-manifest.json`, and the newest changelog heading.
-- Validate every relative Markdown link and every committed SVG/PNG asset.
-- Keep Korean and English README mode tables, safety claims, requirements, and
-  documentation maps semantically equivalent.
-- Confirm the repository description, topics, issue templates, PR template,
-  release badge, and social-preview asset match the current product name.
-- Create an annotated `vMAJOR.MINOR.PATCH` tag and GitHub Release only after the
-  exact commit passes both Windows and macOS CI. Never move a published tag.
-- A source version bump, commit, push, or successful branch CI is not a
-  published release. Push the annotated tag only after exact-commit CI passes;
-  the tag-push workflow must then validate the tag and create the GitHub
-  Release.
-- Before reporting completion, independently verify that the peeled remote tag
-  resolves to the exact release commit, the GitHub Release is non-draft, and
-  GitHub `releases/latest` returns the same tag. Also record the release workflow
-  run, lifecycle-install receipt, and source/install parity. Any missing gate is
-  `release incomplete`, not released.
+## Publish and deploy
 
-- Run `python scripts/check_portability.py --root .`, `python scripts/run_v4_contract_tests.py --focused`, `python scripts/run_v3_contract_tests.py`, and `python scripts/run_v4_contract_tests.py --full`.
-- On the maintainer host, run `python scripts/check_upstream_runtime_policy.py` and `python scripts/verify_upstream_runtime_maintainer.py`; registry current/latest must match and the active six-hour heartbeat must match the checked-in non-downstream contract.
-- Confirm `install-manifest.json` and `package.json` inventory every shipped runtime/schema file, the v4 runner, and both v7/v8 quiescent app-trace incident fixtures.
-- Confirm MIT copyright is `2026 ventianima-lab` and third-party notices retain the multi-gpt commit/hash attribution.
-- Do not vendor agbrowse, Codex, CodexPro, browser binaries, or account data.
-- Only the reporter workflow `upstream-runtime-watch.yml` may have a GitHub Actions `schedule`. It may query official npm metadata and maintain one drift issue, but must never promote, install, restart services, open ChatGPT, or touch a project. The separately registered Codex maintainer heartbeat owns gated promotion and deployment; downstream installs must not register themselves as repository maintainers. Other CI remains event/manual driven.
-- For Oracle/DevSpace promotion, the scheduled Codex maintainer automation owns the drift issue, validation PR, release, maintainer-host lifecycle install, and one safe-window managed restart. It begins validation within 24 hours and targets promotion within 48 hours only when every gate passes. Verify archive integrity, package-tree and patch hashes, current/LKG registry bindings, Oracle no-submission behavior, an explicit DevSpace `open_workspace` followed by a separate mission-file `read` through the same workspace ID and a `read_chunk` complete SHA-256 that matches the local mission bytes, root/large-read/local-public health, and Windows/macOS/Linux exact-commit CI before release. Routine stable patch/minor promotion has standing all-gates approval; breaking, permission/OAuth, patch-conflict, failed-canary, and ambiguous cases require explicit user approval.
-- Treat agbrowse update as an explicit, reviewed agent action. There is no background checker, scheduled updater, candidate slot, or promotion pointer.
-- Exercise `install.ps1`, `doctor.ps1`, `uninstall.ps1`, and `rollback.ps1` with a temporary `CODEX_HOME`; never require Git to bootstrap or verify a release.
-- Before a normal install, verify its read-only dependency preflight completes before any managed file mutation. The returned token binds selected version/integrity, prior dependency identity, and observed unlocked state; the subsequent update must reacquire the lock and reject drift. Before an explicit update, confirm no active or uncertain run state exists. The update receipt must preserve the prior npm version/integrity, executable and contract hashes, then capture and validate the reviewed public-command contract before replacing it.
-- Future agbrowse versions must be explicit resolved semvers. Pass their exact registry integrity to contract capture/validation, retain 0.1.18 only as the tested baseline, and require the invoking agent/workflow to select the resulting versioned contract explicitly.
-- Exercise both file-only install rollback and mocked normal install rollback. Receipt v3 must restore the prior agbrowse package, selected contract bytes, and prior update receipt; the exact inverse must prove registry integrity, installed version, and executable SHA-256 after npm reports success. Dependency drift must fail in preflight before installed files change, and any late inverse failure must report `PARTIAL`.
-- Verify install WAL behavior: per file, durable `INTENT` precedes mutation; the file is flushed, `replacement.json` is written, hashes are verified, and only then is the entry `COMPLETE`. A later install resumes an interrupted WAL by restoring only receipt-owned bytes; a modified destination remains a conflict.
+- Merge the reviewed change through the normal repository PR process.
+  Do not require a synthetic `INDEPENDENT_REVIEW: PASS` comment as a second
+  approval system. Never fabricate review or execution evidence.
+- Match package metadata, lockfile, install manifest, and changelog versions.
+- Require successful exact-main-commit portability CI before publication.
+- Push an annotated immutable version tag; never move an existing published tag.
+- Verify the peeled remote tag, non-draft GitHub Release, and `releases/latest`
+  refer to the intended version and commit.
+- Verify lifecycle installation and source/install byte parity separately.
+  Source delivery does not prove the installation has changed.
+- Preserve the rollback backup and report modified-file conflicts instead of
+  overwriting local customization.
 
-## macOS Ultrawork 1.7
-
-- Exercise the portable lifecycle in a temporary `CODEX_HOME`, including update rollback and the original install uninstall.
-- Verify OMO Codex Light only, telemetry opt-out, and direct smoke calls for ultrawork/ulw-loop/start-work/reviewer hooks. Native subagents use the supported `[agents]` block with `max_concurrent_threads_per_session = 3`; `multi_agent_v2` stays disabled while it is unstable.
-- Run `python3 scripts/run_harness_canary.py`; use `--real-time` for the release-host 85-minute canary and retain its SHA-256 receipt.
-- Validate all three managed plists with `plutil`; force-restart the supervisor and verify only `com.ventianima.codexpro-automation.*` labels are touched.
-- Require the persisted DevSpace allowed roots to match the approved exact-root set with nothing dropped or substituted; multiple roots are supported. Tailscale login, Funnel approval, macOS security approval, ChatGPT Developer Mode registration, and Owner approval remain manual gates.
-
-## Parallel implementation v3
-
-- Confirm all eight v3 schemas parse as draft 2020-12 and retain `additionalProperties: false`, bounded IDs/paths, and registered test IDs rather than free shell strings.
-- Verify a missing manifest gate or environment gate creates no lease, parent run, staging repository, exact-unit app, tunnel, or browser send.
-- Exercise fixed topology, logical/final overlap, drive/home equality, reparse escape, singleton allowed roots, and sibling isolation tests.
-- Verify staging uses `--no-local --no-hardlinks --no-checkout`, has no alternates/reference/shared object store, and detects worker mutation of common Git metadata.
-- Verify every dependency and path-conflict edge is unioned into one component, only one unit per component is active, and independent components may continue when another component requires exact-session recovery.
-- Verify `send.claim` v2 is immutable and authority-bound; post-send uncertainty must never create a second provider submission.
-- Verify exact-unit app identity includes singleton roots, bash off, workspace write, full tool mode, actual listener identity, and separate Cloudflare tunnel identity immediately before send.
-- Run `python scripts/run_v3_contract_tests.py`; opt into the live Windows exact-unit integration only in an isolated release environment with test credentials.
-- Verify full registered tests and canonical baseline/config/submodule/filesystem revalidation occur before temporary-ref import and ff-only apply. A forced conflict or test failure must leave canonical source unchanged.
-
-## Release lifecycle safety
-
-- `install.ps1` only manages manifest-owned files. By default it neither
-  installs nor updates CodexPro/agbrowse because those dependencies are frozen
-  for new work. `-InstallLegacyRecoveryDependency` is an explicit opt-in used
-  only when an existing persisted legacy run requires that exact recovery
-  runtime; `-SkipDependencyInstall` suppresses dependency mutation entirely.
-- Retain the unique receipt and backup directory. `uninstall.ps1` is a safe inverse: it removes only unchanged created files and restores only unchanged overwritten files; modified destinations are reported as conflicts.
-- Run `doctor.ps1` before an explicit `update.ps1 -AgbrowseVersion <version>`. Updates defer while bridge state is active or uncertain and never terminate it.
+Missing publication or installation evidence means **release incomplete**.
+A version bump alone is not a release. Report the exact remaining step rather
+than starting repeated unrelated audit or review loops.

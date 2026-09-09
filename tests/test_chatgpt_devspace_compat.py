@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_devspace_compat.py"
 
 
@@ -34,6 +36,43 @@ def load_compat():
 
 def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def prepare_service_package(
+    compat,
+    package: Path,
+    *,
+    version: str | None = None,
+    cli_bytes: bytes = b"#!/usr/bin/env node\n",
+    patched_bytes: bytes = b"patched service bytes\n",
+    replace_patches: bool = True,
+) -> Path:
+    (package / "dist").mkdir(parents=True, exist_ok=True)
+    (package / "package.json").write_text(
+        json.dumps({
+            "name": "@waishnav/devspace",
+            "version": version or compat.SUPPORTED_VERSION,
+        }),
+        encoding="utf-8",
+    )
+    cli = package / "dist" / "cli.js"
+    cli.write_bytes(cli_bytes)
+    if replace_patches:
+        (package / "dist" / "server.js").write_bytes(patched_bytes)
+        compat.PATCHES = {
+            "dist/server.js": {
+                "patch": "unused.patch",
+                "pristine": digest(b"pristine service bytes\n"),
+                "patched": digest(patched_bytes),
+            }
+        }
+    return cli
+
+
+def fake_node_executable(tmp_path: Path) -> Path:
+    node = tmp_path / ("node.exe" if os.name == "nt" else "node")
+    node.write_bytes(b"test node executable\n")
+    return node
 
 
 def test_compat_tests_use_an_isolated_restart_marker(tmp_path: Path) -> None:
@@ -226,8 +265,8 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     compat = load_compat()
-    package = tmp_path / "package"
-    package.mkdir()
+    package = tmp_path / "node_modules" / "@waishnav" / "devspace"
+    package.mkdir(parents=True)
     (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"before\n")
@@ -252,6 +291,8 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     compat.patch_root = lambda: patches
     monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
     backup = tmp_path / "backup"
+    cli = prepare_service_package(compat, package, replace_patches=False)
+    node = fake_node_executable(tmp_path)
 
     first = compat.ensure_devspace_compatibility(package_root=package, backup_root=backup)
     second = compat.ensure_devspace_compatibility(package_root=package, backup_root=backup)
@@ -259,7 +300,8 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
         package_root=package,
         service_probe=lambda port: {
             "pid": 22,
-            "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+            "command_line": f'node "{cli}" serve',
+            "executable_path": str(node),
             "started_at_unix_ns": 2**63 - 1,
             "local_port": port,
         },
@@ -275,6 +317,18 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     assert third["service_restart_required"] is False
     assert target.read_bytes() == b"after\n"
     assert (backup / "sample.txt").read_bytes() == b"before\n"
+    exact = backup / "by-sha256" / digest(b"before\n") / "sample.txt"
+    assert exact.read_bytes() == b"before\n"
+    assert first["migrations"] == [
+        {
+            "path": "sample.txt",
+            "from_sha256": digest(b"before\n"),
+            "to_sha256": digest(b"after\n"),
+            "patch": "sample.patch",
+            "reverse": False,
+            "backup_path": str(exact),
+        }
+    ]
 
 
 def test_exact_devspace_patch_accepts_only_hash_bound_upgrade_chain(
@@ -330,8 +384,8 @@ def test_restart_confirmation_rejects_old_or_foreign_listener(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     compat = load_compat()
-    package = tmp_path / "package"
-    package.mkdir()
+    package = tmp_path / "node_modules" / "@waishnav" / "devspace"
+    package.mkdir(parents=True)
     (package / "package.json").write_text(json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8")
     (package / "sample.txt").write_bytes(b"after\n")
     compat.PATCHES = {
@@ -378,8 +432,8 @@ def test_restart_confirmation_waits_through_managed_npx_cold_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     compat = load_compat()
-    package = tmp_path / "package"
-    package.mkdir()
+    package = tmp_path / "node_modules" / "@waishnav" / "devspace"
+    package.mkdir(parents=True)
     (package / "package.json").write_text(
         json.dumps({"version": compat.SUPPORTED_VERSION}), encoding="utf-8"
     )
@@ -391,6 +445,8 @@ def test_restart_confirmation_waits_through_managed_npx_cold_start(
             "patched": digest(b"after\n"),
         }
     }
+    cli = prepare_service_package(compat, package, replace_patches=False)
+    node = fake_node_executable(tmp_path)
     monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
     marker = compat._write_restart_marker([package])
     marker_payload = json.loads(marker.read_text(encoding="utf-8"))
@@ -413,13 +469,15 @@ def test_restart_confirmation_waits_through_managed_npx_cold_start(
         if probes < 241:
             return {
                 "pid": 11,
-                "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+                "command_line": f'node "{cli}" serve',
+                "executable_path": str(node),
                 "started_at_unix_ns": patched_at - 1,
                 "local_port": port,
             }
         return {
             "pid": 22,
-            "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+            "command_line": f'node "{cli}" serve',
+            "executable_path": str(node),
             "started_at_unix_ns": patched_at + 1,
             "local_port": port,
         }
@@ -451,14 +509,17 @@ def test_restart_confirmation_waits_through_managed_npx_cold_start(
     assert not marker.exists()
 
 
-def test_stop_service_requires_exact_devspace_identity() -> None:
+def test_stop_service_requires_exact_devspace_identity(tmp_path: Path) -> None:
     compat = load_compat()
     stopped: list[int] = []
-    package = Path("C:/tested/node_modules/@waishnav/devspace")
+    package = tmp_path / "node_modules" / "@waishnav" / "devspace"
+    cli = prepare_service_package(compat, package)
+    node = fake_node_executable(tmp_path)
     first_identity = {
-                "pid": 44,
-                "command_line": f"node {package / 'dist' / 'cli.js'} serve",
-                "started_at_unix_ns": 1,
+        "pid": 44,
+        "command_line": f'node "{cli}" serve',
+        "executable_path": str(node),
+        "started_at_unix_ns": 1,
     }
     first_probes = iter([first_identity, None])
     result = compat.stop_exact_devspace_service(
@@ -469,12 +530,14 @@ def test_stop_service_requires_exact_devspace_identity() -> None:
     assert result["stopped"] is True
     assert stopped == [44]
 
+    # Real npm installs create .bin; strict POSIX resolution traverses it before .. .
+    (package.parent.parent / ".bin").mkdir()
+    npx_cli = package.parent.parent / ".bin" / ".." / "@waishnav" / "devspace" / "dist" / "cli.js"
     npx_identity = {
-                "pid": 45,
-            "command_line": (
-                r'"node" "C:\tested\node_modules\.bin\\..\@waishnav\devspace\dist\cli.js" serve'
-            ),
-                "started_at_unix_ns": 1,
+        "pid": 45,
+        "command_line": f'"node" "{npx_cli}" serve',
+        "executable_path": str(node),
+        "started_at_unix_ns": 1,
     }
     npx_probes = iter([npx_identity, None])
     npx_result = compat.stop_exact_devspace_service(
@@ -490,6 +553,7 @@ def test_stop_service_requires_exact_devspace_identity() -> None:
             service_probe=lambda port: {
                 "pid": 55,
                 "command_line": "node unrelated.js",
+                "executable_path": str(node),
                 "started_at_unix_ns": 1,
             },
             stopper=stopped.append,
@@ -498,23 +562,115 @@ def test_stop_service_requires_exact_devspace_identity() -> None:
     assert foreign.value.code == "DEVSPACE_SERVICE_IDENTITY_MISMATCH"
 
 
+def test_service_identity_accepts_equivalent_cache_package_and_rejects_forgeries(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    expected = (
+        tmp_path
+        / "Packages"
+        / "OpenAI.Codex_test"
+        / "LocalCache"
+        / "Local"
+        / "npm-cache"
+        / "_npx"
+        / "expected"
+        / "node_modules"
+        / "@waishnav"
+        / "devspace"
+    )
+    actual = (
+        tmp_path
+        / "Local"
+        / "npm-cache"
+        / "_npx"
+        / "actual"
+        / "node_modules"
+        / "@waishnav"
+        / "devspace"
+    )
+    expected_cli = prepare_service_package(compat, expected)
+    actual_cli = prepare_service_package(compat, actual)
+    node = fake_node_executable(tmp_path)
+
+    accepted = compat._assert_devspace_service_identity(
+        {
+            "pid": 71,
+            "command_line": f'"node" "{actual_cli}" serve',
+            "executable_path": str(node),
+        },
+        [expected],
+    )
+    assert accepted["pid"] == 71
+    assert expected_cli.read_bytes() == actual_cli.read_bytes()
+
+    wrong_version = tmp_path / "wrong-version" / "node_modules" / "@waishnav" / "devspace"
+    wrong_version_cli = prepare_service_package(
+        compat, wrong_version, version="9.9.9", replace_patches=False
+    )
+    (wrong_version / "dist" / "server.js").write_bytes(
+        (expected / "dist" / "server.js").read_bytes()
+    )
+
+    wrong_hash = tmp_path / "wrong-hash" / "node_modules" / "@waishnav" / "devspace"
+    wrong_hash_cli = prepare_service_package(compat, wrong_hash, replace_patches=False)
+    (wrong_hash / "dist" / "server.js").write_bytes(b"tampered service bytes\n")
+
+    wrong_name = tmp_path / "wrong-name" / "node_modules" / "@waishnav" / "devspace"
+    wrong_name_cli = prepare_service_package(compat, wrong_name, replace_patches=False)
+    (wrong_name / "package.json").write_text(
+        json.dumps({"name": "forged-devspace", "version": compat.SUPPORTED_VERSION}),
+        encoding="utf-8",
+    )
+    (wrong_name / "dist" / "server.js").write_bytes(
+        (expected / "dist" / "server.js").read_bytes()
+    )
+
+    forged_cli = Path(f"{actual_cli}.forged")
+    forged_cli.write_bytes(actual_cli.read_bytes())
+    python_executable = tmp_path / ("python.exe" if os.name == "nt" else "python")
+    python_executable.write_bytes(b"not node\n")
+    rejected = [
+        (wrong_version_cli, "serve", node),
+        (wrong_hash_cli, "serve", node),
+        (wrong_name_cli, "serve", node),
+        (actual_cli, "status", node),
+        (forged_cli, "serve", node),
+        (actual_cli, "serve", python_executable),
+    ]
+    for pid, (cli, subcommand, executable) in enumerate(rejected, start=72):
+        with pytest.raises(compat.DevSpaceCompatError) as mismatch:
+            compat._assert_devspace_service_identity(
+                {
+                    "pid": pid,
+                    "command_line": f'"node" "{cli}" {subcommand}',
+                    "executable_path": str(executable),
+                },
+                [expected],
+            )
+        assert mismatch.value.code == "DEVSPACE_SERVICE_IDENTITY_MISMATCH"
+
+
 def test_service_stop_resolves_current_and_lkg_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     compat = load_compat()
-    current = tmp_path / "current"
-    lkg = tmp_path / "lkg"
-    foreign = tmp_path / "foreign"
-    for root, version in ((current, compat.SUPPORTED_VERSION), (lkg, compat.LEGACY_LKG_VERSION), (foreign, "9.9.9")):
-        root.mkdir()
-        (root / "package.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+    current = tmp_path / "current" / "node_modules" / "@waishnav" / "devspace"
+    lkg = tmp_path / "lkg" / "node_modules" / "@waishnav" / "devspace"
+    foreign = tmp_path / "foreign" / "node_modules" / "@waishnav" / "devspace"
+    prepare_service_package(compat, current)
+    prepare_service_package(compat, lkg, version=compat.LEGACY_LKG_VERSION, replace_patches=False)
+    prepare_service_package(compat, foreign, version="9.9.9", replace_patches=False)
+    node = fake_node_executable(tmp_path)
     monkeypatch.setattr(compat, "_candidate_roots", lambda: [foreign, lkg, current])
 
     assert compat.resolve_service_stop_roots() == [current.resolve(), lkg.resolve()]
 
     stopped: list[int] = []
+    lkg_cli = lkg / "dist" / "cli.js"
     identity = {
-                "pid": 46,
-            "command_line": f"node {lkg / 'dist' / 'cli.js'} serve",
-                "started_at_unix_ns": 1,
+        "pid": 46,
+        "command_line": f'node "{lkg_cli}" serve',
+        "executable_path": str(node),
+        "started_at_unix_ns": 1,
     }
     probes = iter([identity, None])
     result = compat.stop_exact_devspace_service(
@@ -525,12 +681,15 @@ def test_service_stop_resolves_current_and_lkg_roots(tmp_path: Path, monkeypatch
     assert stopped == [46]
 
 
-def test_windows_stop_requires_pid_start_binding_and_listener_release() -> None:
+def test_windows_stop_requires_pid_start_binding_and_listener_release(tmp_path: Path) -> None:
     compat = load_compat()
-    package = Path("C:/tested/node_modules/@waishnav/devspace")
+    package = tmp_path / "node_modules" / "@waishnav" / "devspace"
+    cli = prepare_service_package(compat, package)
+    node = fake_node_executable(tmp_path)
     identity = {
         "pid": 60008,
-        "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+        "command_line": f'node "{cli}" serve',
+        "executable_path": str(node),
         "started_at_unix_ns": 123_000_000,
     }
     probes = iter([identity, None])
@@ -605,12 +764,18 @@ def test_service_identity_accepts_posix_npm_shim_only_for_exact_package(
     cli = package / "dist" / "cli.js"
     cli.parent.mkdir(parents=True)
     cli.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    prepare_service_package(compat, package, replace_patches=True)
+    node = fake_node_executable(tmp_path)
     shim = tmp_path / "node_modules" / ".bin" / "devspace"
     shim.parent.mkdir()
     shim.symlink_to(cli)
 
     identity = compat._assert_devspace_service_identity(
-        {"pid": 77, "command_line": f"node {shim} serve"},
+        {
+            "pid": 77,
+            "command_line": f"node {shim} serve",
+            "executable_final_path": str(node),
+        },
         [package],
     )
 
@@ -627,6 +792,8 @@ def test_service_identity_rejects_posix_npm_shim_for_foreign_package(
     cli = package / "dist" / "cli.js"
     cli.parent.mkdir(parents=True)
     cli.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    prepare_service_package(compat, package, replace_patches=True)
+    node = fake_node_executable(tmp_path)
     foreign_cli = tmp_path / "foreign-cli.js"
     foreign_cli.write_text("#!/usr/bin/env node\n", encoding="utf-8")
     shim = tmp_path / "node_modules" / ".bin" / "devspace"
@@ -635,7 +802,11 @@ def test_service_identity_rejects_posix_npm_shim_for_foreign_package(
 
     with pytest.raises(compat.DevSpaceCompatError) as mismatch:
         compat._assert_devspace_service_identity(
-            {"pid": 88, "command_line": f"node {shim} serve"},
+            {
+                "pid": 88,
+                "command_line": f"node {shim} serve",
+                "executable_final_path": str(node),
+            },
             [package],
         )
 
@@ -722,11 +893,33 @@ def test_108_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     assert compat.PATCHES["dist/server.js"] == {
         "patch": "workspace-write-and-read-bridge.patch",
         "pristine": "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263",
-        "patched": "d35a4cd7b5678b4fa16c05ba8ca1d8cc0937d9f4c2bdd48e454a46ffa28da598",
-        "upgrades": {
-            "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": "tool-read-receipts.patch",
-            "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c": "widget-domain.patch",
-            "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985": "receipt-structured-output.patch",
+        "patched": "eeaae28aff625c28940463fe0909a53250580ab90748956a216e07ebc8604988",
+        "transitions": {
+            "bf3db902241b631d7c6fbaf12385243b46b4f2d4bb776b6ea7ca6c9d429a3263": {
+                "patch": "workspace-write-and-read-bridge.patch",
+                "reverse": False,
+                "result": "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497",
+            },
+            "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497": {
+                "patch": "widget-domain.patch",
+                "reverse": False,
+                "result": "eeaae28aff625c28940463fe0909a53250580ab90748956a216e07ebc8604988",
+            },
+            "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c": {
+                "patch": "tool-read-receipts.patch",
+                "reverse": True,
+                "result": "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497",
+            },
+            "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985": {
+                "patch": "widget-domain.patch",
+                "reverse": True,
+                "result": "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c",
+            },
+            "d35a4cd7b5678b4fa16c05ba8ca1d8cc0937d9f4c2bdd48e454a46ffa28da598": {
+                "patch": "receipt-structured-output.patch",
+                "reverse": True,
+                "result": "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985",
+            },
         },
     }
     assert 'delete: "delete_file"' in patch
@@ -745,37 +938,6 @@ def test_108_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     ).read_text(encoding="utf-8")
     assert "-import { randomUUID } from \"node:crypto\";" in migration
     assert '+    readChunk: "read_chunk",' in migration
-    receipt_patch = (
-        MODULE_PATH.parent
-        / "devspace-compat"
-        / compat.SUPPORTED_VERSION
-        / "tool-read-receipts.patch"
-    ).read_text(encoding="utf-8")
-    assert "AUDIT_NONCE_PATTERN" in receipt_patch
-    assert 'open(receiptPath, "wx", 0o600)' in receipt_patch
-    assert "codex.devspace.tool-read-receipt/v1" in receipt_patch
-    assert "readChunkSha256: result.eof ? result.sha256 : null" in receipt_patch
-    assert "readChunkOffsetBytes: result.offsetBytes" in receipt_patch
-    assert "readChunkBytesReturned: result.bytesReturned" in receipt_patch
-    assert "readChunkTotalBytes: result.totalBytes" in receipt_patch
-    assert "readChunkEof: result.eof" in receipt_patch
-    assert "auditNonce requires a nonempty OpenAI conversation scope" in receipt_patch
-    assert 'const AUDIT_RECEIPT_SEQUENCE = ["open_workspace", "read", "read_chunk"]' in receipt_patch
-    assert "reserveAuditReceipt" in receipt_patch
-    assert "auditStep" in receipt_patch
-    assert receipt_patch.count("Audit receipt ID:") == 3
-    for tool in (
-        'assertAuditReadonly(_meta, "exec_command")',
-        'assertAuditReadonly(_meta, "write_stdin")',
-        "assertAuditReadonly(_meta, toolNames.write)",
-        "assertAuditReadonly(_meta, toolNames.edit)",
-        'assertAuditReadonly(_meta, "apply_patch")',
-        "assertAuditReadonly(_meta, toolNames.shell)",
-        "assertAuditReadonly(_meta, toolNames.delete)",
-        "assertAuditReadonly(_meta, toolNames.trash)",
-    ):
-        assert tool in receipt_patch
-    assert "await writeToolReadReceipt" in receipt_patch
     widget_patch = (
         MODULE_PATH.parent
         / "devspace-compat"
@@ -804,9 +966,9 @@ def test_108_widget_domain_upgrade_is_hash_gated_to_the_public_app_origin(
     except compat.DevSpaceCompatError as exc:
         pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
     source = source_root / "dist" / "server.js"
-    prior_hash = "1370524581b75d6b91d281dea52e427004a5ac71c19ac8090d66fe521748760c"
+    prior_hash = "659cb1011cd7ab7fb75debb21a44f030001797c2160a42beac527354be93e497"
     if compat.sha256_file(source) != prior_hash:
-        pytest.skip("installed DevSpace server is not the prior hash-gated receipt payload")
+        pytest.skip("installed DevSpace server is not the lean workspace bridge payload")
     package = tmp_path / "devspace"
     (package / "dist").mkdir(parents=True)
     shutil.copy2(source, package / "dist" / "server.js")
@@ -862,144 +1024,33 @@ for (const candidate of [
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
-def test_108_artifact_write_is_bound_to_audit_readonly_scope() -> None:
+def test_108_strict_audit_payloads_are_reverse_only_migrations() -> None:
     compat = load_compat()
-    artifact_patch = (
-        MODULE_PATH.parent
-        / "devspace-compat"
-        / compat.SUPPORTED_VERSION
-        / "artifact-audit-readonly.patch"
-    ).read_text(encoding="utf-8")
-    server_patch = (
-        MODULE_PATH.parent
-        / "devspace-compat"
-        / compat.SUPPORTED_VERSION
-        / "tool-read-receipts.patch"
-    ).read_text(encoding="utf-8")
 
-    assert compat.PATCHES["dist/artifact-tools.js"] == {
-        "patch": "artifact-audit-readonly.patch",
-        "pristine": "53a045b3961875afce5a95b3992aea3d156b64c0268b1d22724d2ed8e2c3aad2",
-        "patched": "fd5204b37da657d6183c8394b5ee8bed09bbffd50999946b4d0421897a52dfa7",
+    artifact = compat.PATCHES["dist/artifact-tools.js"]
+    assert artifact["patched"] == artifact["pristine"]
+    assert artifact["transitions"] == {
+        "fd5204b37da657d6183c8394b5ee8bed09bbffd50999946b4d0421897a52dfa7": {
+            "patch": "artifact-audit-readonly.patch",
+            "reverse": True,
+            "result": artifact["pristine"],
+        }
     }
-    assert "beforeMutation = () => {}" in artifact_patch
-    assert "beforeMutation(input, _meta);" in artifact_patch
-    assert 'assertAuditReadonly(_meta, "download_artifact")' in server_patch
-    assert server_patch.index('assertAuditReadonly(_meta, "download_artifact")') < server_patch.index("return server;")
 
-
-def test_108_audit_receipt_ids_are_exposed_in_structured_tool_outputs() -> None:
-    compat = load_compat()
-    patch = (
-        MODULE_PATH.parent
-        / "devspace-compat"
-        / compat.SUPPORTED_VERSION
-        / "receipt-structured-output.patch"
-    ).read_text(encoding="utf-8")
-
-    assert patch.count("auditReceiptId: z.string().uuid().optional()") == 3
-    assert patch.count("auditReceiptId: auditReceiptResult.receiptId") == 3
-    assert 'structuredContent: { ...result, ...(auditReceiptResult ? { auditReceiptId:' in patch
-    assert compat.PATCHES["dist/server.js"]["upgrades"][
-        "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985"
-    ] == "receipt-structured-output.patch"
-
-
-def test_108_structured_receipt_upgrade_is_hash_gated(tmp_path: Path) -> None:
-    compat = load_compat()
-    try:
-        source_root = compat.resolve_package_roots()[0]
-    except compat.DevSpaceCompatError as exc:
-        pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
-    source = source_root / "dist" / "server.js"
-    prior_hash = "efd7a769601aae31b1f4d8a2e22767bba6c587b56488100dea85ad2c17f02985"
-    if compat.sha256_file(source) != prior_hash:
-        pytest.skip("installed DevSpace server is not the prior structured-receipt payload")
-    package = tmp_path / "devspace"
-    (package / "dist").mkdir(parents=True)
-    shutil.copy2(source, package / "dist" / "server.js")
-    compat._apply_patch(
-        package,
-        MODULE_PATH.parent
-        / "devspace-compat"
-        / compat.SUPPORTED_VERSION
-        / "receipt-structured-output.patch",
-    )
-    server = (package / "dist" / "server.js").read_text(encoding="utf-8")
-    assert compat.sha256_file(package / "dist" / "server.js") == compat.PATCHES["dist/server.js"]["patched"]
-    assert server.count("auditReceiptId: z.string().uuid().optional()") == 3
-    assert server.count("auditReceiptId: auditReceiptResult.receiptId") == 3
-
-
-def test_108_tool_read_receipt_upgrade_is_immutable_and_records_only_successes(
-    tmp_path: Path,
-) -> None:
-    compat = load_compat()
-    try:
-        source_root = compat.resolve_package_roots()[0]
-    except compat.DevSpaceCompatError as exc:
-        pytest.skip(f"DevSpace {compat.SUPPORTED_VERSION} package unavailable: {exc.code}")
-    source = source_root / "dist" / "server.js"
-    if compat.sha256_file(source) != next(iter(compat.PATCHES["dist/server.js"]["upgrades"])):
-        pytest.skip("installed DevSpace server is not the prior hash-gated bridge payload")
-    package = tmp_path / "devspace"
-    (package / "dist").mkdir(parents=True)
-    shutil.copy2(source, package / "dist" / "server.js")
-    compat._apply_patch(
-        package,
-        MODULE_PATH.parent / "devspace-compat" / compat.SUPPORTED_VERSION / "tool-read-receipts.patch",
-    )
-    server = (package / "dist" / "server.js").read_text(encoding="utf-8")
-    assert compat.sha256_file(package / "dist" / "server.js") == compat.PATCHES["dist/server.js"]["patched"]
-    assert "open(receiptPath, \"wx\", 0o600)" in server
-    read_handler = server[server.index("registerAppTool(server, toolNames.read,"):server.index("registerAppTool(server, toolNames.readChunk,")]
-    chunk_handler = server[server.index("registerAppTool(server, toolNames.readChunk,"):server.index("if (config.toolMode !== \"codex\")")]
-    assert read_handler.index("if (response.isError)") < read_handler.index("await writeToolReadReceipt")
-    assert chunk_handler.index("await readUtf8Chunk") < chunk_handler.index("await writeToolReadReceipt")
-    helper = re.search(
-        r"const AUDIT_NONCE_PATTERN = .*?(?=export async function readUtf8Chunk)",
-        server,
-        flags=re.DOTALL,
-    )
-    assert helper is not None
-    helper_source = helper.group(0).replace(
-        "export async function writeToolReadReceipt", "async function writeToolReadReceipt", 1
-    ).replace("randomUUID()", '"fixed-receipt-id"', 1)
-    harness = tmp_path / "receipt-harness.mjs"
-    harness.write_text(
-        'import assert from "node:assert/strict";\n'
-        'import { mkdir, open, readdir } from "node:fs/promises";\n'
-        'import { homedir } from "node:os";\n'
-        'import { isAbsolute, join } from "node:path";\n'
-        + 'function openAiConversationScopeId(meta) { return meta?.scope ?? null; }\n'
-        + helper_source
-        + '\nconst root = process.argv[2];\n'
-        + 'const base = {auditStep:3,tool:"read_chunk",workspaceId:"workspace-1",canonicalRoot:"C:/workspace",requestedRelativePath:"AGENTS.md",readChunkSha256:"a".repeat(64),readChunkOffsetBytes:0,readChunkBytesReturned:9,readChunkTotalBytes:9,readChunkEof:true,conversationScopeId:"conversation-1"};\n'
-        + 'assert.equal(await writeToolReadReceipt({...base}, root), null);\n'
-        + 'await assert.rejects(() => writeToolReadReceipt({...base,auditNonce:"too-short"}, root), /auditNonce/);\n'
-        + 'await mkdir(root,{recursive:true}); assert.equal((await readdir(root)).length,0);\n'
-        + 'const first = await writeToolReadReceipt({...base,auditNonce:"audit-nonce-0001"}, root);\n'
-        + 'assert.equal(first.receipt.schema,"codex.devspace.tool-read-receipt/v1"); assert.equal(first.receipt.auditNonce,"audit-nonce-0001"); assert.equal(first.receipt.readChunkSha256,"a".repeat(64)); assert.deepEqual([first.receipt.readChunkOffsetBytes,first.receipt.readChunkBytesReturned,first.receipt.readChunkTotalBytes,first.receipt.readChunkEof],[0,9,9,true]); assert.ok(!("content" in first.receipt));\n'
-        + 'await assert.rejects(() => writeToolReadReceipt({...base,auditNonce:"audit-nonce-0002"}, root), error => error?.code === "EEXIST");\n'
-        + 'assert.equal((await readdir(root)).length,1);\n'
-        + 'assert.throws(() => registerAuditReadonlyWorkspaceOpen({}, "audit-nonce-0003"), /nonempty OpenAI conversation scope/);\n'
-        + 'registerAuditReadonlyWorkspaceOpen({scope:"ordinary-scope"}); assert.throws(() => registerAuditReadonlyWorkspaceOpen({scope:"ordinary-scope"}, "audit-nonce-0004"), /precede every ordinary/);\n'
-        + 'registerAuditReadonlyWorkspaceOpen({scope:"audit-scope"}, "audit-nonce-0005"); registerAuditReadonlyWorkspaceOpen({scope:"audit-scope"}, "audit-nonce-0005"); assert.throws(() => registerAuditReadonlyWorkspaceOpen({scope:"audit-scope"}), /without auditNonce/);\n'
-        + 'assert.deepEqual(reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","open_workspace"),{conversationScopeId:"audit-scope",auditStep:1}); assert.equal(reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","read").auditStep,2); assert.equal(reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","read_chunk").auditStep,3); assert.throws(() => reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","read_chunk"),/tool order invalid/);\n'
-        + 'for (const tool of ["write","edit","apply_patch","exec_command","write_stdin","bash","delete_file","trash_file"]) assert.throws(() => assertAuditReadonly({scope:"audit-scope"}, tool), /audit-readonly/); assert.doesNotThrow(() => assertAuditReadonly({scope:"ordinary-scope"}, "write")); assert.doesNotThrow(() => assertAuditReadonly({scope:"pre-mutated-scope"}, "exec_command")); assert.throws(() => registerAuditReadonlyWorkspaceOpen({scope:"pre-mutated-scope"}, "audit-nonce-0006"), /precede every ordinary/);\n'
-        + 'console.log(JSON.stringify({ok:true}));\n',
-        encoding="utf-8",
-    )
-    completed = subprocess.run(
-        ["node", str(harness), str(tmp_path / "receipts")],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {"ok": True}
+    server = compat.PATCHES["dist/server.js"]
+    strict_hash = "d35a4cd7b5678b4fa16c05ba8ca1d8cc0937d9f4c2bdd48e454a46ffa28da598"
+    path = []
+    current = strict_hash
+    while current != server["patched"]:
+        transition = server["transitions"][current]
+        path.append((transition["patch"], transition["reverse"]))
+        current = transition["result"]
+    assert path == [
+        ("receipt-structured-output.patch", True),
+        ("widget-domain.patch", True),
+        ("tool-read-receipts.patch", True),
+        ("widget-domain.patch", False),
+    ]
 
 
 def test_delete_file_contract_is_part_of_the_108_hash_gated_bridge() -> None:
@@ -1070,6 +1121,19 @@ def test_published_108_default_contract_applies_every_current_patch(tmp_path: Pa
         assert compat.sha256_file(target) == contract["patched"]
         syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
         assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
+    server = (package / "dist" / "server.js").read_text(encoding="utf-8")
+    artifact_tools = (package / "dist" / "artifact-tools.js").read_text(encoding="utf-8")
+    assert "readUtf8Chunk" in server
+    assert "domain: appDomain(config)" in server
+    for retired in (
+        "AUDIT_NONCE_PATTERN",
+        "auditNonce",
+        "writeToolReadReceipt",
+        "auditReceiptId",
+        "assertAuditReadonly",
+    ):
+        assert retired not in server
+    assert "beforeMutation" not in artifact_tools
     assert post_patch_checks == [("oauth", package.resolve()), ("large-read", package.resolve())]
 
 

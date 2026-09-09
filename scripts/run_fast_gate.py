@@ -21,13 +21,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 FAST_TARGETS = [
+    "tests/test_temporary_personalization.py",
+    "tests/test_oracle_personalization_patch.py",
+    "tests/test_oracle_package_discovery.py",
+    "tests/test_chatgpt_oracle_execute.py",
+    "tests/test_chatgpt_oracle_dispatch.py",
     "tests/test_chatgpt_oracle_state.py",
     # The full runner module now contains hundreds of exhaustive lifecycle
     # contradiction permutations and takes about 65 seconds by itself.  Keep a
     # bounded cross-section of the launch, ownership, read-gate, completion,
     # restart, and recovery contracts here; the full v4/CI suite still runs
     # every permutation.
-    "tests/test_chatgpt_oracle_run.py::test_default_oracle_command_is_pinned_to_the_hash_validated_version",
+    "tests/test_chatgpt_oracle_run.py::test_explicit_oracle_command_validation_keeps_current_and_lkg_pins",
     "tests/test_chatgpt_oracle_run.py::test_conversation_url_helpers_preserve_exact_binding_and_detect_conflicts",
     "tests/test_chatgpt_oracle_run.py::test_new_runs_use_dynamic_cdp_port_instead_of_global_9222",
     "tests/test_chatgpt_oracle_run.py::test_fresh_execution_binds_runtime_task_but_plain_manifest_loading_stays_unbound",
@@ -60,6 +65,9 @@ FAST_TARGETS = [
     "tests/test_release_packaging.py",
     "tests/test_docs_contract.py",
     "tests/test_codex_web_gpt_onboarding.py",
+    "tests/test_onboarding_ui.py",
+    "tests/test_oracle_startup_hygiene.py",
+    "tests/test_oracle_runtime.py",
     "tests/test_codex_global_agents_setup.py",
     "tests/test_codex_runtime_identity.py",
     "tests/test_codexpro_cloudflared_launchd.py",
@@ -108,8 +116,15 @@ def run_fast_gate(*, budget_seconds: float = DEFAULT_BUDGET_SECONDS) -> dict[str
             cwd=str(ROOT),
             check=False,
             env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             **_hidden_process_kwargs(),
         )
+        if completed.stdout:
+            print(completed.stdout, end="", flush=True)
         elapsed = time.monotonic() - started
     return {
         "exit_code": int(completed.returncode),

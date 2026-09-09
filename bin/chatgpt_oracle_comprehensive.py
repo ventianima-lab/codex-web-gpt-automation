@@ -3155,7 +3155,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         else:
             if args.manifest is None:
                 raise WorkflowError("--manifest is required unless --cancel-user-stopped is selected")
-            value = run_workflow(args.manifest, dry_run=args.dry_run)
+            raise WorkflowError("new comprehensive-mode runs are retired; use chatgpt_oracle_run.py execute with one mission")
     except Exception as exc:
         value = {"ok": False, "error": {"code": "ORACLE_COMPREHENSIVE_FAILED", "message": str(exc)}}
     print(json.dumps(value, ensure_ascii=False, indent=2))
