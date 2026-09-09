@@ -1,5 +1,23 @@
 # 기술 변경 기록
 
+## 2.0.1 - Oracle 0.20 and single-tab temporary chats
+
+- Promote official `@steipete/oracle@0.20.0` with its published npm integrity
+  and exact critical-file hashes. Retire the large 0.18 selector/lifecycle
+  patches; retain only narrow Korean Latest and four-tier quota compatibility
+  until upstream supports those observed layouts. Unknown source hashes fail closed.
+- Pass Oracle's native `model=latest`, `model_strategy=select`, and Pro effort
+  directly. The retired `gpt-5.6-sol/current` carrier remains only in persisted
+  historical recovery records.
+- Keep temporary-chat personalization as a wrapper preflight, normalize restore
+  state only in the owned copied profile, launch the temporary-chat URL directly,
+  and attach Oracle to that exact tab with `--browser-tab`. Startup blank cleanup
+  precedes any model/effort check that could fail. Account settings, the login seed, unrelated tabs, and foreign
+  browser processes remain untouched.
+- Keep DevSpace on official stable `1.0.8` (npm `latest`); its bounded workspace,
+  OAuth, large-read, and receipt patches remain because they are unrelated to
+  Oracle model selection. `1.1.0-beta.1` is not promoted as a stable update.
+
 ## 2.0.0 - One lean execution flow
 
 - Final 2.0.0 review hardening binds a discovered absolute Node executable into

@@ -271,7 +271,7 @@ def onboarding_plan(
                 [
                     "npx",
                     "--yes",
-                    "@steipete/oracle@0.18.0",
+                    "@steipete/oracle@0.20.0",
                     "--engine",
                     "browser",
                     "--browser-manual-login",
@@ -1322,7 +1322,7 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
     install_flag = " --enable-local-multi-gpt" if state.get("enable_local_multi_gpt") else ""
     profile = str(Path.home() / ".oracle" / "browser-profile")
     oracle_login = _quoted_command([
-        "npx", "--yes", "@steipete/oracle@0.18.0", "--engine", "browser",
+        "npx", "--yes", "@steipete/oracle@0.20.0", "--engine", "browser",
         "--browser-manual-login", "--browser-keep-browser",
         "--browser-manual-login-profile-dir", profile, "-p", "HI",
     ])

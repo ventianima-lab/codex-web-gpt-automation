@@ -20,7 +20,7 @@ Oracle and DevSpace use a **newest validated stable** policy.
 - Concretely, detection is due within 6 hours, the maintainer claims validation within 24 hours, and
   a clean patch/minor targets release plus local deployment within 48 hours. The target pauses at a
   real gate; it never converts a failed or missing check into approval.
-- Promotion requires the published archive integrity, exact package tree and patch hashes,
+- Promotion requires the published archive integrity, exact package tree and pristine-or-patch hashes,
   Node syntax, focused compatibility tests, an Oracle no-submission canary, DevSpace local/public
   health and large-read/root canaries, Windows/macOS/Linux CI, review, and a normal release.
 - Access checks follow [the shared automation policy](AUTOMATION_POLICY.md).
@@ -52,8 +52,13 @@ Current runtime contract:
 
 | Runtime | Current | Rollback LKG |
 | --- | --- | --- |
-| Oracle | `0.18.0` | `0.17.1` |
+| Oracle | `0.20.0` (Korean Latest / quota UI compatibility only) | `0.17.1` |
 | DevSpace | `1.0.8` | `1.0.7` |
+
+Oracle's Korean Latest correction is tracked in [upstream PR #471](https://github.com/steipete/oracle/pull/471).
+It is not included in the published 0.20.0 archive. Keep the narrow compatibility
+fix until a released version passes the same Korean-label and quota-layout checks.
+The four-tier effort regression is tracked in [upstream issue #472](https://github.com/steipete/oracle/issues/472).
 
 DevSpace `1.0.8` includes an optional local-agent daemon and provider CLI
 adapters. The managed ChatGPT workspace service explicitly sets

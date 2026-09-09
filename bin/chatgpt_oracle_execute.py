@@ -38,8 +38,6 @@ DEFAULT_MODEL = "latest"
 DEFAULT_EFFORT = "pro"
 SUPPORTED_MODELS = ("latest", "gpt-5.6-sol")
 SUPPORTED_EFFORTS = ("pro", "extra-high")
-ORACLE_CARRIER_MODEL = "gpt-5.6-sol"
-ORACLE_CURRENT_STRATEGY = "current"
 ORACLE_EXPLICIT_STRATEGY = "select"
 TERMINAL_ORACLE_STATES = frozenset({"complete", "completed", "done", "finished"})
 UNRESOLVED_STATUSES = frozenset({"prepared", "running", "attention_required"})
@@ -51,6 +49,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 PICKER_PROOF_PREFIX = "[browser] Picker DOM proof:"
 MODEL_EVIDENCE_PREFIX = "[browser] Model selection evidence:"
 THINKING_PREFIX = "[browser] Thinking time:"
+THINKING_EVIDENCE_PREFIX = "[browser] Thinking effort evidence:"
 ALLOWED_MANIFEST_FIELDS = frozenset(
     {
         "schema",
@@ -270,7 +269,7 @@ def public_contract(config: ExecutionConfig) -> dict[str, Any]:
         "model": config.model,
         "effort": config.effort,
         "app_name": config.app_name,
-        "oracle_carrier": {"model": ORACLE_CARRIER_MODEL, "model_strategy": _model_strategy(config.model)},
+        "oracle_request": {"model": config.model, "model_strategy": _model_strategy(config.model)},
         "chatgpt_url": CHATGPT_URL,
         "archive": "never",
         "temporary_chat": True,
@@ -279,7 +278,7 @@ def public_contract(config: ExecutionConfig) -> dict[str, Any]:
 
 
 def _model_strategy(model: str) -> str:
-    return ORACLE_CURRENT_STRATEGY if model == "latest" else ORACLE_EXPLICIT_STRATEGY
+    return ORACLE_EXPLICIT_STRATEGY
 
 
 def _composer_prompt(config: ExecutionConfig) -> str:
@@ -308,20 +307,34 @@ def build_oracle_argv(
     slug: str,
     *,
     cdp_port: int | None = None,
+    browser_tab: str | None = None,
 ) -> list[str]:
+    if browser_tab is not None and (
+        cdp_port is None or TARGET_ID_RE.fullmatch(browser_tab) is None
+    ):
+        raise ExecutionError("ORACLE_BROWSER_TAB_INVALID", "browser_tab requires an exact remote Chrome target")
+    browser_args = (
+        [
+            "--remote-chrome", f"127.0.0.1:{cdp_port}",
+            *(["--browser-tab", browser_tab] if browser_tab is not None else []),
+        ]
+        if cdp_port is not None
+        else [
+            "--browser-manual-login",
+            "--browser-keep-browser",
+            "--browser-hide-window",
+            "--browser-manual-login-profile-dir", str(output_path.parent / "browser-profile"),
+        ]
+    )
     return [
         *command,
         "--engine", "browser",
-        "--model", ORACLE_CARRIER_MODEL,
+        "--model", config.model,
         "--browser-model-strategy", _model_strategy(config.model),
         "--browser-thinking-time", config.effort,
         "--chatgpt-url", CHATGPT_URL,
         "--browser-archive", "never",
-        "--browser-manual-login",
-        "--browser-keep-browser",
-        "--browser-hide-window",
-        "--browser-manual-login-profile-dir", str(output_path.parent / "browser-profile"),
-        *(["--browser-port", str(cdp_port)] if cdp_port is not None else []),
+        *browser_args,
         "--browser-timeout", "100m",
         "--verbose",
         "--slug", slug,
@@ -382,8 +395,8 @@ def _initial_state(
             "model": config.model,
             "effort": config.effort,
             "app_name": config.app_name,
-            "carrier_model": ORACLE_CARRIER_MODEL,
-            "carrier_strategy": _model_strategy(config.model),
+            "requested_model": config.model,
+            "model_strategy": _model_strategy(config.model),
         },
         "status": "prepared",
         "submission": "not_observed",
@@ -642,7 +655,59 @@ def _selected_latest_row(rows: Any) -> bool:
 def observed_model_check(stdout_path: Path, *, model: str, effort: str) -> dict[str, Any]:
     lines = _clean_lines(stdout_path)
     expected_ordinal = 5 if effort == "pro" else 4
+    if model in SUPPORTED_MODELS:
+        model_line = next((line for line in reversed(lines) if MODEL_EVIDENCE_PREFIX in line), "")
+        thinking_line = next((line for line in reversed(lines) if THINKING_EVIDENCE_PREFIX in line), "")
+
+        def fields(line: str, prefix: str) -> dict[str, str]:
+            payload = line.split(prefix, 1)[1].strip() if prefix in line else ""
+            return {
+                key.strip(): value.strip()
+                for part in payload.split(";")
+                if "=" in part
+                for key, value in [part.split("=", 1)]
+            }
+
+        model_evidence = fields(model_line, MODEL_EVIDENCE_PREFIX)
+        thinking_evidence = fields(thinking_line, THINKING_EVIDENCE_PREFIX)
+        expected_effort_labels = (
+            {"pro"}
+            if effort == "pro"
+            else {"extrahigh", "sehrhoch", "非常に高い", "極高", "极高", "매우높음"}
+        )
+        native_verified = bool(
+            # Oracle normalizes the public 'latest' alias before formatting logs.
+            model_evidence.get("requestedKey", "").casefold() in (
+                {"latest", "gpt-6-astra"} if model == "latest" else {"gpt-5.6-sol"}
+            )
+            and re.sub(r"\s+", "", model_evidence.get("target", "")).casefold() == (
+                "latest" if model == "latest" else "gpt-5.6sol"
+            )
+            and model_evidence.get("resolvedLabel", "").strip() in (
+                {"Latest", "最新", "최신"} if model == "latest" else {"GPT-5.6 Sol"}
+            )
+            and model_evidence.get("status") in {"already-selected", "switched"}
+            and model_evidence.get("strategy") == "select"
+            and model_evidence.get("verified") == "yes"
+            and model_evidence.get("source") == "chatgpt-model-picker"
+            and thinking_evidence.get("requestedLevel") == effort
+            and thinking_evidence.get("status") in {"already-selected", "switched"}
+            and re.sub(r"\s+", "", thinking_evidence.get("resolvedLabel", "")).casefold() in expected_effort_labels
+            and thinking_evidence.get("verified") == "yes"
+            and thinking_evidence.get("source") == "chatgpt-thinking-picker"
+        )
+        if native_verified:
+            return {
+                "verified": True,
+                "model": model,
+                "actual_model": "6 Pro" if model == "latest" and effort == "pro" else None,
+                "effort": effort,
+                "source": "oracle-native-selection-log",
+            }
+
     if model == "latest":
+        # Historical patched Oracle releases emitted one combined DOM proof.
+        # Keep accepting it for recovery runs, after preferring 0.20's native evidence.
         for line in reversed(lines):
             if PICKER_PROOF_PREFIX not in line:
                 continue
@@ -770,7 +835,20 @@ def _finalize_capture(
     session = _session_meta(str((state.get("oracle") or {}).get("slug") or ""))
     binding = _binding_from_meta(*session) if session else None
     expected_port = int((state.get("oracle") or {}).get("expected_cdp_port") or 0)
-    if binding and binding.get("port") != expected_port:
+    preflight = state.get("personalization_preflight")
+    if isinstance(preflight, dict):
+        try:
+            preflight_port = int(preflight.get("port") or 0)
+        except (TypeError, ValueError):
+            preflight_port = 0
+        preflight_target = str(preflight.get("target_id") or "")
+        if binding and (
+            binding.get("port") != expected_port
+            or binding.get("port") != preflight_port
+            or binding.get("target_id") != preflight_target
+        ):
+            binding = None
+    elif binding and binding.get("port") != expected_port:
         binding = None
     capture = _capture(output_path)
     selection = state["selection"]
@@ -798,7 +876,7 @@ def _finalize_capture(
     )
     # Persist the complete capture evidence before touching the browser target.
     _write_json_atomic(state_path, state)
-    if not captured or binding is None:
+    if not captured or binding is None or isinstance(preflight, dict):
         return state
     close_result = tab_closer(binding)
     state["tab_close"] = close_result
@@ -810,8 +888,8 @@ def _finalize_capture(
 
 def _child_environment() -> dict[str, str]:
     environment = dict(os.environ)
-    environment["CODEX_ORACLE_TEMPORARY_PERSONALIZATION"] = "enabled"
-    environment["CODEX_ORACLE_TEMPORARY_PERSONALIZATION_HELPER"] = Path(__file__).with_name("oracle_temporary_personalization.mjs").resolve().as_uri()
+    environment.pop("CODEX_ORACLE_TEMPORARY_PERSONALIZATION", None)
+    environment.pop("CODEX_ORACLE_TEMPORARY_PERSONALIZATION_HELPER", None)
     for key in (
         "ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT",
         "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES",
@@ -819,6 +897,89 @@ def _child_environment() -> dict[str, str]:
     ):
         environment.pop(key, None)
     return environment
+
+
+def _start_personalized_browser(
+    command: Sequence[str],
+    profile_path: Path,
+    cdp_port: int,
+    *,
+    run_factory: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any]:
+    if len(command) < 2:
+        raise ExecutionError("ORACLE_COMMAND_INVALID", "the resolved Oracle command has no package entry point")
+    node = Path(command[0]).expanduser().resolve()
+    entry = Path(command[1]).expanduser().resolve()
+    package_root = entry.parents[2]
+    helper = Path(__file__).with_name("oracle_temporary_personalization_preflight.mjs").resolve()
+    completed = run_factory(
+        [str(node), str(helper), str(package_root), str(Path(__file__).with_name("oracle_temporary_personalization.mjs").resolve()),
+         str(profile_path.resolve()), str(cdp_port), CHATGPT_URL],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=120,
+        **_subprocess_kwargs(),
+    )
+    if completed.returncode != 0:
+        raise ExecutionError(
+            "TEMPORARY_PERSONALIZATION_UNCONFIRMED",
+            "temporary-chat personalization could not be confirmed before submission",
+            {"detail": (completed.stderr or completed.stdout).strip()[-1200:]},
+        )
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ExecutionError("TEMPORARY_PERSONALIZATION_UNCONFIRMED", "personalization preflight returned invalid evidence") from exc
+    if (
+        not isinstance(result, dict)
+        or result.get("ok") is not True
+        or int(result.get("port") or 0) != cdp_port
+        or int(result.get("pid") or 0) <= 0
+        or not TARGET_ID_RE.fullmatch(str(result.get("target_id") or ""))
+        or not str(result.get("conversation_url") or "").startswith("https://chatgpt.com/")
+        or not str(result.get("browser_ws") or "").startswith(f"ws://127.0.0.1:{cdp_port}/")
+    ):
+        raise ExecutionError("TEMPORARY_PERSONALIZATION_UNCONFIRMED", "personalization preflight evidence is incomplete")
+    return result
+
+
+def _cleanup_personalized_browser(
+    preflight: Mapping[str, Any],
+    command: Sequence[str],
+    *,
+    expected_url: str | None = None,
+    run_factory: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any]:
+    binding = {
+        "port": int(preflight.get("port") or 0),
+        "target_id": str(preflight.get("target_id") or ""),
+        "conversation_url": str(expected_url or preflight.get("conversation_url") or ""),
+    }
+    helper = Path(__file__).with_name("oracle_temporary_personalization_preflight.mjs").resolve()
+    completed = run_factory(
+        [str(Path(command[0]).expanduser().resolve()), str(helper), "--close", str(binding["port"]),
+         str(preflight.get("browser_ws") or ""), binding["target_id"], binding["conversation_url"]],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=15,
+        **_subprocess_kwargs(),
+    )
+    if completed.returncode != 0:
+        return {"status": "browser-close-unconfirmed",
+                "detail": (completed.stderr or completed.stdout).strip()[-800:]}
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return {"status": "browser-close-unconfirmed", "detail": "cleanup helper returned invalid evidence"}
+    if not isinstance(result, dict) or result.get("ok") is not True or result.get("closed") is not True:
+        return {"status": "browser-close-unconfirmed", "detail": "cleanup helper did not confirm browser closure"}
+    return {"status": "closed", "target_id": binding["target_id"]}
 
 
 def _prepare_run_profile(config: ExecutionConfig, run_dir: Path) -> Path:
@@ -865,6 +1026,8 @@ def execute_config(
     compat_factory: Callable[..., Mapping[str, Any]] = COMPAT.ensure_oracle_compatibility,
     popen_factory: Callable[..., Any] = subprocess.Popen,
     tab_closer: Callable[[Mapping[str, Any]], dict[str, Any]] = close_owned_tab,
+    browser_preflight: Callable[[Sequence[str], Path, int], dict[str, Any]] = _start_personalized_browser,
+    browser_cleanup: Callable[..., dict[str, Any]] = _cleanup_personalized_browser,
 ) -> dict[str, Any]:
     logical_command = ["npx", "-y", f"@steipete/oracle@{RUNTIME.SUPPORTED_VERSION}"]
     run_dir = config.run_root / config.run_id
@@ -909,7 +1072,6 @@ def execute_config(
         command = command_resolver()
         version = version_resolver(command)
         compat_factory(version, **COMPAT.node_runtime_kwargs(command))
-        argv = build_oracle_argv(config, command, output_path, slug, cdp_port=cdp_port)
         run_dir.mkdir(parents=True, exist_ok=False)
         state_path = run_dir / "state.json"
         stdout_path = run_dir / "stdout.log"
@@ -919,10 +1081,21 @@ def execute_config(
         stdout_path.touch()
         stderr_path.touch()
         launch_attempted = False
+        preflight: dict[str, Any] | None = None
         try:
-            _prepare_run_profile(config, run_dir)
+            profile_path = _prepare_run_profile(config, run_dir)
+            preflight = browser_preflight(command, profile_path, cdp_port)
+            state["personalization_preflight"] = preflight
+            _write_json_atomic(state_path, state)
+            argv = build_oracle_argv(
+                config,
+                command,
+                output_path,
+                slug,
+                cdp_port=cdp_port,
+                browser_tab=str(preflight["target_id"]),
+            )
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-                launch_attempted = True
                 process = popen_factory(
                     argv,
                     cwd=str(config.project_root),
@@ -933,10 +1106,13 @@ def execute_config(
                     shell=False,
                     **_subprocess_kwargs(),
                 )
+                launch_attempted = True
                 state.update({"status": "running", "submission": "unknown", "oracle_process_pid": getattr(process, "pid", None)})
                 _write_json_atomic(state_path, state)
                 state["exit_code"] = int(process.wait())
         except Exception as exc:
+            if preflight is not None and not launch_attempted:
+                state["browser_cleanup"] = browser_cleanup(preflight, command)
             state.update({"status": "attention_required",
                           "submission": "unknown" if launch_attempted else "not_observed",
                           "failure_stage": "oracle-launch-or-observation" if launch_attempted else "profile-preparation",
@@ -950,6 +1126,16 @@ def execute_config(
             output_path=output_path,
             tab_closer=tab_closer,
         )
+        if state["status"] == "captured" and preflight is not None:
+            cleanup = browser_cleanup(
+                preflight,
+                command,
+                expected_url=str(state["oracle"]["binding"]["conversation_url"]),
+            )
+            state["browser_cleanup"] = cleanup
+            if cleanup.get("status") != "closed":
+                state["status"] = "attention_required"
+            _write_json_atomic(state_path, state)
         return {"ok": state["status"] == "captured", "status": state["status"], "run_dir": str(run_dir), "result": state}
 
 
@@ -963,6 +1149,7 @@ def reconnect_run(
     dry_run: bool = False,
     popen_factory: Callable[..., Any] = subprocess.Popen,
     tab_closer: Callable[[Mapping[str, Any]], dict[str, Any]] = close_owned_tab,
+    browser_cleanup: Callable[..., dict[str, Any]] = _cleanup_personalized_browser,
 ) -> dict[str, Any]:
     directory = _absolute_path(run_dir, label="run_dir", must_exist=True)
     state_path = directory / "state.json"
@@ -970,6 +1157,7 @@ def reconnect_run(
         return _reconnect_locked(
             directory, state_path, _load_state(state_path), dry_run=True,
             popen_factory=popen_factory, tab_closer=tab_closer,
+            browser_cleanup=browser_cleanup,
         )
     with _exact_run_lock(directory):
         state = _load_state(state_path)
@@ -980,6 +1168,7 @@ def reconnect_run(
             dry_run=dry_run,
             popen_factory=popen_factory,
             tab_closer=tab_closer,
+            browser_cleanup=browser_cleanup,
         )
 
 
@@ -991,6 +1180,7 @@ def _reconnect_locked(
     dry_run: bool,
     popen_factory: Callable[..., Any],
     tab_closer: Callable[[Mapping[str, Any]], dict[str, Any]],
+    browser_cleanup: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     owner = str(state.get("source_thread_id") or "").strip().casefold()
     current = str(os.environ.get("CODEX_THREAD_ID") or "").strip().casefold()
@@ -1046,4 +1236,15 @@ def _reconnect_locked(
         output_path=output_path,
         tab_closer=tab_closer,
     )
+    preflight = state.get("personalization_preflight")
+    if state["status"] == "captured" and isinstance(preflight, dict):
+        cleanup = browser_cleanup(
+            preflight,
+            command,
+            expected_url=str(state["oracle"]["binding"]["conversation_url"]),
+        )
+        state["browser_cleanup"] = cleanup
+        if cleanup.get("status") != "closed":
+            state["status"] = "attention_required"
+        _write_json_atomic(state_path, state)
     return {"ok": state["status"] == "captured", "status": state["status"], "run_dir": str(directory), "result": state}

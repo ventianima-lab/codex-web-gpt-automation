@@ -38,7 +38,7 @@ CodexPro is frozen for new work. Never mention it in a new mission, probe its
 endpoint, repair/register/delete its app, or use it as a DevSpace fallback.
 
 Oracle explicitly selects `GPT-5.6 Sol` and `extra-high`, verifies the visible
-`Extra High` tier before prompt send, and records both in Oracle evidence. The exact 0.18.0
+`Extra High` tier before prompt send, and records both in Oracle evidence. The exact 0.20.0
 compatibility layer is hash-gated and fails closed on an unknown version or
 third-party file. Never invent xhigh or silently downgrade.
 

@@ -26,8 +26,8 @@ def test_install_includes_all_current_and_migration_patches() -> None:
                 assert relative in shipped, relative
 
 
-@pytest.mark.parametrize('synchronous_kill', [False, True])
-def test_no_submit_receipt_collision_still_cleans_profile(tmp_path: Path, synchronous_kill: bool) -> None:
+@pytest.mark.parametrize('has_preferences', [False, True])
+def test_no_submit_receipt_collision_still_cleans_profile(tmp_path: Path, has_preferences: bool) -> None:
     node = shutil.which('node')
     if not node:
         pytest.skip('Node unavailable')
@@ -35,47 +35,99 @@ def test_no_submit_receipt_collision_still_cleans_profile(tmp_path: Path, synchr
     browser = package / 'dist/src/browser'
     (browser / 'actions').mkdir(parents=True)
     (package / 'package.json').write_text(json.dumps({
-        'name': '@steipete/oracle', 'version': '0.18.0', 'type': 'module',
+        'name': '@steipete/oracle', 'version': '0.20.0', 'type': 'module',
     }), encoding='utf-8')
-    (browser / 'chromeLifecycle.js').write_text('export {};', encoding='utf-8')
-    (browser / 'actions/thinkingTime.js').write_text('export async function ensureThinkingTime() {}', encoding='utf-8')
-    (browser / 'profileCopy.js').write_text(
-        "import {writeFile} from 'node:fs/promises'; import path from 'node:path'; "
-        "export async function copyChromeProfile(seed, target) { "
-        "await writeFile(path.join(target, 'Cookies'), 'private fixture'); throw Error('copy failed'); }",
-        encoding='utf-8',
-    )
-    if synchronous_kill:
-        (tmp_path / 'Default').mkdir()
-        (tmp_path / 'Default/Preferences').write_text('{}', encoding='utf-8')
-        (browser / 'profileCopy.js').write_text(
-            "import {mkdir, writeFile} from 'node:fs/promises'; import path from 'node:path'; "
-            "export async function copyChromeProfile(seed, target) { "
-            "await mkdir(path.join(target, 'Default')); "
-            "await writeFile(path.join(target, 'Default', 'Preferences'), '{}'); return 'Default'; }",
-            encoding='utf-8',
-        )
-        (browser / 'chromeLifecycle.js').write_text(
-            "import {writeFile} from 'node:fs/promises'; import path from 'node:path'; "
-            "export async function prepareCopiedProfileStartup(config, target) { "
-            "await writeFile(path.join(target, 'Default', 'Preferences'), JSON.stringify({"
-            "profile:{exit_type:'Normal',exited_cleanly:true},session:{restore_on_startup:5,startup_urls:[]}})); } "
-            "export async function launchChrome() { return {pid: 123, port: 999, kill() {}}; } "
-            "export async function connectWithNewTab() { throw Error('connection failed'); }",
-            encoding='utf-8',
-        )
+    seed = tmp_path / 'seed'
+    seed.mkdir()
+    (seed / 'Cookies').write_bytes(b'private fixture')
+    if has_preferences:
+        (seed / 'Default').mkdir()
+        (seed / 'Default/Preferences').write_text('{}', encoding='utf-8')
     temporary = tmp_path / 'temporary'
     temporary.mkdir()
     receipt = tmp_path / 'receipt.json'
     receipt.write_text('preserve original', encoding='utf-8')
     environment = {**os.environ, 'TEMP': str(temporary), 'TMP': str(temporary), 'TMPDIR': str(temporary)}
     result = subprocess.run([node, str(ROOT / 'scripts/verify_oracle_browser_startup.mjs'),
-                             str(package), str(tmp_path), str(receipt)],
+                             str(package), str(seed), str(receipt)],
                             env=environment, capture_output=True, text=True, timeout=30)
     assert result.returncode != 0
     assert 'EEXIST' in result.stderr
     assert receipt.read_text(encoding='utf-8') == 'preserve original'
     assert list(temporary.iterdir()) == []
+
+
+@pytest.mark.parametrize('failure', ['none', 'ready', 'personalization', 'deadline'])
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
+def test_single_startup_tab_cleanup_precedes_failing_checks(failure: str, platform: str) -> None:
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node unavailable')
+    module = (ROOT / 'bin/oracle_temporary_personalization_preflight.mjs').as_uri()
+    script = r"""
+import assert from 'node:assert/strict';
+const {startPersonalizedBrowser} = await import(MODULE);
+const url='https://chatgpt.com/?temporary-chat=true';
+let pages=[{id:'owned',type:'page',url},{id:'startup-blank',type:'page',url:'about:blank'}];
+let kills=0, closes=0, opts, promptChecks=0, personalized=false, hidden=0;
+const client={Page:{enable:async()=>{}},Runtime:{enable:async()=>{},evaluate:async()=>({result:{value:url}})},
+ close:async()=>{closes++},Emulation:{setFocusEmulationEnabled:async()=>{}}};
+class Launcher {
+ constructor(options){opts=options;this.port=12345;this.pid=321;}
+ async launch(){}
+ kill(){kills++;}
+}
+const deps={Launcher,pause:async()=>{},
+ jsonAt:async(port,resource)=>resource==='list'?pages:{webSocketDebuggerUrl:'ws://127.0.0.1:12345/devtools/browser/exact'},
+ lifecycle:{buildChromeFlagsForTest:()=>[],resolveChromeLaunchOptionsForTest:flags=>({chromeFlags:flags,ignoreDefaultFlags:true}),
+ positionChromeWindowOffscreen:async()=>{hidden++;},
+ connectToRemoteChromeTarget:async(host,port,log,options)=>{assert.equal(options.targetId,'owned');return {client,targetId:'owned'};},
+ closeBlankChromeTabs:async(port,log,host,options)=>{
+  assert.equal(options.preserveOneBlank,false);assert.deepEqual(options.excludeTargetIds,['owned']);pages=pages.filter(t=>t.id!=='startup-blank');
+ }},
+ ensurePromptReady:async()=>{assert.equal(pages.length,1);promptChecks++;if(FAILURE==='deadline')await new Promise(()=>{});if(FAILURE==='ready')throw Error('ready failed');},
+ ensureChatMode:async()=>{},
+ ensureTemporaryChatPersonalization:async()=>{assert.equal(pages.length,1);if(FAILURE==='personalization')throw Error('personalization failed');personalized=true;}
+};
+try {
+ const session=await startPersonalizedBrowser({port:12345,url,profilePath:'owned-copy',startupTimeoutMs:100,platform:PLATFORM},deps);
+ assert.equal(FAILURE,'none');assert.equal(session.evidence.target_id,'owned');
+ assert.equal(session.evidence.page_count,1);assert.equal(session.evidence.startup_blank_tabs,0);
+ assert.equal(personalized,true);assert.equal(kills,0);
+} catch(error){assert.notEqual(FAILURE,'none',error.stack);assert.match(error.message,/failed|deadline/);assert.equal(kills,1);assert.equal(closes,1);}
+assert.equal(opts.startingUrl,url);assert.ok(opts.chromeFlags.includes('--hide-crash-restore-bubble'));
+assert.equal(pages.length,1);assert.ok(promptChecks>0);
+assert.equal(hidden,PLATFORM==='darwin'?1:0);
+""".replace('MODULE', json.dumps(module)).replace('FAILURE', json.dumps(failure)).replace('PLATFORM', json.dumps(platform))
+    result = subprocess.run([node, '--input-type=module', '-e', script], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('mismatch', ['none', 'browser', 'target', 'url', 'extra-page'])
+def test_browser_close_checks_exact_identity_and_tabs(mismatch: str) -> None:
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node unavailable')
+    module = (ROOT / 'bin/oracle_temporary_personalization_preflight.mjs').as_uri()
+    script = r"""
+import assert from 'node:assert/strict';
+const {closePersonalizedBrowser} = await import(MODULE);
+let sent=0;
+const ws='ws://127.0.0.1:12345/devtools/browser/exact',url='https://chatgpt.com/?temporary-chat=true';
+const page={targetId:MISMATCH==='target'?'foreign':'owned',type:'page',url:MISMATCH==='url'?'https://example.test':url};
+globalThis.fetch=async resource=>({ok:true,json:async()=>String(resource).endsWith('/version')?
+ {webSocketDebuggerUrl:MISMATCH==='browser'?'ws://foreign':ws}:
+ (MISMATCH==='extra-page'?[page,{id:'extra',type:'page',url:'about:blank'}]:[page])});
+globalThis.WebSocket=class extends EventTarget {
+ constructor(){super();queueMicrotask(()=>this.dispatchEvent(new Event('open')));}
+ send(value){const request=JSON.parse(value);let result={};if(request.id===1){assert.equal(request.method,'Target.getTargets');result={targetInfos:MISMATCH==='extra-page'?[page,{targetId:'extra',type:'page',url:'about:blank'}]:[page]};}else{assert.equal(request.method,'Browser.close');sent++;}queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({id:request.id,result})})));}
+ close(){}
+};
+if(MISMATCH==='none'){assert.equal((await closePersonalizedBrowser(12345,ws,'owned',url)).closed,true);assert.equal(sent,1);}
+else {await assert.rejects(closePersonalizedBrowser(12345,ws,'owned',url),/refusing/);assert.equal(sent,0);}
+""".replace('MODULE', json.dumps(module)).replace('MISMATCH', json.dumps(mismatch))
+    result = subprocess.run([node, '--input-type=module', '-e', script], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
 
 
 def test_owned_browser_startup_preserves_seed_and_unrelated_tabs(tmp_path: Path) -> None:

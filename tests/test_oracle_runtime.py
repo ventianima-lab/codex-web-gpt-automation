@@ -26,7 +26,7 @@ def oracle_package(
     root: Path,
     *,
     name: str = "@steipete/oracle",
-    version: str = "0.18.0",
+    version: str = "0.20.0",
     entry: str = "dist/bin/oracle-cli.js",
 ) -> Path:
     root.mkdir(parents=True)
@@ -36,7 +36,7 @@ def oracle_package(
     )
     executable = root / "dist" / "bin" / "oracle-cli.js"
     executable.parent.mkdir(parents=True)
-    executable.write_text("#!/usr/bin/env node\nconsole.log('0.18.0');\n", encoding="utf-8")
+    executable.write_text(f"#!/usr/bin/env node\nconsole.log('{version}');\n", encoding="utf-8")
     return root
 
 
@@ -58,7 +58,7 @@ def test_thin_path_discovers_the_bundled_codex_node_runtime(tmp_path: Path) -> N
         return completed(list(command), stdout="v24.20.0\n")
 
     command = runtime._resolve_default_oracle_command(
-        package_resolver=lambda version: package if version == "0.18.0" else None,
+        package_resolver=lambda version: package if version == runtime.SUPPORTED_VERSION else None,
         which=lambda _name: None,
         environment={"LOCALAPPDATA": str(local_app_data), "PATH": ""},
         run_factory=runner,
@@ -92,9 +92,9 @@ def test_unicode_and_spaces_remain_separate_absolute_argv(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     ("metadata", "expected_code"),
     [
-        ({"name": "oracle", "version": "0.18.0", "entry": "dist/bin/oracle-cli.js"}, "ORACLE_PACKAGE_IDENTITY_MISMATCH"),
+        ({"name": "oracle", "version": "0.20.0", "entry": "dist/bin/oracle-cli.js"}, "ORACLE_PACKAGE_IDENTITY_MISMATCH"),
         ({"name": "@steipete/oracle", "version": "0.17.1", "entry": "dist/bin/oracle-cli.js"}, "ORACLE_PACKAGE_IDENTITY_MISMATCH"),
-        ({"name": "@steipete/oracle", "version": "0.18.0", "entry": "dist/bin/not-oracle.js"}, "ORACLE_PACKAGE_IDENTITY_MISMATCH"),
+        ({"name": "@steipete/oracle", "version": "0.20.0", "entry": "dist/bin/not-oracle.js"}, "ORACLE_PACKAGE_IDENTITY_MISMATCH"),
     ],
 )
 def test_package_identity_mismatch_fails_closed(
@@ -132,7 +132,7 @@ def test_npx_fallback_is_exact_pinned_offline_and_proven(tmp_path: Path) -> None
 
     def runner(command, **kwargs):
         calls.append((list(command), kwargs))
-        return completed(list(command), stdout="0.18.0\n")
+        return completed(list(command), stdout="0.20.0\n")
 
     command = runtime._resolve_default_oracle_command(
         package_resolver=lambda _version: package,
@@ -142,7 +142,7 @@ def test_npx_fallback_is_exact_pinned_offline_and_proven(tmp_path: Path) -> None
         platform_name="nt",
     )
 
-    assert command == [str(npx.resolve()), "--offline", "--yes", "@steipete/oracle@0.18.0"]
+    assert command == [str(npx.resolve()), "--offline", "--yes", "@steipete/oracle@0.20.0"]
     assert len(calls) == 1
     assert calls[0][0] == [*command, "--version"]
     assert calls[0][1]["env"]["NPM_CONFIG_OFFLINE"] == "true"
@@ -230,4 +230,4 @@ def test_default_manifest_load_remains_logical_and_host_independent(
 
     config = state.load_manifest(manifest, platform_name="nt")
 
-    assert config.oracle_command == ("npx.cmd", "-y", "@steipete/oracle@0.18.0")
+    assert config.oracle_command == ("npx.cmd", "-y", "@steipete/oracle@0.20.0")

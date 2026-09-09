@@ -22,7 +22,7 @@ def test_workspace_setup_uses_shared_lean_access_policy() -> None:
     text = (ROOT / "skills/chatgpt-workspace-setup/SKILL.md").read_text(encoding="utf-8")
     for required in (
         "docs/AUTOMATION_POLICY.md", "one actual requested project read",
-        "model_strategy=current", "thinking_time=pro", "Latest",
+        "native `latest/select`", "Pro effort", "Latest",
         "temporary-chat", "prescribed tool order", "three receipts",
     ):
         assert required in text
@@ -35,7 +35,7 @@ def test_install_docs_reference_common_policy_and_preserve_model_choice() -> Non
     for name in ("FIRST_INSTALL.md", "FIRST_INSTALL.en.md", "INSTALL_AGENT.md"):
         value = (ROOT / "docs" / name).read_text(encoding="utf-8")
         assert "AUTOMATION_POLICY.md" in value
-        assert "model_strategy=current" in value
+        assert "select" in value
         assert "thinking_time=pro" in value
         assert "6 Pro" in value
 

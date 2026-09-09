@@ -18,6 +18,7 @@ import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_compat.py"
 CI_PREP_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare_oracle_018_ci.py"
+CI_PREP_020_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare_oracle_020_ci.py"
 
 
 def load_compat():
@@ -38,6 +39,16 @@ def load_ci_prepare():
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def published_020_root() -> Path:
+    configured = os.environ.get("ORACLE_020_PACKAGE_ROOT", "").strip()
+    if not configured:
+        pytest.skip("published Oracle 0.20.0 package root is unavailable")
+    root = Path(configured).resolve(strict=True)
+    if json.loads((root / "package.json").read_text(encoding="utf-8"))["version"] != "0.20.0":
+        pytest.fail("ORACLE_020_PACKAGE_ROOT must identify exact Oracle 0.20.0")
+    return root
 
 
 def digest(value: bytes) -> str:
@@ -356,11 +367,299 @@ def test_current_oracle_rejects_unvalidated_node_runtime(
         or type("NodeResult", (), {"returncode": returncode, "stdout": stdout})(),
     )
     with pytest.raises(compat.OracleCompatError) as unsupported:
-        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=tmp_path)
+        compat.ensure_oracle_compatibility("oracle 0.20.0", package_root=tmp_path)
     assert unsupported.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
-    assert unsupported.value.evidence["contract"] == "current:0.18.0"
+    assert unsupported.value.evidence["contract"] == "current:0.20.0"
     assert unsupported.value.evidence["required"] == ">=24 <27"
     assert bool(called) is (node is not None)
+
+
+def test_published_0200_applies_only_bounded_compatibility_patches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "oracle-0.20.0"
+    shutil.copytree(published_020_root(), package)
+    monkeypatch.setattr(compat, "_verify_node_runtime", lambda *_args, **_kwargs: None)
+
+    result = compat.ensure_oracle_compatibility(
+        "oracle 0.20.0", package_root=package, backup_root=tmp_path / "backup"
+    )
+
+    assert set(result["changed"]) == set(compat.CURRENT_PATCHES)
+    assert result["already_patched"] == []
+    assert set(result["pristine_verified"]) == set(compat.CURRENT_PRISTINE_FILES)
+    for relative, contract in compat.CURRENT_PATCHES.items():
+        assert compat.sha256_file(package / relative) == contract["patched"]
+    second = compat.ensure_oracle_compatibility(
+        "oracle 0.20.0", package_root=package, backup_root=tmp_path / "backup"
+    )
+    assert second["changed"] == []
+    assert set(second["already_patched"]) == set(compat.CURRENT_PATCHES)
+    model_source = (package / "dist/src/browser/actions/modelSelection.js").read_text(encoding="utf-8")
+    effort_source = (package / "dist/src/browser/actions/thinkingTime.js").read_text(encoding="utf-8")
+    assert 'resolvedLabel.normalize("NFC").trim() === "최신"' in model_source
+    assert "label === 'Latest' || label === '最新' || label === '최신'" in model_source
+    assert 'push("최신", labelTokens)' in model_source
+    assert "targetIsAstraLatest" in effort_source
+    assert "isSolModelPillForLatest" in effort_source
+    assert "maximumAttribute" in effort_source
+    assert "targetIndex > current.maximum" in effort_source
+    assert "requested tier is not offered by this slider" in effort_source
+
+
+def test_published_0200_patch_targets_reject_unknown_hash_before_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "oracle-0.20.0-unknown-patch"
+    shutil.copytree(published_020_root(), package)
+    changed = package / "dist/src/browser/actions/modelSelection.js"
+    changed.write_bytes(changed.read_bytes() + b"\n// local mutation\n")
+    monkeypatch.setattr(compat, "_verify_node_runtime", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(compat.OracleCompatError) as mismatch:
+        compat.ensure_oracle_compatibility(
+            "oracle 0.20.0", package_root=package, backup_root=tmp_path / "backup"
+        )
+
+    assert mismatch.value.code == "ORACLE_FILE_HASH_MISMATCH"
+    assert mismatch.value.evidence["path"] == str(changed.resolve())
+    assert mismatch.value.evidence["expected"] == [
+        compat.CURRENT_PATCHES["dist/src/browser/actions/modelSelection.js"]["pristine"],
+        compat.CURRENT_PATCHES["dist/src/browser/actions/modelSelection.js"]["patched"],
+    ]
+
+
+def test_published_0200_korean_latest_source_fixture_behavior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "oracle-0.20.0-model-source"
+    shutil.copytree(published_020_root(), package)
+    monkeypatch.setattr(compat, "_verify_node_runtime", lambda *_args, **_kwargs: None)
+    compat.ensure_oracle_compatibility(
+        "oracle 0.20.0", package_root=package, backup_root=tmp_path / "backup"
+    )
+    model_source = (package / "dist/src/browser/actions/modelSelection.js").read_text(encoding="utf-8")
+    model_source = model_source.replace(
+        'import { COMPOSER_MODEL_SIGNAL_SELECTOR, MENU_CONTAINER_SELECTOR, MENU_ITEM_SELECTOR, MODEL_BUTTON_SELECTOR, } from "../constants.js";',
+        'const COMPOSER_MODEL_SIGNAL_SELECTOR=""; const MENU_CONTAINER_SELECTOR=""; '
+        'const MENU_ITEM_SELECTOR=""; const MODEL_BUTTON_SELECTOR="";',
+    ).replace(
+        'import { logDomFailure } from "../domDebug.js";',
+        'const logDomFailure=async()=>{};',
+    ).replace(
+        'import { buildClickDispatcher } from "./domEvents.js";',
+        'const buildClickDispatcher=()=>"";',
+    ).replace(
+        'import { throwIfThrottled } from "../chatgptThrottle.js";',
+        'const throwIfThrottled=async()=>{};',
+    ).replace(
+        'import { delay } from "../utils.js";',
+        'const delay=async()=>{};',
+    )
+    model_module = tmp_path / "modelSelection-0200-source.mjs"
+    model_module.write_text(model_source, encoding="utf-8")
+    module_url = model_module.as_uri()
+    script = f"""
+import {{ buildModelMatchersLiteralForTest, buildModelSelectionExpressionForTest,
+  assertResolvedModelSelectionForTest }} from {json.dumps(module_url)};
+const matchers = buildModelMatchersLiteralForTest('Latest');
+let accepted = true;
+try {{ assertResolvedModelSelectionForTest('Latest', '최신'); }} catch {{ accepted = false; }}
+let rejected = false;
+try {{ assertResolvedModelSelectionForTest('Latest', '최신 아님'); }} catch (error) {{
+  rejected = /requires GPT-6 Astra/.test(error.message);
+}}
+const expression = buildModelSelectionExpressionForTest('Latest');
+console.log(JSON.stringify({{
+  token: matchers.labelTokens.includes('최신'),
+  expressionToken: expression.includes('최신'),
+  accepted,
+  rejected,
+}}));
+"""
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        encoding="utf-8",
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "token": True,
+        "expressionToken": True,
+        "accepted": True,
+        "rejected": True,
+    }
+
+
+def test_published_0200_direct_slider_source_fixture_honors_maximum_and_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "oracle-0.20.0-slider-source"
+    shutil.copytree(published_020_root(), package)
+    monkeypatch.setattr(compat, "_verify_node_runtime", lambda *_args, **_kwargs: None)
+    compat.ensure_oracle_compatibility(
+        "oracle 0.20.0", package_root=package, backup_root=tmp_path / "backup"
+    )
+    target = package / "dist/src/browser/actions/thinkingTime.js"
+    source_text = target.read_text(encoding="utf-8")
+    source_text = source_text.replace(
+        'import { MENU_CONTAINER_SELECTOR, MENU_ITEM_SELECTOR, MODEL_BUTTON_SELECTOR, } from "../constants.js";',
+        'const MENU_CONTAINER_SELECTOR="[role=\\"menu\\"]"; '
+        'const MENU_ITEM_SELECTOR="[role=\\"menuitem\\"],[role=\\"menuitemradio\\"]"; '
+        'const MODEL_BUTTON_SELECTOR=".model-button";',
+    ).replace(
+        'import { logDomFailure } from "../domDebug.js";',
+        'const logDomFailure=async()=>{};',
+    ).replace(
+        'import { buildClickDispatcher } from "./domEvents.js";',
+        'const buildClickDispatcher=()=>"";',
+    ).replace(
+        'import { BrowserAutomationError } from "../../oracle/errors.js";',
+        'class BrowserAutomationError extends Error { constructor(message, details) { super(message); this.details=details; } }',
+    )
+    test_module = tmp_path / "thinkingTime-0200-slider-source.mjs"
+    test_module.write_text(source_text, encoding="utf-8")
+    script = f"""
+import {{ buildThinkingTimeExpressionForTest }} from {json.dumps(test_module.as_uri())};
+class FakeElement extends EventTarget {{
+  constructor(text = '', attrs = {{}}) {{ super(); this._text = text; this.attrs = attrs; this.parentElement = null; }}
+  get textContent() {{ return typeof this._text === 'function' ? this._text() : this._text; }}
+  getAttribute(name) {{
+    if (!Object.prototype.hasOwnProperty.call(this.attrs, name)) return null;
+    const value = this.attrs[name];
+    return typeof value === 'function' ? value() : value;
+  }}
+  setAttribute(name, value) {{ this.attrs[name] = String(value); }}
+  getBoundingClientRect() {{ return {{ width: 240, height: 40 }}; }}
+  querySelector() {{ return null; }}
+  querySelectorAll() {{ return []; }}
+  matches(selector) {{ return selector === 'button.__composer-pill' || selector === '.model-button'; }}
+  closest() {{ return this.parentElement; }}
+  contains(node) {{ return node === this || node?.parentElement === this; }}
+  focus() {{}}
+  get isConnected() {{ return true; }}
+}}
+globalThis.HTMLElement = FakeElement;
+globalThis.window = globalThis;
+globalThis.MouseEvent = class extends Event {{ constructor(type, init) {{ super(type, init); }} }};
+globalThis.PointerEvent = globalThis.MouseEvent;
+globalThis.KeyboardEvent = class extends Event {{
+  constructor(type, init) {{ super(type, init); this.key = init.key; this.code = init.code; }}
+}};
+globalThis.dispatchClickSequence = (item) => item.dispatchEvent(new Event('click'));
+const runCase = async (maximum, initial, target) => {{
+  let raw = initial;
+  const labels = ['Light', 'Standard', 'Extended', 'Extra High', 'Pro'];
+  const description = new FakeElement(() => labels[raw]);
+  const thumb = new FakeElement('', {{
+    role: 'slider',
+    'aria-valuemin': '0',
+    'aria-valuemax': String(maximum),
+    'aria-valuenow': () => String(raw),
+  }});
+  const sliderOwner = new FakeElement();
+  const control = new FakeElement('', {{ role: 'menuitem', 'aria-describedby': 'effort-description' }});
+  sliderOwner.parentElement = control;
+  thumb.parentElement = sliderOwner;
+  sliderOwner.querySelector = (selector) => selector.includes('[role="slider"]') ? thumb : null;
+  control.addEventListener('keydown', (event) => {{
+    if (event.key === 'ArrowRight') raw = Math.min(maximum, raw + 1);
+    if (event.key === 'ArrowLeft') raw = Math.max(0, raw - 1);
+  }});
+  const simple = new FakeElement('', {{
+    'data-testid': 'composer-model-picker-slider-simple-view', 'data-active': 'true',
+  }});
+  simple.querySelector = (selector) => selector.includes('[data-model-reasoning-effort-slider]') ? sliderOwner : null;
+  const view = new FakeElement('', {{ 'data-model-selection-view': 'true' }});
+  view.querySelector = (selector) => selector.includes('composer-model-picker-slider-simple-view') ? simple : null;
+  const menu = new FakeElement('Thinking effort', {{
+    role: 'menu', 'data-testid': 'composer-intelligence-picker-content',
+  }});
+  menu.querySelector = (selector) => selector.includes('[data-model-selection-view="true"]') ? view : null;
+  const pill = new FakeElement('Thinking effort', {{
+    'aria-expanded': 'false', 'aria-haspopup': 'menu',
+  }});
+  pill.addEventListener('click', () => pill.setAttribute('aria-expanded', 'true'));
+  globalThis.document = {{
+    body: new FakeElement('body'),
+    getElementById: (id) => id === 'effort-description' ? description : null,
+    querySelector: (selector) => selector === '.model-button' ? null :
+      selector.includes('composer-intelligence-picker-content') ? menu : null,
+    querySelectorAll: (selector) => selector.includes('button.__composer-pill') ? [pill] :
+      selector.includes('[role="menu"]') ? [menu] : [],
+    dispatchEvent: () => true,
+  }};
+  const expression = buildThinkingTimeExpressionForTest(target, 'gpt-5.6-sol');
+  return (await eval(expression));
+}};
+console.log(JSON.stringify({{
+  max3Pro: await runCase(3, 3, 'pro'),
+  max3ExtraHigh: await runCase(3, 2, 'extra-high'),
+  max4Pro: await runCase(4, 3, 'pro'),
+}}));
+"""
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        encoding="utf-8",
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["max3Pro"]["status"] == "option-disabled"
+    assert result["max3Pro"]["maximum"] == 3
+    assert result["max3Pro"]["resolvedState"] == {
+        "label": "Extra High", "index": 3, "level": "extra-high", "maximum": 3
+    }
+    assert "requested tier is not offered by this slider (maximum index 3)" in result["max3Pro"]["notice"]
+    assert result["max3ExtraHigh"] == {
+        "status": "switched",
+        "label": "Extra High",
+        "maximum": 3,
+        "resolvedState": {"label": "Extra High", "index": 3, "level": "extra-high", "maximum": 3},
+    }
+    assert result["max4Pro"] == {
+        "status": "switched",
+        "label": "Pro",
+        "maximum": 4,
+        "resolvedState": {"label": "Pro", "index": 4, "level": "pro", "maximum": 4},
+    }
+
+
+def test_published_0200_pristine_contract_rejects_any_critical_file_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    published = published_020_root()
+    package = tmp_path / "oracle-0.20.0"
+    for relative in ["package.json", *compat.CURRENT_PRISTINE_FILES]:
+        source = published / relative
+        target = package / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    changed = package / "dist/src/browser/chromeLifecycle.js"
+    changed.write_bytes(changed.read_bytes() + b"\n// local mutation\n")
+    monkeypatch.setattr(compat, "_verify_node_runtime", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(compat.OracleCompatError) as mismatch:
+        compat.ensure_oracle_compatibility("oracle 0.20.0", package_root=package)
+
+    assert mismatch.value.code == "ORACLE_PRISTINE_HASH_MISMATCH"
+    assert mismatch.value.evidence["path"] == str(changed.resolve())
 
 
 def test_lkg_recovery_does_not_inherit_current_node_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

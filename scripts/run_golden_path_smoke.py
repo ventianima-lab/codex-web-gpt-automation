@@ -15,6 +15,7 @@ instead of the source tree.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import importlib.util
 import json
 import os
@@ -70,11 +71,26 @@ def run_smoke(*, bin_root: Path) -> dict[str, Any]:
         argv = preview["argv"]
         record("dry_run_preview_ok", bool(preview.get("ok")) and not host_state.exists())
         record("argv_never_submits_files", "--file" not in argv)
-        record("argv_hides_browser_window", argv.count("--browser-hide-window") == 1)
+        record("owned_browser_preflight_shipped", (bin_root / "oracle_temporary_personalization_preflight.mjs").is_file())
         record("argv_selects_a_model", "--model" in argv and "--browser-model-strategy" in argv)
         record("temporary_chat_selected", argv[argv.index("--chatgpt-url") + 1] == executor.CHATGPT_URL)
-        record("profile_supports_reconnect", "--copy-profile" not in argv and "--browser-keep-browser" in argv
-               and "--browser-manual-login-profile-dir" in argv)
+        # Startup now belongs to the wrapper, not Oracle's own browser launcher.
+        target = "A" * 32
+        bound = executor.build_oracle_argv(config, ["oracle"], base / "output.md", "smoke",
+                                          cdp_port=12345, browser_tab=target)
+        record("argv_reuses_preflight_tab", bound[bound.index("--browser-tab") + 1] == target
+               and bound[bound.index("--remote-chrome") + 1] == "127.0.0.1:12345")
+        seed = base / "seed"
+        (seed / "Default").mkdir(parents=True)
+        seed_preferences = json.dumps({"profile": {"exit_type": "Crashed", "exited_cleanly": False}})
+        (seed / "Default/Preferences").write_text(seed_preferences, encoding="utf-8")
+        copied = executor._prepare_run_profile(replace(config, copy_profile=seed), Path(preview["run_dir"]))
+        prepared = json.loads((copied / "Default/Preferences").read_text(encoding="utf-8"))
+        record("profile_supports_reconnect", copied.is_dir() and "--copy-profile" not in bound
+               and "--browser-manual-login-profile-dir" not in bound
+               and prepared["profile"]["exit_type"] == "Normal"
+               and prepared["session"]["restore_on_startup"] == 5
+               and (seed / "Default/Preferences").read_text(encoding="utf-8") == seed_preferences)
         record("no_archive_phase", argv[argv.index("--browser-archive") + 1] == "never")
     ok = all(item["ok"] for item in checks)
     return {

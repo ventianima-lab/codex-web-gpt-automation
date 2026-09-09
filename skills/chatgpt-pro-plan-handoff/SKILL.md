@@ -29,11 +29,10 @@ Oracle Latest/6 Pro cognitive mission -> native Sol implementation
 -> Astra deterministic/release gate
 ```
 
-The Oracle CLI manifest uses only the validated carrier fields
-`model: gpt-5.6-sol`, `model_strategy: current`, and `thinking_time: pro`.
-`current` is the compatibility carrier for the browser's explicit Latest then
-6 Pro selection; do not pass invented `gpt-6` or `latest` CLI model slugs or
-claim a new Oracle engine.
+The Oracle CLI manifest uses Oracle 0.20.0's native fields
+`model: latest`, `model_strategy: select`, and `thinking_time: pro`.
+The browser explicitly selects Latest then verifies 6 Pro; do not pass an
+invented `gpt-6` model slug or claim a new Oracle engine.
 
 ## Explicit compatibility workflows
 

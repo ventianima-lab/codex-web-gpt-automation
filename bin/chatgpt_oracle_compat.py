@@ -13,11 +13,13 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
-SUPPORTED_VERSION = "0.18.0"
+SUPPORTED_VERSION = "0.20.0"
 LKG_VERSION = "0.17.1"
+PREVIOUS_PATCHED_VERSION = "0.18.0"
 CREATE_NO_WINDOW = 0x08000000
-# Retained only to document the old pre-LKG package lineage. New work uses
-# PATCHES for 0.18.0; exact historical recovery uses LKG_PATCHES for 0.17.1.
+# Retained only to document the old pre-LKG package lineage. New work verifies
+# pristine 0.20.0 bytes; PATCHES is the retired 0.18.0 recovery contract and
+# exact historical recovery uses LKG_PATCHES for 0.17.1.
 # Oracle 0.16.1 is not accepted anymore.
 PATCHES_0161 = {
     "dist/src/cli/browserTabs.js": {
@@ -303,6 +305,32 @@ PATCHES = {
         "patch": "../0.17.1/profileCopy.windows-native.patch",
         "pristine": "06c692861f8a4c1a8769f957b9c582426a13bf4972262c47c1f24a87b239064f",
         "patched": "71459a25b7c46f57bae6f23a5498301f6f6a1d39addf0c1cd4eee1d99b03372c",
+    },
+}
+
+# Oracle 0.20.0 upstream is mostly native for ChatGPT Latest / GPT-6 Astra /
+# verified Pro selection. Keep the six unaffected files below byte-for-byte
+# pristine; two narrowly scoped compatibility contracts cover account-specific
+# Korean Latest labeling and the observed four-position thinking slider.
+CURRENT_PRISTINE_FILES = {
+    "package.json": "6a58ba062b408ef4cc3e4e248477cdcb39f5fb752fadaa63bac2fe7ed4ae30b5",
+    "dist/bin/oracle-cli.js": "a139761f1ff35eb521fb5523928e31babb287549258311d66bd793e26ba2faec",
+    "dist/src/browser/chromeLifecycle.js": "1760b65c8f332fa56498f27d51572124d788dbcfe58a8550dbacdc90fe70386c",
+    "dist/src/browser/index.js": "63d387b2042f93d2d60f928e3f3cb6c52e6a419b75ecdc6ea47c84d50a20c8fb",
+    "dist/src/sessionManager.js": "4f003531d37fbcb4cd1e1d01e6d11df76cf3503d8611ad85e32c58c3943b282d",
+    "dist/src/browser/actions/assistantResponse.js": "37ee8ece58ac9fa81caec0d725c20dfa7062d73d6025942a583327b51cce684e",
+}
+
+CURRENT_PATCHES = {
+    "dist/src/browser/actions/modelSelection.js": {
+        "patch": "modelSelection.korean-latest-label.patch",
+        "pristine": "69128859b347fa45dc4b41714e89c4ea394c839ad6cfccc1e19681f7090b31fc",
+        "patched": "d3ef19a58ce3ac5f35905ece1cba12ecc11d160ee8e15a76213147cefa365fa8",
+    },
+    "dist/src/browser/actions/thinkingTime.js": {
+        "patch": "thinkingTime.direct-slider-account-maximum.patch",
+        "pristine": "15371da2aa8c52811605ac7406e7e0f7a3286c94324bb69933c69f94fdf5e93f",
+        "patched": "cd3f7b5fab388e5cb0fe13ea3358c34a6aef1fdb032f4a4bd445f833f3390bf3",
     },
 }
 
@@ -880,20 +908,52 @@ def ensure_oracle_compatibility(
     backup_root: Path | None = None,
     node_executable: str | None = None,
 ) -> dict[str, Any]:
-    """Apply only the default comprehensive-workflow Oracle contract."""
+    """Verify the six-file current contract and apply bounded 0.20 compatibility patches."""
     version = resolved_version.strip().removeprefix("oracle ").strip()
-    if version not in {SUPPORTED_VERSION, LKG_VERSION}:
+    if version not in {SUPPORTED_VERSION, PREVIOUS_PATCHED_VERSION, LKG_VERSION}:
         raise OracleCompatError(
             "ORACLE_VERSION_UNVALIDATED",
-            "Oracle compatibility is validated only for current and rollback-LKG versions",
-            {"resolved": resolved_version, "supported": [SUPPORTED_VERSION, LKG_VERSION]},
+            "Oracle compatibility is validated only for current pristine and historical recovery versions",
+            {"resolved": resolved_version, "supported": [SUPPORTED_VERSION, PREVIOUS_PATCHED_VERSION, LKG_VERSION]},
         )
     if version == SUPPORTED_VERSION:
         minimum, maximum = CURRENT_NODE_MAJOR_RANGE
         _verify_node_runtime(
             minimum, maximum, contract=f"current:{version}", node_executable=node_executable,
         )
-    contracts = PATCHES if version == SUPPORTED_VERSION else LKG_PATCHES
+        roots = (
+            resolve_package_roots(version)
+            if package_root is None
+            else [package_root.expanduser().resolve(strict=True)]
+        )
+        verified: list[str] = []
+        for root in roots:
+            if package_version(root) != version:
+                raise OracleCompatError(
+                    "ORACLE_VERSION_MISMATCH",
+                    "Oracle package version does not match the resolved CLI version",
+                )
+            for relative, expected in CURRENT_PRISTINE_FILES.items():
+                target = _validated_patch_target(root, relative)
+                actual = sha256_file(target)
+                if actual != expected:
+                    raise OracleCompatError(
+                        "ORACLE_PRISTINE_HASH_MISMATCH",
+                        "Oracle 0.20.0's untouched files must remain byte-for-byte pristine",
+                        {"path": str(target), "actual": actual, "expected": expected},
+                    )
+                verified.append(relative if len(roots) == 1 else f"{root}:{relative}")
+        result = _apply_oracle_compatibility(
+            version,
+            package_root=package_root,
+            backup_root=backup_root,
+            contracts=CURRENT_PATCHES,
+            patches=patch_root(version),
+            package_roots=roots,
+        )
+        result["pristine_verified"] = verified
+        return result
+    contracts = PATCHES if version == PREVIOUS_PATCHED_VERSION else LKG_PATCHES
     return _apply_oracle_compatibility(
         version,
         package_root=package_root,

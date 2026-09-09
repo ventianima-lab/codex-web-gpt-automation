@@ -9,8 +9,8 @@ and an explicit model/effort choice. Oracle operates a temporary ChatGPT tab;
 DevSpace exposes only user-approved project access. Task type is prompt content,
 not a separate planning, review, editing, orchestration, or comprehensive engine.
 
-The current model compatibility route explicitly selects Latest in the UI
-before the requested effort. The Oracle CLI carrier is not the UI model name.
+Oracle 0.20.0 explicitly selects Latest in the UI before the requested effort.
+The runner passes that native model request directly without a compatibility carrier.
 Model selection is checked once before submission, without a chain of duplicate
 receipts.
 

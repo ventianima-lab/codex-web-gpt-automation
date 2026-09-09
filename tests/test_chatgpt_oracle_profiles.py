@@ -38,7 +38,7 @@ def test_public_profile_is_one_execution_flow(tmp_path: Path):
     assert contract["model"] == "latest"
     assert contract["effort"] == "pro"
     assert contract["app_name"] == "codex"
-    assert contract["oracle_carrier"] == {"model": "gpt-5.6-sol", "model_strategy": "current"}
+    assert contract["oracle_request"] == {"model": "latest", "model_strategy": "select"}
     assert contract["archive"] == "never"
     assert contract["temporary_chat"] is True
     assert "mode" not in contract
@@ -53,13 +53,13 @@ def test_validated_effort_choice(tmp_path: Path, effort: str):
     )["effort"] == effort
 
 
-def test_explicit_gpt56_uses_select_without_sending_latest_slug(tmp_path: Path):
+def test_explicit_gpt56_uses_select(tmp_path: Path):
     profiles = load_module()
     root, mission = project(tmp_path)
     contract = profiles.build_execution_contract(
         project_root=root, mission_path=mission, model="gpt-5.6-sol"
     )
-    assert contract["oracle_carrier"] == {"model": "gpt-5.6-sol", "model_strategy": "select"}
+    assert contract["oracle_request"] == {"model": "gpt-5.6-sol", "model_strategy": "select"}
 
 
 def test_retired_mode_api_is_not_public(tmp_path: Path):

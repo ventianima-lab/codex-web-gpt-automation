@@ -26,7 +26,7 @@
     "drift_issue_label": "upstream-runtime",
     "required_gates": [
       "published-archive-integrity",
-      "exact-package-tree-and-patch-hashes",
+      "exact-package-tree-and-pristine-or-patch-hashes",
       "syntax-and-focused-compatibility",
       "oracle-no-submission-canary",
       "devspace-open-workspace-same-id-read",
@@ -41,9 +41,9 @@
       "package": "@steipete/oracle",
       "registry": "https://registry.npmjs.org/%40steipete%2Foracle",
       "current": {
-        "version": "0.18.0",
-        "integrity": "sha512-o8KFd66zNt36jw5zdtQAV74bgrOlJibbyvnLsVikIWDamesYtez/dIUhQ4zqtD9jkx+7A6vcP9+JgcJt0H5pOw==",
-        "source": "https://www.npmjs.com/package/%40steipete/oracle/v/0.18.0"
+        "version": "0.20.0",
+        "integrity": "sha512-BcrY4W6Wp1qwAZ1H1wD9vMLHhrzMKXYn82ArTC2ISBFSRZsK5WN+udXTXIeDpTkONfOu0SUsrVYthApoEJ9gWg==",
+        "source": "https://www.npmjs.com/package/%40steipete/oracle/v/0.20.0"
       },
       "last_known_good": {
         "version": "0.17.1",

@@ -20,15 +20,14 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_run.py" execute --project-roo
 
 For authorized execution remove `--dry-run`. Select the requested effort;
 `extra-high` is also supported. Do not infer permission for an unrelated task
-or silently downgrade. The public `latest` option is translated to the known
-Oracle `gpt-5.6-sol/current` compatibility carrier, not passed upstream as an
-invented model slug. Explicitly click Latest before selecting effort and
-check the observed selection once.
+or silently downgrade. Oracle 0.20.0 receives the native `latest/select`
+request directly. Explicitly click Latest before selecting effort and check
+the observed `6 Pro` selection once.
 
 Use the configured app name (default `codex`) and exact project root.
 Do not change authentication, approved roots, account personalization, app
-registration, or permissions. Temporary chats preserve the user's existing
-enabled personalization.
+registration, or permissions. The runner enables and confirms personalization
+for the owned temporary chat before submission without changing account settings.
 
 ## Capture and recover
 

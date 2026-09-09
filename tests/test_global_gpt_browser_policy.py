@@ -38,7 +38,8 @@ def test_current_policy_is_one_mission_latest_effort_with_default_pro() -> None:
     assert "planning, research, review, and editing are prompt content, not modes" in combined
     assert "Select Latest explicitly before the requested effort" in combined
     assert "default is Pro, observed as **6 Pro**" in combined
-    assert "`gpt-5.6-sol` with `model_strategy=current`" in combined
+    assert "Oracle 0.20.0" in combined
+    assert "`latest/select`" in combined
     assert "temporary chats" in combined
     assert "Save the complete answer durably before closing the exact owned tab" in combined
     assert "never automatically replay a prompt" in combined
@@ -195,7 +196,7 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
         "codexpro": "persisted-run-recovery-only",
     }
     assert manifest["external"]["oracle"]["license"] == "MIT"
-    assert manifest["external"]["oracle"]["tested_version"] == "0.18.0"
+    assert manifest["external"]["oracle"]["tested_version"] == "0.20.0"
     assert manifest["external"]["oracle"]["last_known_good"]["version"] == "0.17.1"
     assert manifest["external"]["devspace"]["license"] == "MIT"
     assert manifest["external"]["devspace"]["tested_version"] == "1.0.8"

@@ -9,11 +9,11 @@ records retain their original meaning and are never rewritten by this policy.
 
 - Express planning, research, review, and implementation requirements in the
   mission, not separate execution modes. Select the model and effort explicitly.
-- For the current Oracle compatibility route, select **Latest** in ChatGPT,
-  then the requested effort. The default is Pro, observed as **6 Pro**. Do not
-  select GPT-5.6 numerically to obtain Pro. The CLI compatibility carrier is
-  `gpt-5.6-sol` with `model_strategy=current`; it is not the requested UI model.
-  Keep this workaround until native Oracle support is actually verified.
+- Oracle 0.20.0 natively selects **Latest** in ChatGPT, then the requested
+  effort. The default is Pro, observed as **6 Pro**. Do not select GPT-5.6
+  numerically to obtain Pro. Only the hash-bound Korean Latest and quota-limited
+  four-tier compatibility fixes remain; retire them when upstream covers both.
+  A disabled Pro option must never silently fall back to another effort.
 - Use temporary chats. The runner enables and confirms temporary-chat personalization before submission; it does not change account settings. If confirmation fails, do not submit.
   Do not silently change account, privacy, app, or permission settings.
 - Check the actual selected model once before submission. Do not duplicate

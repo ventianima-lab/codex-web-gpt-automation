@@ -64,7 +64,7 @@ def test_checked_in_policy_separates_reporter_from_gated_maintainer_mutation() -
     assert policy["promotion"]["promotion_automation_name"] == "Validate upstream runtime drift"
     assert policy["promotion"]["promotion_automation_schedule"] == "every-6-hours"
     assert "devspace-open-workspace-same-id-read" in policy["promotion"]["required_gates"]
-    assert policy["runtimes"]["oracle"]["current"]["version"] == "0.18.0"
+    assert policy["runtimes"]["oracle"]["current"]["version"] == "0.20.0"
     assert policy["runtimes"]["devspace"]["current"]["version"] == "1.0.8"
     assert policy["runtimes"]["devspace"]["last_known_good"]["version"] == "1.0.7"
 
@@ -83,11 +83,11 @@ def test_offline_fixture_reports_sync_and_hash_bound_archives() -> None:
 def test_offline_fixture_reports_drift_without_promoting_or_mutating() -> None:
     module = load_module()
     policy = module.validate_policy(json.loads(POLICY_PATH.read_text(encoding="utf-8")))
-    report = module.check(policy, fixture(policy, oracle_latest="0.18.1"), timeout=0.01)
+    report = module.check(policy, fixture(policy, oracle_latest="0.20.1"), timeout=0.01)
     assert report["in_sync"] is False
     assert report["drifted"] == ["oracle"]
-    assert report["runtimes"]["oracle"]["current"]["version"] == "0.18.0"
-    assert report["runtimes"]["oracle"]["latest"]["version"] == "0.18.1"
+    assert report["runtimes"]["oracle"]["current"]["version"] == "0.20.0"
+    assert report["runtimes"]["oracle"]["latest"]["version"] == "0.20.1"
 
 
 def test_rejects_extra_policy_keys_and_integrity_mismatch() -> None:

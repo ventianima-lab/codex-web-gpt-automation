@@ -76,8 +76,8 @@ def test_dispatch_dry_run_uses_ordinary_executor(tmp_path: Path, capsys):
     assert payload["run"]["status"] == "dry-run"
     assert payload["run"]["writes_performed"] is False
     argv = payload["run"]["argv"]
-    assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
-    assert argv[argv.index("--browser-model-strategy") + 1] == "current"
+    assert argv[argv.index("--model") + 1] == "latest"
+    assert argv[argv.index("--browser-model-strategy") + 1] == "select"
     assert argv[argv.index("--browser-archive") + 1] == "never"
     assert argv[argv.index("--chatgpt-url") + 1] == "https://chatgpt.com/?temporary-chat=true"
     assert "--mode" not in argv
