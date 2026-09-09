@@ -49,6 +49,8 @@ function Write-RecoveryReceipt([bool]$Healthy, [string]$ConfigHash, [string]$Rea
     healthy = $Healthy
     config_sha256 = $ConfigHash
     hostname = [string]$Config.hostname
+    mode = [string]$Mode
+    watch_interval_seconds = [int]$WatchIntervalSeconds
     observed_at = [DateTime]::UtcNow.ToString('o')
     watchdog_pid = $PID
     reason = $Reason

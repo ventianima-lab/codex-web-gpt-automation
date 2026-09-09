@@ -1617,7 +1617,7 @@ def execute_run(
     platform_name: str | None = None,
     version_resolver: Callable[..., str] = resolve_oracle_version,
     default_command_resolver: Callable[[], list[str]] = RUNTIME.resolve_default_oracle_command,
-    compat_factory: Callable[[str], dict[str, Any]] = COMPAT.ensure_oracle_compatibility,
+    compat_factory: Callable[..., dict[str, Any]] = COMPAT.ensure_oracle_compatibility,
     devspace_compat_factory: Callable[[], dict[str, Any]] = (
         DEVSPACE_COMPAT.ensure_devspace_compatibility
     ),
@@ -1881,7 +1881,7 @@ def execute_run(
             run_factory=run_factory,
             platform_name=platform_name,
         )
-        compat_factory(version)
+        compat_factory(version, **COMPAT.node_runtime_kwargs(config.oracle_command))
         if STATE.is_devspace_transport(config.transport):
             devspace_compat = devspace_compat_factory()
             if devspace_compat.get("service_restart_required"):

@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from chatgpt_chrome_local_network import browser_profile_loopback_allowed, policy_status
 import codex_local_multi_gpt_setup as LOCAL_MULTI_GPT_SETUP
@@ -69,6 +69,11 @@ BOOTSTRAP_RECOVERY_SCHEMA = "codex.devspace.bootstrap-recovery/v1"
 BOOTSTRAP_RECOVERY_RELATIVE = Path("state") / "devspace-service" / "bootstrap-recovery.json"
 BOOTSTRAP_RECOVERY_MAX_AGE = dt.timedelta(minutes=5)
 BOOTSTRAP_RECOVERY_CLOCK_SKEW = dt.timedelta(minutes=1)
+WINDOWS_BOOTSTRAP_RUN_NAME = "Codex Web GPT DevSpace Bootstrap"
+WINDOWS_BOOTSTRAP_WATCH_SECONDS = 30
+WATCHDOG_IDENTITY_TIMEOUT_SECONDS = 10
+FINAL_GATE_MIN_PROJECT_EXCERPT = 16
+FINAL_GATE_MAX_PROJECT_READ_BYTES = 256 * 1024
 COMPLETION_STATES_BY_LANGUAGE = {
     "ko": {
         "installed": "로컬 설치·연결 설정 진행 중",
@@ -695,15 +700,111 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _expected_windows_watchdog_command(codex_home: Path) -> str:
+    root = codex_home.expanduser().resolve()
+    powershell = (
+        Path(os.environ.get("SystemRoot") or r"C:\Windows")
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    script = root / "scripts" / "start_devspace_bootstrap.ps1"
+    return (
+        f'"{powershell}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass '
+        f'-File "{script}" -Mode Watch -WatchIntervalSeconds {WINDOWS_BOOTSTRAP_WATCH_SECONDS}'
+    )
+
+
+def _windows_watchdog_identity_verified(
+    *,
+    codex_home: Path,
+    watchdog_pid: int,
+    runner: Callable[..., Any] = subprocess.run,
+    platform_name: str | None = None,
+) -> bool:
+    """Read-only proof that the exact registered Watch command is still running."""
+    platform = os.name if platform_name is None else platform_name
+    if platform != "nt" or watchdog_pid <= 0:
+        return False
+    root = codex_home.expanduser().resolve()
+    script = (root / "scripts" / "start_devspace_bootstrap.ps1").resolve()
+    powershell = (
+        Path(os.environ.get("SystemRoot") or r"C:\Windows")
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    ).resolve()
+    if not script.is_file() or not powershell.is_file():
+        return False
+    environment = dict(os.environ)
+    environment["CODEX_BOOTSTRAP_WATCHDOG_PID"] = str(watchdog_pid)
+    script_text = (
+        "$ErrorActionPreference='Stop';"
+        "$name='Codex Web GPT DevSpace Bootstrap';"
+        "$registered=(Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' "
+        "-Name $name -ErrorAction Stop).$name;"
+        "$pidValue=[int][Environment]::GetEnvironmentVariable('CODEX_BOOTSTRAP_WATCHDOG_PID');"
+        "$process=Get-CimInstance Win32_Process -Filter (\"ProcessId = $pidValue\") -ErrorAction Stop;"
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+        "[pscustomobject]@{registered_command=[string]$registered;process_id=[int]$process.ProcessId;"
+        "executable_path=[string]$process.ExecutablePath;command_line=[string]$process.CommandLine}|ConvertTo-Json -Compress"
+    )
+    kwargs: dict[str, Any] = {}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        completed = runner(
+            [str(powershell), "-NoProfile", "-Command", script_text],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=WATCHDOG_IDENTITY_TIMEOUT_SECONDS,
+            check=False,
+            env=environment,
+            **kwargs,
+        )
+        if int(getattr(completed, "returncode", 1)) != 0:
+            return False
+        payload = json.loads(str(getattr(completed, "stdout", "") or ""))
+    except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError, ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("process_id") != watchdog_pid:
+        return False
+    if str(payload.get("registered_command") or "") != _expected_windows_watchdog_command(root):
+        return False
+    executable = str(payload.get("executable_path") or "").strip()
+    command_line = str(payload.get("command_line") or "").strip()
+    if not executable or not command_line:
+        return False
+    if os.path.normcase(os.path.normpath(executable)) != os.path.normcase(os.path.normpath(str(powershell))):
+        return False
+    compact = re.sub(r"\s+", " ", command_line).casefold()
+    return all(
+        token.casefold() in compact
+        for token in (
+            str(script),
+            "-mode watch",
+            f"-watchintervalseconds {WINDOWS_BOOTSTRAP_WATCH_SECONDS}",
+        )
+    )
+
+
 def stateful_bootstrap_recovery_verified(
     *,
     codex_home: Path,
     devspace_home: Path,
     registration_url: str,
+    watchdog_identity_probe: Callable[..., bool] | None = None,
 ) -> bool:
-    """Verify the watchdog's recent recovery receipt against live config text."""
+    """Verify a recent recovery from the exact registered, live Watch process."""
     receipt = _load_json(codex_home / BOOTSTRAP_RECOVERY_RELATIVE)
     if not receipt or receipt.get("schema") != BOOTSTRAP_RECOVERY_SCHEMA or receipt.get("healthy") is not True:
+        return False
+    if receipt.get("mode") != "Watch" or receipt.get("watch_interval_seconds") != WINDOWS_BOOTSTRAP_WATCH_SECONDS:
         return False
     config_path = devspace_home / "config.json"
     try:
@@ -729,7 +830,13 @@ def stateful_bootstrap_recovery_verified(
     if observed_at.tzinfo is None:
         return False
     age = dt.datetime.now(dt.timezone.utc) - observed_at.astimezone(dt.timezone.utc)
-    return -BOOTSTRAP_RECOVERY_CLOCK_SKEW <= age <= BOOTSTRAP_RECOVERY_MAX_AGE
+    if not (-BOOTSTRAP_RECOVERY_CLOCK_SKEW <= age <= BOOTSTRAP_RECOVERY_MAX_AGE):
+        return False
+    probe = watchdog_identity_probe or _windows_watchdog_identity_verified
+    try:
+        return bool(probe(codex_home=codex_home, watchdog_pid=watchdog_pid))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False
 
 
 def _inside(parent: Path, child: Path) -> bool:
@@ -773,6 +880,19 @@ def _execution_capture_binding(
     selection = execution.get("selection") if isinstance(execution.get("selection"), dict) else {}
     if str(selection.get("app_name") or "").strip() != expected_app_name:
         raise OnboardingError("FINAL_GATE_EXECUTION_APP_MISMATCH")
+    mission_entry = execution.get("mission") if isinstance(execution.get("mission"), dict) else {}
+    try:
+        mission_candidate = Path(str(mission_entry.get("path") or "")).expanduser()
+        if mission_candidate.is_symlink():
+            raise OSError("mission must not be a symlink")
+        mission_path = mission_candidate.resolve(strict=True)
+    except OSError as exc:
+        raise OnboardingError("FINAL_GATE_EXECUTION_MISSION_INVALID") from exc
+    if not mission_path.is_file() or not _inside(expected_root, mission_path):
+        raise OnboardingError("FINAL_GATE_EXECUTION_MISSION_INVALID")
+    expected_mission_sha256 = str(mission_entry.get("sha256") or "").casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_mission_sha256) or _sha256_file(mission_path) != expected_mission_sha256:
+        raise OnboardingError("FINAL_GATE_EXECUTION_MISSION_INVALID")
     capture = execution.get("capture") if isinstance(execution.get("capture"), dict) else {}
     capture_durable = (
         execution.get("capture") == "durable"
@@ -835,12 +955,83 @@ def _execution_capture_binding(
         "output_path": str(output_path),
         "output_sha256": actual_sha256,
         "output_bytes": len(output_bytes),
+        "mission_path": str(mission_path),
         "auth_verified": True,
         "actual_model": actual_model,
         "outcome": "captured",
         "semantic_outcome": semantic_outcome,
         "run_id": str(execution.get("run_id") or ""),
     }
+
+
+def _compact_read_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _project_file_read_proof(
+    *,
+    root: Path,
+    listing: Sequence[str],
+    output_path: Path,
+    excluded_paths: Sequence[Path] = (),
+) -> dict[str, Any]:
+    """Bind a durable answer to real bounded project-file content, without tool ceremony."""
+    try:
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError) as exc:
+        raise OnboardingError("FINAL_GATE_PROJECT_READ_NOT_PROVEN") from exc
+    compact_output = _compact_read_text(output_text)
+    if not compact_output:
+        raise OnboardingError("FINAL_GATE_PROJECT_READ_NOT_PROVEN")
+    excluded = {os.path.normcase(str(path.expanduser().resolve())) for path in excluded_paths}
+    for entry in listing:
+        relative = Path(str(entry))
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            continue
+        raw_candidate = root / relative
+        if raw_candidate.is_symlink():
+            continue
+        try:
+            candidate = raw_candidate.resolve(strict=True)
+            if not _inside(root, candidate) or not candidate.is_file():
+                continue
+            if os.path.normcase(str(candidate)) in excluded:
+                continue
+            size = candidate.stat().st_size
+            if size <= 0 or size > FINAL_GATE_MAX_PROJECT_READ_BYTES:
+                continue
+            source_text = candidate.read_text(encoding="utf-8", errors="strict")
+        except (OSError, UnicodeError):
+            continue
+        for line in source_text.splitlines():
+            excerpt = _compact_read_text(line)
+            if len(excerpt) < FINAL_GATE_MIN_PROJECT_EXCERPT:
+                continue
+            if excerpt in compact_output:
+                return {
+                    "kind": "project-file-content-match",
+                    "relative_path": candidate.relative_to(root).as_posix(),
+                    "excerpt_sha256": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+                    "source_bytes": size,
+                }
+    raise OnboardingError("FINAL_GATE_PROJECT_READ_NOT_PROVEN")
+
+
+def _valid_project_read_proof(value: object) -> bool:
+    if not isinstance(value, dict) or value.get("kind") != "project-file-content-match":
+        return False
+    relative = str(value.get("relative_path") or "")
+    digest = str(value.get("excerpt_sha256") or "")
+    source_bytes = value.get("source_bytes")
+    return bool(
+        relative
+        and not Path(relative).is_absolute()
+        and ".." not in Path(relative).parts
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+        and isinstance(source_bytes, int)
+        and not isinstance(source_bytes, bool)
+        and 0 < source_bytes <= FINAL_GATE_MAX_PROJECT_READ_BYTES
+    )
 
 
 def _final_gate_receipt(
@@ -859,6 +1050,7 @@ def _final_gate_receipt(
         or recorded.get("read_ok") is not True
         or recorded.get("auth_verified") is not True
         or recorded.get("outcome") != "captured"
+        or not _valid_project_read_proof(recorded.get("read_proof"))
     ):
         return None
     summary = str(recorded.get("evidence") or "").strip()
@@ -1213,6 +1405,7 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
             "등록된 앱으로 실제 프로젝트를 한 번 읽어 설정을 확인합니다.",
             "프로젝트 안의 짧은 미션 파일을 준비하고 실행 명령을 생성합니다: python onboard.py prepare-final-gate --root <루트> --mission-path <파일>",
             f"생성된 execute 명령은 @{state['app_name']} 의 인증된 접근, 실제 사용 모델 하나, durable capture 결과를 기록해야 합니다.",
+            "최종 답변에는 --listing 으로 기록할 실제 UTF-8 프로젝트 파일에서 짧은 비밀정보 없는 문장 하나를 그대로 포함해야 합니다. 파일 내용을 읽지 않은 일반적인 open 성공 문구는 통과하지 않습니다.",
             "도구 호출 순서나 nonce는 요구하지 않습니다. 성공한 설정 결과는 이후 실행마다 다시 만들지 않습니다.",
             "capture가 끝나면 생성된 record-final-gate 명령으로 run 디렉터리와 짧은 결과 요약을 저장합니다.",
         ],
@@ -1286,6 +1479,7 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
             "Read the real project once through the registered app to finish setup.",
             "Prepare a short mission file inside the project and generate the execute command with: python onboard.py prepare-final-gate --root <root> --mission-path <file>",
             f"The generated execute command must capture authenticated @{state['app_name']} access, one actual model, and a durable result.",
+            "The final answer must quote one short non-secret line exactly from the real UTF-8 project file named with --listing; a generic workspace-open success message is not proof of a file read.",
             "No tool order or nonce is required. Do not recreate a successful setup result for every later run.",
             "After capture, use the generated record-final-gate command to persist the run directory and a short result summary.",
         ],
@@ -1468,6 +1662,14 @@ def record_final_gate(
         )
         if len(summary) < FINAL_GATE_MIN_EVIDENCE:
             raise OnboardingError("FINAL_GATE_EVIDENCE_INSUFFICIENT")
+        read_proof = _project_file_read_proof(
+            root=root_path,
+            listing=entries,
+            output_path=Path(binding["output_path"]),
+            excluded_paths=[Path(binding["mission_path"])],
+        )
+    else:
+        read_proof = None
     result = {
         "schema": APP_READ_RESULT_SCHEMA,
         "read_ok": bool(read_ok),
@@ -1479,6 +1681,7 @@ def record_final_gate(
         "semantic_outcome": str(binding.get("semantic_outcome") or "unknown"),
         "evidence": summary[:400],
         "listing_sample": entries[:10],
+        "read_proof": read_proof,
         "recorded_at": _now(),
         "transport": transport,
         **binding,
@@ -1510,7 +1713,6 @@ def prepare_final_gate(
         raise OnboardingError("FINAL_GATE_MISSION_UNREADABLE") from exc
     if not mission.is_file() or not _inside(root_path, mission):
         raise OnboardingError("FINAL_GATE_MISSION_MUST_BE_INSIDE_EXACT_ROOT")
-    mission_relative = mission.relative_to(root_path).as_posix()
     runner = _codex_home(codex_home) / "bin" / "chatgpt_oracle_run.py"
     execute = [
         python_executable,
@@ -1536,6 +1738,9 @@ def prepare_final_gate(
             "auth_verified": True,
             "actual_model": "record the one model actually used",
             "outcome": "captured",
+            "project_file_content": (
+                "the durable answer includes a short exact non-secret excerpt from one listed UTF-8 file"
+            ),
         },
         "execute_command": _quoted_command(execute),
         "dry_run_command": _quoted_command([*execute, "--dry-run"]),
@@ -1554,7 +1759,7 @@ def prepare_final_gate(
                 "--evidence",
                 "<VERIFIED_SUMMARY>",
                 "--listing",
-                mission_relative,
+                "<PROJECT_FILE_READ_THROUGH_REGISTERED_APP>",
             ]
         ),
         "submission_action": "perform-one-registered-app-read",

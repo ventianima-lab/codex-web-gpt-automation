@@ -2,6 +2,22 @@
 
 ## 2.0.0 - One lean execution flow
 
+- Final 2.0.0 review hardening binds a discovered absolute Node executable into
+  Oracle compatibility validation instead of re-discovering Node from `PATH`.
+  Ordinary mission execution no longer repeats the retired DevSpace root
+  qualification ceremony; it still revalidates the approved root, mission
+  path, symlink status, and mission hash immediately before launch.
+- Windows restart persistence now requires a fresh recovery receipt emitted in
+  `Watch` mode plus the exact per-user Run registration and the still-live
+  matching watchdog process. Interrupted DevSpace initialization with a saved
+  config but missing auth resumes interactively, while malformed auth fails
+  closed and valid auth is preserved.
+- The onboarding final gate remains lean but no longer accepts a generic
+  workspace-open answer. Its durable capture must contain a bounded exact
+  non-secret excerpt from a listed UTF-8 file inside the approved project root;
+  the mission prompt itself is explicitly ineligible as that proof. No nonce,
+  tool-order requirement, three-receipt chain, or magic marker is reintroduced.
+
 - Discover Oracle in configured npm caches and the Windows packaged Codex cache,
   retaining the explicit package-root override. Validate archived patch migration
   and the pre-submission personalization hook in the normal fast gate.

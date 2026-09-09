@@ -377,15 +377,49 @@ def _safe_archive_relative(name: str) -> str | None:
     return PurePosixPath(*path.parts[1:]).as_posix()
 
 
-def _verify_node_runtime(minimum: int, maximum: int, *, contract: str) -> None:
-    node = shutil.which("node")
+def node_runtime_kwargs(command: Sequence[str]) -> dict[str, str]:
+    """Bind a direct Node launch to the same executable during validation.
+
+    Wrappers (including pinned offline npx) keep the historical PATH lookup.
+    Never infer Node from an arbitrary argument or reinterpret a command string.
+    """
+    if len(command) >= 2:
+        executable = Path(command[0])
+        if executable.is_absolute() and executable.name.casefold() in {"node", "node.exe"}:
+            return {"node_executable": str(executable)}
+    return {}
+
+
+def _verify_node_runtime(
+    minimum: int, maximum: int, *, contract: str, node_executable: str | None = None,
+) -> None:
+    node = node_executable if node_executable is not None else shutil.which("node")
     if not node:
         raise OracleCompatError(
             "ORACLE_NODE_VERSION_UNSUPPORTED",
             "Oracle compatibility requires its validated Node.js runtime",
             {"contract": contract, "required": f">={minimum} <{maximum}"},
         )
-    resolved = subprocess.run([node, "--version"], capture_output=True, text=True, check=False)
+    if node_executable is not None and (
+        not Path(node).is_absolute() or not Path(node).is_file()
+    ):
+        raise OracleCompatError(
+            "ORACLE_NODE_VERSION_UNSUPPORTED",
+            "The selected Oracle Node executable is absent or not absolute",
+            {"contract": contract, "node_executable": node},
+        )
+    try:
+        resolved = subprocess.run(
+            [node, "--version"], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=10, **_git_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OracleCompatError(
+            "ORACLE_NODE_VERSION_UNSUPPORTED",
+            "The selected Oracle Node executable could not be verified",
+            {"contract": contract, "node_executable": node},
+        ) from exc
     value = resolved.stdout.strip().removeprefix("v")
     try:
         major = int(value.split(".", 1)[0])
@@ -844,6 +878,7 @@ def ensure_oracle_compatibility(
     *,
     package_root: Path | None = None,
     backup_root: Path | None = None,
+    node_executable: str | None = None,
 ) -> dict[str, Any]:
     """Apply only the default comprehensive-workflow Oracle contract."""
     version = resolved_version.strip().removeprefix("oracle ").strip()
@@ -855,7 +890,9 @@ def ensure_oracle_compatibility(
         )
     if version == SUPPORTED_VERSION:
         minimum, maximum = CURRENT_NODE_MAJOR_RANGE
-        _verify_node_runtime(minimum, maximum, contract=f"current:{version}")
+        _verify_node_runtime(
+            minimum, maximum, contract=f"current:{version}", node_executable=node_executable,
+        )
     contracts = PATCHES if version == SUPPORTED_VERSION else LKG_PATCHES
     return _apply_oracle_compatibility(
         version,

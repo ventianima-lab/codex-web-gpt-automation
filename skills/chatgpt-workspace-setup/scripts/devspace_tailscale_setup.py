@@ -601,7 +601,41 @@ def apply_setup(
     if slot.get("mapping") == "conflict":
         raise SetupError("TAILSCALE_FUNNEL_PORT_IN_USE")
     if config_path is not None and config_path.exists():
-        persist_existing_setup_config(config_path, config)
+        if config_path.is_symlink():
+            raise SetupError("DEVSPACE_CONFIG_SYMLINK_UNSUPPORTED")
+        # Config can survive an interrupted init before DevSpace writes auth.json.
+        # Treat valid auth as the completion boundary; malformed auth is never
+        # overwritten or regenerated automatically.
+        original_payload = persisted_config(config_path)
+        auth_path = devspace_auth_path(config_path)
+        owner_auth = valid_owner_auth(auth_path, allow_missing=True)
+        if owner_auth is not None:
+            persist_existing_setup_config(config_path, config)
+        else:
+            if not terminal_check():
+                raise SetupError("DEVSPACE_PARTIAL_INIT_REQUIRES_INTERACTIVE_TTY")
+            original_bytes = config_path.read_bytes()
+            try:
+                run_interactive_checked(
+                    devspace_npx_argv("init", platform_name=platform_name),
+                    runner=runner,
+                    stage="devspace-init-resume-auth",
+                    platform_name=platform_name,
+                )
+                valid_owner_auth(auth_path)
+                generated_payload = persisted_config(config_path)
+                repaired_payload = {**generated_payload, **original_payload}
+                repaired_payload.update(
+                    {
+                        "allowedRoots": [str(root) for root in config.roots],
+                        "publicBaseUrl": config.public_origin,
+                    }
+                )
+                _replace_setup_config_payload(config_path, repaired_payload)
+            except Exception:
+                _replace_file_bytes_atomic(config_path, original_bytes)
+                raise
+            owner_password_reviewer(auth_path=auth_path)
     else:
         if not terminal_check():
             raise SetupError("DEVSPACE_FIRST_INIT_REQUIRES_INTERACTIVE_TTY")
@@ -617,8 +651,12 @@ def apply_setup(
         if config_path is not None:
             if not config_path.exists():
                 raise SetupError("DEVSPACE_INIT_DID_NOT_CREATE_CONFIG")
+            auth_path = devspace_auth_path(config_path)
+            valid_owner_auth(auth_path)
             persist_existing_setup_config(config_path, config)
-        owner_password_reviewer()
+            owner_password_reviewer(auth_path=auth_path)
+        else:
+            owner_password_reviewer()
     if config_path is not None:
         persisted = persisted_allowed_roots(config_path)
         missing = [
@@ -1222,6 +1260,56 @@ def persisted_config(config_path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise SetupError("DEVSPACE_CONFIG_UNREADABLE")
     return payload
+
+
+def devspace_auth_path(config_path: Path) -> Path:
+    return config_path.with_name("auth.json")
+
+
+def valid_owner_auth(auth_path: Path, *, allow_missing: bool = False) -> dict[str, Any] | None:
+    """Validate only the auth shape needed to know initialization is complete."""
+    if auth_path.is_symlink():
+        raise SetupError("DEVSPACE_AUTH_SYMLINK_UNSUPPORTED")
+    if not auth_path.exists():
+        if allow_missing:
+            return None
+        raise SetupError("DEVSPACE_AUTH_MISSING")
+    try:
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise SetupError("DEVSPACE_AUTH_UNREADABLE") from error
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("ownerToken"), str)
+        or not payload["ownerToken"]
+    ):
+        raise SetupError("DEVSPACE_OWNER_PASSWORD_MISSING")
+    return payload
+
+
+def _replace_setup_config_payload(config_path: Path, payload: dict[str, Any]) -> None:
+    """Atomically replace config bytes after a resumed interactive init."""
+    temporary = config_path.with_name(f".{config_path.name}.tmp-{time.time_ns()}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        persisted_config(temporary)
+        os.replace(temporary, config_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _replace_file_bytes_atomic(path: Path, data: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.tmp-{time.time_ns()}")
+    try:
+        temporary.write_bytes(data)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _allowed_roots_from_payload(

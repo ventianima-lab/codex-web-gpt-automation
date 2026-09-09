@@ -78,7 +78,6 @@ def _load(name: str, path: Path):
 
 RUNTIME = _load("chatgpt_oracle_execute_runtime", BIN / "chatgpt_oracle_runtime.py")
 COMPAT = _load("chatgpt_oracle_execute_compat", BIN / "chatgpt_oracle_compat.py")
-DEVSPACE_PREFLIGHT = _load("chatgpt_oracle_execute_devspace_preflight", BIN / "chatgpt_devspace_preflight.py")
 
 
 class ExecutionError(RuntimeError):
@@ -168,6 +167,8 @@ def make_config(
     root = _absolute_path(project_root, label="project_root", must_exist=True)
     if not root.is_dir():
         raise ExecutionError("PROJECT_ROOT_NOT_DIRECTORY", "project_root must identify a directory")
+    if root.parent == root:
+        raise ExecutionError("PROJECT_ROOT_TOO_BROAD", "project_root must not be a filesystem or drive root")
     raw_mission = Path(str(mission_path)).expanduser()
     if raw_mission.is_symlink():
         raise ExecutionError("MISSION_FILE_INVALID", "mission_path must not be a symlink", {"path": str(raw_mission)})
@@ -852,7 +853,7 @@ def execute_config(
     dry_run: bool = False,
     command_resolver: Callable[[], list[str]] = RUNTIME.resolve_default_oracle_command,
     version_resolver: Callable[[Sequence[str]], str] = _resolve_version,
-    compat_factory: Callable[[str], Mapping[str, Any]] = COMPAT.ensure_oracle_compatibility,
+    compat_factory: Callable[..., Mapping[str, Any]] = COMPAT.ensure_oracle_compatibility,
     popen_factory: Callable[..., Any] = subprocess.Popen,
     tab_closer: Callable[[Mapping[str, Any]], dict[str, Any]] = close_owned_tab,
 ) -> dict[str, Any]:
@@ -874,6 +875,17 @@ def execute_config(
     with _submit_lock(config):
         if not config.copy_profile.is_dir() or config.copy_profile.is_symlink():
             raise ExecutionError("SIGNED_IN_PROFILE_UNAVAILABLE", "the signed-in Oracle profile seed is unavailable or unsafe")
+        # The manifest binds the user-authorized root; the chosen app enforces
+        # its own access. Do not require an unrelated legacy DevSpace config or
+        # write a qualification receipt for every ordinary mission.
+        if not config.project_root.is_dir() or config.project_root.resolve() != config.project_root:
+            raise ExecutionError("PROJECT_ROOT_UNAVAILABLE", "the exact project root changed before launch")
+        if (
+            config.mission_path.is_symlink()
+            or config.mission_path.resolve() != config.mission_path
+            or not _is_within(config.project_root, config.mission_path)
+        ):
+            raise ExecutionError("MISSION_OUTSIDE_APPROVED_ROOT", "mission_path changed or escaped project_root before launch")
         if _sha256(config.mission_path) != config.mission_sha256:
             raise ExecutionError("MISSION_CHANGED", "mission changed after configuration; prepare it again before submitting")
         duplicate = _unresolved_duplicate(config)
@@ -885,15 +897,9 @@ def execute_config(
             )
         if run_dir.exists():
             raise ExecutionError("RUN_ID_EXISTS", "run_id already exists", {"run_dir": str(run_dir)})
-        try:
-            DEVSPACE_PREFLIGHT.ensure_exact_root_qualified(config.project_root)
-        except Exception as exc:
-            code = str(getattr(exc, "code", "DEVSPACE_EXACT_ROOT_UNAVAILABLE"))
-            evidence = getattr(exc, "evidence", {})
-            raise ExecutionError(code, str(exc), evidence if isinstance(evidence, Mapping) else {}) from exc
         command = command_resolver()
         version = version_resolver(command)
-        compat_factory(version)
+        compat_factory(version, **COMPAT.node_runtime_kwargs(command))
         argv = build_oracle_argv(config, command, output_path, slug, cdp_port=cdp_port)
         run_dir.mkdir(parents=True, exist_ok=False)
         state_path = run_dir / "state.json"

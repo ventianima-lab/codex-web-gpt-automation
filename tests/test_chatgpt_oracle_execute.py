@@ -58,11 +58,6 @@ def execution_paths(tmp_path: Path, monkeypatch, executor):
     monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
     monkeypatch.setenv("ORACLE_BROWSER_PROFILE_DIR", str(profile))
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    monkeypatch.setattr(
-        executor.DEVSPACE_PREFLIGHT,
-        "ensure_exact_root_qualified",
-        lambda value: {"qualified": True, "project_root": str(value)},
-    )
     return root, mission, run_root, session_root
 
 
@@ -166,15 +161,39 @@ def test_profile_copy_handles_long_windows_destination(executor, execution_paths
         target.unlink()
 
 
-def test_root_access_failure_never_launches_or_creates_run(executor, execution_paths, monkeypatch):
+def test_ordinary_execution_does_not_require_legacy_devspace_config(executor, execution_paths, monkeypatch):
     root, mission, run_root, _ = execution_paths
     config = executor.make_config(project_root=root, mission_path=mission, run_root=run_root)
-    def unavailable(value):
-        raise RuntimeError("root unavailable")
-    monkeypatch.setattr(executor.DEVSPACE_PREFLIGHT, "ensure_exact_root_qualified", unavailable)
+    assert not hasattr(executor, "DEVSPACE_PREFLIGHT")
+    def reached_command_resolution():
+        raise RuntimeError("resolved without legacy setup")
+    with pytest.raises(RuntimeError, match="resolved without legacy setup"):
+        executor.execute_config(config, command_resolver=reached_command_resolution)
+    assert not (run_root / config.run_id).exists()
+
+
+def test_filesystem_root_is_not_an_approved_project(executor, execution_paths):
+    root, mission, run_root, _ = execution_paths
     with pytest.raises(executor.ExecutionError) as exc:
-        executor.execute_config(config, command_resolver=lambda: pytest.fail("must not launch"))
-    assert exc.value.code == "DEVSPACE_EXACT_ROOT_UNAVAILABLE"
+        executor.make_config(project_root=Path(root.anchor), mission_path=mission, run_root=run_root)
+    assert exc.value.code == "PROJECT_ROOT_TOO_BROAD"
+
+
+def test_selected_node_is_forwarded_to_compatibility(executor, execution_paths, tmp_path, monkeypatch):
+    root, mission, run_root, _ = execution_paths
+    config = executor.make_config(project_root=root, mission_path=mission, run_root=run_root)
+    node = tmp_path / "bundled node" / "node.exe"
+    node.parent.mkdir()
+    node.write_bytes(b"fixture")
+    command = [str(node), str(tmp_path / "oracle-cli.js")]
+    observed = []
+    def verify(version, **kwargs):
+        observed.append((version, kwargs))
+        raise RuntimeError("stop before browser or profile copy")
+    with pytest.raises(RuntimeError, match="stop before browser"):
+        executor.execute_config(config, command_resolver=lambda: command,
+            version_resolver=lambda value: "oracle 0.18.0", compat_factory=verify)
+    assert observed == [("oracle 0.18.0", {"node_executable": str(node)})]
     assert not (run_root / config.run_id).exists()
 
 

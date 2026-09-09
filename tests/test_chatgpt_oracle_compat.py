@@ -296,6 +296,43 @@ def test_scoped_profile_rejects_missing_node_runtime(monkeypatch: pytest.MonkeyP
     assert unsupported.value.evidence["required"] == ">=24 <27"
 
 
+def test_explicit_discovered_node_is_verified_without_path_lookup(tmp_path, monkeypatch):
+    compat = load_compat()
+    node = tmp_path / "Node 런타임" / "node.exe"
+    node.parent.mkdir()
+    node.write_bytes(b"fixture")
+    monkeypatch.setattr(compat.shutil, "which", lambda name: pytest.fail("must use selected Node"))
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "v24.19.0\n", "")
+    monkeypatch.setattr(compat.subprocess, "run", run)
+    compat._verify_node_runtime(24, 27, contract="current:0.18.0", node_executable=str(node))
+    assert calls[0][0] == [str(node), "--version"]
+    assert calls[0][1]["timeout"] == 10
+    assert calls[0][1]["encoding"] == "utf-8"
+
+
+def test_explicit_node_timeout_never_falls_back_to_another_runtime(tmp_path, monkeypatch):
+    compat = load_compat()
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"fixture")
+    monkeypatch.setattr(compat.shutil, "which", lambda name: pytest.fail("must not fall back"))
+    def timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, 10)
+    monkeypatch.setattr(compat.subprocess, "run", timeout)
+    with pytest.raises(compat.OracleCompatError) as failure:
+        compat._verify_node_runtime(24, 27, contract="current:0.18.0", node_executable=str(node))
+    assert failure.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
+
+
+def test_node_binding_does_not_treat_wrappers_or_arguments_as_executables():
+    compat = load_compat()
+    assert compat.node_runtime_kwargs(["npx", "--offline", "--yes", "@steipete/oracle@0.18.0"]) == {}
+    assert compat.node_runtime_kwargs(["oracle", "node.exe"]) == {}
+    assert compat.node_runtime_kwargs(["node", "oracle-cli.js"]) == {}
+
+
 @pytest.mark.parametrize(
     ("node", "stdout", "returncode"),
     [
@@ -585,6 +622,10 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
         (Path(__file__).parent / "fixtures" / "oracle-0180-gpt56-sol-power-slider-delayed-model.json")
         .read_text(encoding="utf-8")
     )
+    latest_fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "oracle-0180-latest-pro-power-slider.json")
+        .read_text(encoding="utf-8")
+    )
     assert fixture["model_button"]["text"] == "Thinking effort"
     assert fixture["simple_view"]["text"].startswith("Pro, 5 of 5")
     assert fixture["slider_control"] == {
@@ -604,6 +645,11 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
         "label": "GPT-5.6 Sol",
         "ariaChecked": True,
     }
+    assert latest_fixture["requested_model"] == "gpt-5.6-sol"
+    assert [row["label"] for row in latest_fixture["model_rows"]] == [
+        "Latest", "GPT-5.6 Sol", "GPT-5.5",
+    ]
+    assert [row["label"] for row in latest_fixture["model_rows"] if row["ariaChecked"]] == ["Latest"]
     node = shutil.which("node")
     assert node is not None
     source_text = target.read_text(encoding="utf-8")
@@ -634,11 +680,13 @@ def test_published_0180_pro_power_slider_current_ui_is_verified_and_fail_closed(
     fixture_literal = json.dumps(fixture)
     one_based_fixture_literal = json.dumps(one_based_fixture)
     delayed_model_fixture_literal = json.dumps(delayed_model_fixture)
+    latest_fixture_literal = json.dumps(latest_fixture)
     script = f"""
 import {{ ensureThinkingTime }} from {json.dumps(test_module.as_uri())};
 const fixture = {fixture_literal};
 const oneBasedFixture = {one_based_fixture_literal};
 const delayedModelFixture = {delayed_model_fixture_literal};
+const latestFixture = {latest_fixture_literal};
 class FakeElement extends EventTarget {{
   constructor(text, attrs = {{}}, visible = true) {{
     super(); this._text = text; this.attrs = attrs; this.visible = visible;
@@ -795,6 +843,7 @@ const runCase = async ({{rangeFixture = fixture, validModel = true, controlledFr
   }}
 }};
 console.log(JSON.stringify({{
+  latestLiveFixture: await runCase({{latest: true, rangeFixture: latestFixture}}),
   latestFrom56: await runCase({{latest: true}}),
   latestKoreanFrom56: await runCase({{latest: true, korean: true, rangeFixture: oneBasedFixture}}),
   latestSplitCurrentPicker: await runCase({{

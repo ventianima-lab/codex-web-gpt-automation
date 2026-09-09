@@ -288,6 +288,143 @@ def test_partial_first_init_config_resumes_with_only_nonsecret_fields_filled(tmp
     assert config_path.read_bytes().isascii()
 
 
+def _stub_apply_setup_runtime(module, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "funnel_status", lambda *args, **kwargs: {"ok": True, "mapping": "absent"})
+    monkeypatch.setattr(module, "run_checked", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "launch_managed_devspace_service", lambda *args, **kwargs: {"supervisor_pid": 1})
+    monkeypatch.setattr(module, "wait_for_local_readiness", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(module, "ensure_public_route", lambda *args, **kwargs: {"ok": True})
+
+
+def test_existing_config_with_valid_auth_preserves_auth_bytes_and_skips_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    requested = tmp_path / "project"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"allowedRoots": [], "custom": "preserved"}), encoding="utf-8"
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_bytes(b'{"ownerToken":"valid-existing-secret","other":"keep"}\r\n')
+    auth_before = auth_path.read_bytes()
+    _stub_apply_setup_runtime(module, monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "run_interactive_checked",
+        lambda *args, **kwargs: pytest.fail("valid auth must not rerun devspace init"),
+    )
+
+    module.apply_setup(
+        current,
+        config_path=config_path,
+        terminal_check=lambda: False,
+        owner_password_reviewer=lambda **kwargs: pytest.fail("valid existing auth must not be displayed again"),
+    )
+
+    assert auth_path.read_bytes() == auth_before
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["allowedRoots"] == [str(requested.resolve())]
+    assert persisted["publicBaseUrl"] == "https://device.tailnet.ts.net"
+    assert persisted["custom"] == "preserved"
+
+
+def test_existing_config_missing_auth_resumes_interactively_and_merges_without_losing_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    requested = tmp_path / "한국어 project"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net", public_port=8443)
+    config_path = tmp_path / "config.json"
+    original = {"host": "preserve-host", "custom": {"owner": "user"}}
+    config_path.write_text(json.dumps(original), encoding="utf-8")
+    auth_path = tmp_path / "auth.json"
+    _stub_apply_setup_runtime(module, monkeypatch)
+    init_calls: list[tuple[list[str], str]] = []
+    review_calls: list[Path] = []
+
+    def resume_init(argv, **kwargs):
+        init_calls.append((list(argv), kwargs["stage"]))
+        config_path.write_text(
+            json.dumps({
+                "allowedRoots": [str(tmp_path / "generated-root")],
+                "publicBaseUrl": "https://generated.invalid",
+                "generatedOnly": True,
+                "custom": {"owner": "generated"},
+            }),
+            encoding="utf-8",
+        )
+        auth_path.write_text(
+            json.dumps({"ownerToken": "generated-owner-secret", "oauth": {"preserve": True}}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(module, "run_interactive_checked", resume_init)
+
+    module.apply_setup(
+        current,
+        config_path=config_path,
+        terminal_check=lambda: True,
+        owner_password_reviewer=lambda **kwargs: review_calls.append(kwargs["auth_path"]) or {"ok": True},
+    )
+
+    assert len(init_calls) == 1
+    assert init_calls[0][1] == "devspace-init-resume-auth"
+    assert review_calls == [auth_path]
+    assert json.loads(auth_path.read_text(encoding="utf-8")) == {
+        "ownerToken": "generated-owner-secret",
+        "oauth": {"preserve": True},
+    }
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["generatedOnly"] is True
+    assert persisted["host"] == "preserve-host"
+    assert persisted["custom"] == {"owner": "user"}
+    assert persisted["allowedRoots"] == [str(requested.resolve())]
+    assert persisted["publicBaseUrl"] == "https://device.tailnet.ts.net:8443"
+
+
+@pytest.mark.parametrize(
+    "auth_bytes, error",
+    [
+        (b"{broken", "DEVSPACE_AUTH_UNREADABLE"),
+        (b'{"ownerToken":""}', "DEVSPACE_OWNER_PASSWORD_MISSING"),
+    ],
+)
+def test_existing_config_malformed_auth_fails_before_any_config_or_auth_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    auth_bytes: bytes,
+    error: str,
+) -> None:
+    module = load_module()
+    requested = tmp_path / "project"
+    requested.mkdir()
+    current = module.validate_config([str(requested)], "device.tailnet.ts.net")
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(b'{"custom":"exact-original-bytes"}\r\n')
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_bytes(auth_bytes)
+    config_before = config_path.read_bytes()
+    auth_before = auth_path.read_bytes()
+    _stub_apply_setup_runtime(module, monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "run_interactive_checked",
+        lambda *args, **kwargs: pytest.fail("malformed auth must not be overwritten by init"),
+    )
+
+    with pytest.raises(module.SetupError, match=error):
+        module.apply_setup(current, config_path=config_path, terminal_check=lambda: True)
+
+    assert config_path.read_bytes() == config_before
+    assert auth_path.read_bytes() == auth_before
+    assert list(tmp_path.glob("config.json.bak-*")) == []
+    assert list(tmp_path.glob(".config.json.tmp-*")) == []
+
+
 @pytest.mark.parametrize(
     "contents",
     (
