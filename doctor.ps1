@@ -187,7 +187,7 @@ if ($VerifyLegacyContract -and (!$Python -or !(Test-Path -LiteralPath $Contract)
   warnings = $Warnings
   commands = $Commands
   agbrowse = @{selected_version=$SelectedVersion; contract=$Contract; update_receipt=$UpdateReceiptPath}
-  oracle = @{package='@steipete/oracle';current_version='0.20.0';last_known_good='0.17.1';policy='newest-validated-stable-pristine';resolution='npx at explicit run time'}
+  oracle = @{package='@steipete/oracle';current_version='0.20.0';last_known_good='0.17.1';policy='newest-validated-stable';resolution='npx at explicit run time'}
   devspace = @{package='@waishnav/devspace';current_version='1.0.8';last_known_good='1.0.7';policy='newest-validated-stable';setup='explicit setup skill only'}
   local_multi_gpt = @{enabled=$LocalMultiGptEnabled;doctor=$LocalMultiGptDoctor}
   codexpro = @{

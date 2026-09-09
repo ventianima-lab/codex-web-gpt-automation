@@ -60,7 +60,7 @@
 | `bin/chatgpt_oracle_state.py` | 기존 실행 복구와 공용 호스트 유틸리티 |
 | `bin/chatgpt_oracle_comprehensive.py` | 기존 종합모드 복구 호환성 |
 | `bin/chatgpt_oracle_multi.py` | 기존 wave 복구 호환성 |
-| `bin/chatgpt_oracle_compat.py` | 기본 Oracle 0.20.0 무패치 해시 검증과 Oracle 0.18.0/0.17.1 과거 실행 복구 계약 |
+| `bin/chatgpt_oracle_compat.py` | 기본 Oracle 0.20.0 최소 호환 패치·원본 해시 검증과 Oracle 0.18.0/0.17.1 과거 실행 복구 계약 |
 | `bin/chatgpt_oracle_profiles.py` | 모델·effort 선택 값 |
 | `bin/chatgpt_oracle_diagnose.py` | 실패 서명 분류 |
 | `bin/chatgpt_oracle_incident.py` | 단일 수리 소유자 인계 패킷 |
