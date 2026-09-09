@@ -96,6 +96,9 @@ export async function startPersonalizedBrowser(options, dependencies) {
     if (pages.length !== 1 || (pages[0].id ?? pages[0].targetId) !== targetId || pages.some(isBlank)) {
       throw new Error('expected exactly the owned temporary-chat startup tab');
     }
+    if ((options.platform ?? process.platform) === 'darwin') {
+      await deps.lifecycle.positionChromeWindowOffscreen(client, profilePath, logger);
+    }
     await Promise.all([client.Page.enable(), client.Runtime.enable()]);
     await client.Emulation?.setFocusEmulationEnabled({ enabled: true });
     await deps.ensurePromptReady(client.Runtime, 60000, logger);

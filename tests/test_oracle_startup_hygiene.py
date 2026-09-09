@@ -58,7 +58,8 @@ def test_no_submit_receipt_collision_still_cleans_profile(tmp_path: Path, has_pr
 
 
 @pytest.mark.parametrize('failure', ['none', 'ready', 'personalization', 'deadline'])
-def test_single_startup_tab_cleanup_precedes_failing_checks(failure: str) -> None:
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
+def test_single_startup_tab_cleanup_precedes_failing_checks(failure: str, platform: str) -> None:
     node = shutil.which('node')
     if not node:
         pytest.skip('Node unavailable')
@@ -68,7 +69,7 @@ import assert from 'node:assert/strict';
 const {startPersonalizedBrowser} = await import(MODULE);
 const url='https://chatgpt.com/?temporary-chat=true';
 let pages=[{id:'owned',type:'page',url},{id:'startup-blank',type:'page',url:'about:blank'}];
-let kills=0, closes=0, opts, promptChecks=0, personalized=false;
+let kills=0, closes=0, opts, promptChecks=0, personalized=false, hidden=0;
 const client={Page:{enable:async()=>{}},Runtime:{enable:async()=>{},evaluate:async()=>({result:{value:url}})},
  close:async()=>{closes++},Emulation:{setFocusEmulationEnabled:async()=>{}}};
 class Launcher {
@@ -79,6 +80,7 @@ class Launcher {
 const deps={Launcher,pause:async()=>{},
  jsonAt:async(port,resource)=>resource==='list'?pages:{webSocketDebuggerUrl:'ws://127.0.0.1:12345/devtools/browser/exact'},
  lifecycle:{buildChromeFlagsForTest:()=>[],resolveChromeLaunchOptionsForTest:flags=>({chromeFlags:flags,ignoreDefaultFlags:true}),
+ positionChromeWindowOffscreen:async()=>{hidden++;},
  connectToRemoteChromeTarget:async(host,port,log,options)=>{assert.equal(options.targetId,'owned');return {client,targetId:'owned'};},
  closeBlankChromeTabs:async(port,log,host,options)=>{
   assert.equal(options.preserveOneBlank,false);assert.deepEqual(options.excludeTargetIds,['owned']);pages=pages.filter(t=>t.id!=='startup-blank');
@@ -88,14 +90,15 @@ const deps={Launcher,pause:async()=>{},
  ensureTemporaryChatPersonalization:async()=>{assert.equal(pages.length,1);if(FAILURE==='personalization')throw Error('personalization failed');personalized=true;}
 };
 try {
- const session=await startPersonalizedBrowser({port:12345,url,profilePath:'owned-copy',startupTimeoutMs:100},deps);
+ const session=await startPersonalizedBrowser({port:12345,url,profilePath:'owned-copy',startupTimeoutMs:100,platform:PLATFORM},deps);
  assert.equal(FAILURE,'none');assert.equal(session.evidence.target_id,'owned');
  assert.equal(session.evidence.page_count,1);assert.equal(session.evidence.startup_blank_tabs,0);
  assert.equal(personalized,true);assert.equal(kills,0);
 } catch(error){assert.notEqual(FAILURE,'none',error.stack);assert.match(error.message,/failed|deadline/);assert.equal(kills,1);assert.equal(closes,1);}
 assert.equal(opts.startingUrl,url);assert.ok(opts.chromeFlags.includes('--hide-crash-restore-bubble'));
 assert.equal(pages.length,1);assert.ok(promptChecks>0);
-""".replace('MODULE', json.dumps(module)).replace('FAILURE', json.dumps(failure))
+assert.equal(hidden,PLATFORM==='darwin'?1:0);
+""".replace('MODULE', json.dumps(module)).replace('FAILURE', json.dumps(failure)).replace('PLATFORM', json.dumps(platform))
     result = subprocess.run([node, '--input-type=module', '-e', script], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
 
