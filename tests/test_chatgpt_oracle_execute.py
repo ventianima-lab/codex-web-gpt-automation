@@ -472,6 +472,20 @@ def test_explicit_model_uses_observed_select_logs(executor, tmp_path: Path):
     assert executor.observed_model_check(stdout, model="gpt-5.6-sol", effort="pro")["verified"] is True
 
 
+@pytest.mark.parametrize("effort", ["pro", "extra-high"])
+def test_explicit_model_accepts_native_already_selected_effort(executor, tmp_path: Path, effort: str):
+    stdout = tmp_path / "stdout.log"
+    evidence = native_latest_evidence(effort, "GPT-5.6 Sol").replace(
+        "requestedKey=latest; target=latest;", "requestedKey=gpt-5.6-sol; target=GPT-5.6 Sol;"
+    )
+    stdout.write_text(evidence, encoding="utf-8")
+    result = executor.observed_model_check(stdout, model="gpt-5.6-sol", effort=effort)
+    assert result["verified"] is True
+    assert result["actual_model"] is None
+    assert result["source"] == "oracle-native-selection-log"
+    assert executor.observed_model_check(stdout, model="latest", effort=effort)["verified"] is False
+
+
 def test_close_owned_tab_targets_only_exact_recorded_target(executor):
     urls: list[str] = []
     target_id = "B" * 32

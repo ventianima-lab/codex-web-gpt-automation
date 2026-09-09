@@ -655,7 +655,7 @@ def _selected_latest_row(rows: Any) -> bool:
 def observed_model_check(stdout_path: Path, *, model: str, effort: str) -> dict[str, Any]:
     lines = _clean_lines(stdout_path)
     expected_ordinal = 5 if effort == "pro" else 4
-    if model == "latest":
+    if model in SUPPORTED_MODELS:
         model_line = next((line for line in reversed(lines) if MODEL_EVIDENCE_PREFIX in line), "")
         thinking_line = next((line for line in reversed(lines) if THINKING_EVIDENCE_PREFIX in line), "")
 
@@ -677,9 +677,15 @@ def observed_model_check(stdout_path: Path, *, model: str, effort: str) -> dict[
         )
         native_verified = bool(
             # Oracle normalizes the public 'latest' alias before formatting logs.
-            model_evidence.get("requestedKey", "").casefold() in {"latest", "gpt-6-astra"}
-            and model_evidence.get("target", "").casefold() == "latest"
-            and model_evidence.get("resolvedLabel", "").strip() in {"Latest", "最新", "최신"}
+            model_evidence.get("requestedKey", "").casefold() in (
+                {"latest", "gpt-6-astra"} if model == "latest" else {"gpt-5.6-sol"}
+            )
+            and re.sub(r"\s+", "", model_evidence.get("target", "")).casefold() == (
+                "latest" if model == "latest" else "gpt-5.6sol"
+            )
+            and model_evidence.get("resolvedLabel", "").strip() in (
+                {"Latest", "最新", "최신"} if model == "latest" else {"GPT-5.6 Sol"}
+            )
             and model_evidence.get("status") in {"already-selected", "switched"}
             and model_evidence.get("strategy") == "select"
             and model_evidence.get("verified") == "yes"
@@ -694,11 +700,12 @@ def observed_model_check(stdout_path: Path, *, model: str, effort: str) -> dict[
             return {
                 "verified": True,
                 "model": model,
-                "actual_model": "6 Pro" if effort == "pro" else None,
+                "actual_model": "6 Pro" if model == "latest" and effort == "pro" else None,
                 "effort": effort,
                 "source": "oracle-native-selection-log",
             }
 
+    if model == "latest":
         # Historical patched Oracle releases emitted one combined DOM proof.
         # Keep accepting it for recovery runs, after preferring 0.20's native evidence.
         for line in reversed(lines):
