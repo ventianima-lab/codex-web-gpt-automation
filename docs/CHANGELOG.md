@@ -17,6 +17,14 @@
   non-secret excerpt from a listed UTF-8 file inside the approved project root;
   the mission prompt itself is explicitly ineligible as that proof. No nonce,
   tool-order requirement, three-receipt chain, or magic marker is reintroduced.
+- Ordinary-run duplicate protection now fails closed when an existing run
+  state is unreadable instead of permitting a replacement submission.
+  `execute --manifest` also rejects explicit model, effort, or app overrides
+  rather than silently discarding them; direct execution keeps the documented
+  Latest/Pro/codex defaults when those flags are omitted.
+- Temporary Chat personalization recognizes the supported English and Korean
+  control labels, including the current non-personalized wording, while keeping
+  the same one-control/one-radio-pair ambiguity checks before any click.
 
 - Discover Oracle in configured npm caches and the Windows packaged Codex cache,
   retaining the explicit package-root override. Validate archived patch migration

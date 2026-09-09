@@ -592,3 +592,31 @@ def test_unresolved_observed_run_blocks_duplicate_submission(executor, execution
             command_resolver=lambda: pytest.fail("duplicate must fail before resolving Oracle"),
         )
     assert exc.value.code == "RUN_RECONNECT_REQUIRED"
+
+
+def test_unreadable_prior_run_state_blocks_replacement_submission(executor, execution_paths):
+    root, mission, run_root, _ = execution_paths
+    corrupt_run = run_root / "ordinary-run-corrupt"
+    corrupt_run.mkdir(parents=True)
+    (corrupt_run / "state.json").write_text('{"schema":', encoding="utf-8")
+    config = executor.make_config(
+        project_root=root,
+        mission_path=mission,
+        run_root=run_root,
+        run_id="ordinary-run-0008",
+    )
+
+    with pytest.raises(executor.ExecutionError) as exc:
+        executor.execute_config(
+            config,
+            command_resolver=lambda: pytest.fail("corrupt prior state must block before Oracle resolution"),
+        )
+
+    assert exc.value.code == "RUN_RECONNECT_REQUIRED"
+    assert exc.value.evidence == {
+        "run_dir": str(corrupt_run),
+        "status": "state_unreadable",
+        "submission": "unknown",
+        "state_error_code": "RUN_STATE_INVALID",
+    }
+    assert not (run_root / config.run_id).exists()

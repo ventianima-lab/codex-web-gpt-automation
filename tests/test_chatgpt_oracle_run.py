@@ -5523,6 +5523,69 @@ def test_live_recovery_cli_defaults_to_eighty_minute_status_audit() -> None:
     assert args.settle_interval_seconds == 15
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        ["--model", "gpt-5.6-sol"],
+        ["--effort", "extra-high"],
+        ["--app-name", "different-app"],
+    ],
+)
+def test_execute_manifest_rejects_selection_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    override: list[str],
+) -> None:
+    runner = load_runner()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner.EXECUTOR,
+        "execute_manifest",
+        lambda *args, **kwargs: pytest.fail("selection conflict must fail before manifest execution"),
+    )
+
+    exit_code = runner.main(["execute", "--manifest", str(manifest_path), *override])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["error"]["code"] == "EXECUTE_ARGUMENTS_CONFLICT"
+
+
+def test_direct_execute_keeps_default_selection_when_flags_are_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    observed: dict[str, object] = {}
+
+    def make_config(**kwargs):
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(runner.EXECUTOR, "make_config", make_config)
+    monkeypatch.setattr(
+        runner.EXECUTOR,
+        "execute_config",
+        lambda config, *, dry_run: {"ok": True, "status": "dry-run"},
+    )
+
+    exit_code = runner.main([
+        "execute",
+        "--project-root", "project",
+        "--mission-path", "mission.md",
+        "--dry-run",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "dry-run"
+    assert observed["model"] == runner.EXECUTOR.DEFAULT_MODEL
+    assert observed["effort"] == runner.EXECUTOR.DEFAULT_EFFORT
+    assert observed["app_name"] == runner.EXECUTOR.DEFAULT_APP_NAME
+
+
 def test_live_recovery_reopens_only_the_exact_slug_after_each_status_audit(
     tmp_path: Path,
 ) -> None:

@@ -4278,9 +4278,11 @@ def build_parser() -> argparse.ArgumentParser:
     execute_parser.add_argument("--mission-path", type=Path)
     execute_parser.add_argument("--run-root", type=Path)
     execute_parser.add_argument("--run-id")
-    execute_parser.add_argument("--model", choices=EXECUTOR.SUPPORTED_MODELS, default=EXECUTOR.DEFAULT_MODEL)
-    execute_parser.add_argument("--effort", choices=EXECUTOR.SUPPORTED_EFFORTS, default=EXECUTOR.DEFAULT_EFFORT)
-    execute_parser.add_argument("--app-name", default=EXECUTOR.DEFAULT_APP_NAME)
+    # Keep selection arguments unset at parse time so an explicit override can
+    # never be silently discarded when --manifest already owns the selection.
+    execute_parser.add_argument("--model", choices=EXECUTOR.SUPPORTED_MODELS)
+    execute_parser.add_argument("--effort", choices=EXECUTOR.SUPPORTED_EFFORTS)
+    execute_parser.add_argument("--app-name")
     execute_parser.add_argument("--dry-run", action="store_true")
     reconnect_parser = commands.add_parser("reconnect", help="prompt-free continuation of one ordinary run")
     reconnect_parser.add_argument("--run-dir", type=Path, required=True)
@@ -4413,10 +4415,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "execute":
             if args.manifest is not None:
-                if args.project_root is not None or args.mission_path is not None or args.run_root is not None or args.run_id is not None:
+                if any(
+                    value is not None
+                    for value in (
+                        args.project_root,
+                        args.mission_path,
+                        args.run_root,
+                        args.run_id,
+                        args.model,
+                        args.effort,
+                        args.app_name,
+                    )
+                ):
                     raise EXECUTOR.ExecutionError(
                         "EXECUTE_ARGUMENTS_CONFLICT",
-                        "--manifest cannot be combined with direct root, mission, or run identity arguments",
+                        "--manifest cannot be combined with direct root, mission, run identity, model, effort, or app arguments",
                     )
                 payload = EXECUTOR.execute_manifest(args.manifest, dry_run=args.dry_run)
             else:
@@ -4430,9 +4443,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     mission_path=args.mission_path,
                     run_root=args.run_root,
                     run_id=args.run_id,
-                    model=args.model,
-                    effort=args.effort,
-                    app_name=args.app_name,
+                    model=args.model or EXECUTOR.DEFAULT_MODEL,
+                    effort=args.effort or EXECUTOR.DEFAULT_EFFORT,
+                    app_name=args.app_name or EXECUTOR.DEFAULT_APP_NAME,
                 )
                 payload = EXECUTOR.execute_config(config, dry_run=args.dry_run)
         elif args.command == "reconnect":

@@ -417,8 +417,17 @@ def _unresolved_duplicate(config: ExecutionConfig) -> dict[str, Any] | None:
     for state_path in sorted(config.run_root.glob("*/state.json")):
         try:
             state = _load_state(state_path)
-        except ExecutionError:
-            continue
+        except ExecutionError as exc:
+            # This run root is the submission-ownership boundary.  An
+            # unreadable state cannot prove that an earlier submission ended,
+            # so fail closed and require attention to that exact run instead
+            # of silently permitting a replacement send.
+            return {
+                "run_dir": str(state_path.parent),
+                "status": "state_unreadable",
+                "submission": "unknown",
+                "state_error_code": exc.code,
+            }
         if (
             state.get("project_root") == str(config.project_root)
             and state.get("source_thread_id") == config.source_thread_id
