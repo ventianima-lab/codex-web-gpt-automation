@@ -74,6 +74,13 @@ cd codex-web-gpt-automation
 python doctor.py
 ```
 
+To retain locally customized global files on Windows, pass exact manifest-relative
+paths, for example
+`-PreserveExistingPath 'skills/mcp-update-guard/SKILL.md','skills/mcp-update-guard/agents/openai.yaml'`.
+Only existing regular files are accepted. Preserved files are recorded separately
+from installer-owned files in the receipt. Preview with `-WhatIf`, and explicitly
+select the paths again on subsequent installs.
+
 ### macOS
 
 ```bash
