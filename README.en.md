@@ -7,7 +7,7 @@
   <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/tag/ventianima-lab/codex-web-gpt-automation?sort=semver&label=release"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
-  <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.18.0-8B5CF6">
+  <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.20.0-8B5CF6">
   <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.8-14B8A6">
 </p>
 
@@ -172,9 +172,9 @@ This project follows [Semantic Versioning](https://semver.org/) using
 `install-manifest.json`, the Git tag, and the GitHub Release must identify the
 same version. Read the [changelog](docs/CHANGELOG.md) before upgrading.
 
-The current tested baseline is Oracle `0.18.0`, DevSpace `1.0.8`, Node.js
+The current tested baseline is Oracle `0.20.0` (narrow Korean Latest and quota UI fixes), DevSpace `1.0.8`, Node.js
 `>=24 <27`, Windows 11, and macOS 12 or newer. Official npm `latest` releases
-become candidates immediately, but only an isolated archive, patch,
+become candidates immediately, but only an isolated archive, pristine-or-patch hashes,
 no-submission, and cross-platform validation plus review can promote them to
 current. The six-hour reporter only maintains the drift issue. A separate
 scheduled Codex maintainer starts validation within 24 hours and owns the PR,
@@ -188,8 +188,8 @@ on downstream machines. Oracle `0.17.1` and DevSpace `1.0.7` remain rollback LKG
 legacy-recovery versions, not defaults for new work. See the
 [upstream runtime policy](docs/UPSTREAM_RUNTIME_POLICY.md).
 
-The WebJjonku Linux archive-verification profile uses the same Oracle `0.18.0`
-current.
+The WebJjonku Linux Oracle `0.18.0` archive-verification profile is retained
+only for historical recovery.
 
 ```sh
 python bin/chatgpt_oracle_compat.py --profile webjjonku-linux --resolved-version "oracle 0.18.0" --package-root /exact/node_modules/@steipete/oracle --package-archive /exact/steipete-oracle-0.18.0.tgz

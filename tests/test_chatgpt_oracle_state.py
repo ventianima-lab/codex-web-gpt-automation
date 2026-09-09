@@ -1481,7 +1481,7 @@ def test_missing_oracle_command_stays_deterministic_and_explicit_command_is_pres
     ))
 
     assert implicit.oracle_command == (
-        "npx.cmd", "-y", "@steipete/oracle@0.18.0",
+        "npx.cmd", "-y", "@steipete/oracle@0.20.0",
     )
     assert implicit.oracle_command_defaulted is True
     assert explicit.oracle_command == ("oracle",)

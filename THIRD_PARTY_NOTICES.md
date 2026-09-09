@@ -2,8 +2,8 @@
 
 This repository ships no copy of agbrowse, the Oracle package, DevSpace,
 Codex, CodexPro, browser binaries, or account data. It does ship narrow
-textual compatibility patches for hash-verified Oracle 0.18.0 and DevSpace
-1.0.8, plus Oracle 0.17.1 and DevSpace 1.0.7 rollback-LKG assets and the frozen
+current textual compatibility patches for Oracle 0.20.0, historical Oracle 0.18.0 patches, and current patches
+for DevSpace 1.0.8, plus Oracle 0.17.1 and DevSpace 1.0.7 rollback-LKG assets and the frozen
 legacy Oracle 0.16.1 recovery lineage.
 
 - `hehee9/multi-gpt@4f5e130` is MIT-licensed. Its attribution and the recorded `server.mjs` hash must be preserved when its upstream-compatible integration is changed.
@@ -15,13 +15,15 @@ legacy Oracle 0.16.1 recovery lineage.
   metadata and re-check before any redistribution. This project installs the
   package externally and does not copy its source.
 - `@steipete/oracle` is an external MIT-licensed browser automation package.
-  The default tested version is 0.18.0; its published npm integrity and exact
-  compatibility patch hashes are verified before use. Oracle 0.17.1 remains
+  The default tested version is 0.20.0; its published npm integrity and exact
+  pristine-or-patched critical-file hashes are verified before use. The narrow
+  derivative patches under `bin/oracle-compat/0.20.0` support Korean Latest and
+  quota-limited effort layouts. Oracle 0.17.1 remains
   the rollback LKG and exact historical-recovery contract. Separately installed
   dependencies remain governed by the invoking runtime lock. This release
   rejects every other Oracle version until a reviewed, hash-bound compatibility
   contract is promoted. Its package source is not vendored. Files
-  under `bin/oracle-compat/0.18.0` are current derivative patch instructions;
+  under `bin/oracle-compat/0.18.0` are historical derivative patch instructions;
   `bin/oracle-compat/0.17.1` is the rollback-LKG contract, and
   `bin/oracle-compat/0.16.1` remains frozen for exact legacy recovery. All retain
   the following upstream MIT notice.

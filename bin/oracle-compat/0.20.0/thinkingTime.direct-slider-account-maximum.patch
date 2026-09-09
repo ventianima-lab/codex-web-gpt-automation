@@ -1,0 +1,89 @@
+diff --git a/dist/src/browser/actions/thinkingTime.js b/dist/src/browser/actions/thinkingTime.js
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -69,6 +69,7 @@
+         requestedLevel: level,
+         status,
+         resolvedLabel,
++        maximum: result?.maximum ?? null,
+         verified: status === "already-selected" || status === "switched",
+         strictFailClosed: strictProEffort,
+         targetModelKind: targetModelKind ?? null,
+@@ -1030,11 +1031,16 @@
+           .filter(Boolean);
+         if (selections.length !== 1) return null;
+         const { label, index, level } = selections[0];
+-        // This adapter owns the observed five-tier layout only. A different range
+-        // or contradictory announcement must not turn a numeric guess into proof.
+-        if (thumb.getAttribute('aria-valuemin') !== '0' || thumb.getAttribute('aria-valuemax') !== '4' ||
+-            thumb.getAttribute('aria-valuenow') !== String(index)) return null;
+-        return { control, label, index, level };
++        const maximumAttribute = thumb.getAttribute('aria-valuemax');
++        const maximum = maximumAttribute === '3' || maximumAttribute === '4'
++          ? Number(maximumAttribute)
++          : null;
++        // The account can expose either the four-position (0..3) layout or the
++        // five-position (0..4) layout. Any other range or contradictory label/index
++        // pair is unverified; never infer Pro from the highest numeric position.
++        if (thumb.getAttribute('aria-valuemin') !== '0' || maximum === null ||
++            thumb.getAttribute('aria-valuenow') !== String(index) || index > maximum) return null;
++        return { control, label, index, level, maximum };
+       };
+       let current = resolve();
+       const finish = (result) => { closeOpenMenus(); return result; };
+@@ -1050,14 +1056,38 @@
+       const targetIndex = ['light', 'standard', 'extended', 'extra-high', 'pro'].indexOf(target);
+       if (targetIndex < 0) {
+         if (TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'heavy' && current.level === 'pro') {
+-          return finish({ status: 'already-selected', label: current.label });
++          return finish({
++            status: 'already-selected',
++            label: current.label,
++            maximum: current.maximum,
++            resolvedState: { label: current.label, index: current.index, level: current.level, maximum: current.maximum },
++          });
+         }
+         return finish(failure('option-not-found'));
+       }
+-      if (current.level === target) return finish({ status: 'already-selected', label: current.label });
++      if (targetIndex > current.maximum) {
++        const targetLabel = target === 'pro' ? 'Pro' : target;
++        return finish(failure('option-disabled', {
++          label: targetLabel,
++          notice: \`\${targetLabel} is unavailable on this account: the requested tier is not offered by this slider (maximum index \${current.maximum}).\`,
++          maximum: current.maximum,
++          resolvedState: { label: current.label, index: current.index, level: current.level, maximum: current.maximum },
++        }));
++      }
++      if (current.level === target) return finish({
++        status: 'already-selected',
++        label: current.label,
++        maximum: current.maximum,
++        resolvedState: { label: current.label, index: current.index, level: current.level, maximum: current.maximum },
++      });
+       const deadline = performance.now() + MAX_WAIT_MS;
+       for (let attempt = 0; attempt < 4 && performance.now() < deadline; attempt += 1) {
+-        if (isOptionDisabled(current.control)) return finish(failure('option-disabled', { label: current.label }));
++        if (isOptionDisabled(current.control)) return finish(failure('option-disabled', {
++          label: current.label,
++          notice: \`\${current.label} is unavailable on this account.\`,
++          maximum: current.maximum,
++          resolvedState: { label: current.label, index: current.index, level: current.level, maximum: current.maximum },
++        }));
+         const previousIndex = current.index;
+         const key = targetIndex > previousIndex ? 'ArrowRight' : 'ArrowLeft';
+         current.control.focus?.();
+@@ -1069,7 +1099,12 @@
+           if (next && next.index !== previousIndex) { current = next; break; }
+         }
+         if (!current) return finish(failure('selection-unverified'));
+-        if (current.level === target) return finish({ status: 'switched', label: current.label });
++        if (current.level === target) return finish({
++          status: 'switched',
++          label: current.label,
++          maximum: current.maximum,
++          resolvedState: { label: current.label, index: current.index, level: current.level, maximum: current.maximum },
++        });
+       }
+       return finish(failure('selection-unverified'));
+     };

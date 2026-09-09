@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,25 @@ def load_module():
 @pytest.fixture
 def executor():
     return load_module()
+
+
+def fake_preflight(_command, _profile, port):
+    return {
+        "ok": True,
+        "pid": 1234,
+        "port": port,
+        "target_id": "B" * 32,
+        "conversation_url": "https://chatgpt.com/?temporary-chat=true",
+        "browser_ws": f"ws://127.0.0.1:{port}/devtools/browser/test",
+    }
+
+
+def fake_cleanup(*_args, **_kwargs):
+    return {"status": "closed"}
+
+
+def browser_port(argv):
+    return int(argv[argv.index("--remote-chrome") + 1].rsplit(":", 1)[1])
 
 
 def test_process_probe_does_not_signal_on_windows(executor, monkeypatch):
@@ -78,11 +98,52 @@ def test_slug_survives_oracle_normalization(executor, execution_paths):
     assert all(len(word) <= 10 for word in slug.split("-"))
 
 
-def test_child_enables_temporary_personalization(executor, monkeypatch):
+def test_child_does_not_request_a_runtime_personalization_patch(executor, monkeypatch):
     monkeypatch.setenv("CODEX_ORACLE_TEMPORARY_PERSONALIZATION", "disabled")
     environment = executor._child_environment()
-    assert environment["CODEX_ORACLE_TEMPORARY_PERSONALIZATION"] == "enabled"
-    assert environment["CODEX_ORACLE_TEMPORARY_PERSONALIZATION_HELPER"] == MODULE_PATH.with_name("oracle_temporary_personalization.mjs").as_uri()
+    assert "CODEX_ORACLE_TEMPORARY_PERSONALIZATION" not in environment
+    assert "CODEX_ORACLE_TEMPORARY_PERSONALIZATION_HELPER" not in environment
+
+
+def test_personalization_preflight_is_bound_before_remote_oracle(executor, tmp_path):
+    node = tmp_path / "node.exe"
+    entry = tmp_path / "oracle" / "dist" / "bin" / "oracle-cli.js"
+    profile = tmp_path / "profile"
+    entry.parent.mkdir(parents=True)
+    profile.mkdir()
+    node.write_bytes(b"node")
+    entry.write_bytes(b"oracle")
+    observed = []
+
+    def run(argv, **kwargs):
+        observed.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({
+            "ok": True, "pid": 1234, "port": 49152, "target_id": "B" * 32,
+            "conversation_url": "https://chatgpt.com/?temporary-chat=true",
+            "browser_ws": "ws://127.0.0.1:49152/devtools/browser/test",
+        }))
+
+    result = executor._start_personalized_browser([str(node), str(entry)], profile, 49152, run_factory=run)
+    assert result["target_id"] == "B" * 32
+    assert observed[0][0][-2:] == ["49152", "https://chatgpt.com/?temporary-chat=true"]
+
+
+def test_cleanup_delegates_exact_browser_and_tab_identity_once(executor):
+    observed = []
+
+    def run(argv, **kwargs):
+        observed.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stderr="", stdout='{"ok":true,"closed":true}')
+
+    preflight = fake_preflight([], Path(), 49152)
+    expected_url = "https://chatgpt.com/c/owned-temporary-run"
+    result = executor._cleanup_personalized_browser(
+        preflight, ["node", "oracle"], expected_url=expected_url, run_factory=run
+    )
+    assert result == {"status": "closed", "target_id": "B" * 32}
+    assert observed[0][0][-4:] == [
+        "49152", preflight["browser_ws"], preflight["target_id"], expected_url
+    ]
 
 
 def test_changed_mission_is_rejected_before_launch(executor, execution_paths):
@@ -136,7 +197,7 @@ def test_profile_copy_failure_is_definitely_before_submission(executor, executio
         raise OSError("profile copy failed")
     monkeypatch.setattr(executor, "_prepare_run_profile", failed_copy)
     result = executor.execute_config(config, command_resolver=lambda: ["oracle"],
-        version_resolver=lambda command: "oracle 0.18.0", compat_factory=lambda version: {},
+        version_resolver=lambda command: "oracle 0.20.0", compat_factory=lambda version: {},
         popen_factory=lambda *args, **kwargs: pytest.fail("must not start Oracle"))
     assert result["result"]["submission"] == "not_observed"
     assert result["result"]["failure_stage"] == "profile-preparation"
@@ -192,8 +253,8 @@ def test_selected_node_is_forwarded_to_compatibility(executor, execution_paths, 
         raise RuntimeError("stop before browser or profile copy")
     with pytest.raises(RuntimeError, match="stop before browser"):
         executor.execute_config(config, command_resolver=lambda: command,
-            version_resolver=lambda value: "oracle 0.18.0", compat_factory=verify)
-    assert observed == [("oracle 0.18.0", {"node_executable": str(node)})]
+            version_resolver=lambda value: "oracle 0.20.0", compat_factory=verify)
+    assert observed == [("oracle 0.20.0", {"node_executable": str(node)})]
     assert not (run_root / config.run_id).exists()
 
 
@@ -237,6 +298,19 @@ def picker_proof(effort: str = "pro") -> dict:
     }
 
 
+def native_latest_evidence(
+    effort: str = "pro", model_label: str = "Latest", effort_label: str | None = None
+) -> str:
+    label = effort_label or ("Pro" if effort == "pro" else "Extra High")
+    return (
+        f"[browser] Model selection evidence: requestedKey=latest; target=latest; resolvedLabel={model_label}; "
+        "status=already-selected; strategy=select; verified=yes; source=chatgpt-model-picker; capturedAt=now\n"
+        f"[browser] Thinking effort evidence: requestedLevel={effort}; status=already-selected; "
+        f"resolvedLabel={label}; verified=yes; failClosed={'yes' if effort == 'pro' else 'no'}; "
+        "targetModelKind=(none); observedModelKind=(none); source=chatgpt-thinking-picker; capturedAt=now\n"
+    )
+
+
 def write_session_meta(
     session_root: Path,
     slug: str,
@@ -244,8 +318,8 @@ def write_session_meta(
     status: str,
     submitted: bool = True,
     port: int = 43123,
+    target_id: str = "B" * 32,
 ) -> dict:
-    target_id = "A" * 32
     url = "https://chatgpt.com/c/owned-temporary-run"
     directory = session_root / slug
     directory.mkdir(parents=True, exist_ok=True)
@@ -310,15 +384,18 @@ def test_dry_run_has_temp_personalized_route_and_no_writes(executor, execution_p
 
     assert result["writes_performed"] is False
     assert not run_root.exists()
-    assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
-    assert argv[argv.index("--browser-model-strategy") + 1] == "current"
+    assert argv[argv.index("--model") + 1] == "latest"
+    assert argv[argv.index("--browser-model-strategy") + 1] == "select"
     assert argv[argv.index("--browser-thinking-time") + 1] == "pro"
     assert argv[argv.index("--chatgpt-url") + 1] == "https://chatgpt.com/?temporary-chat=true"
     assert argv[argv.index("--browser-archive") + 1] == "never"
-    assert "--browser-keep-browser" in argv
-    assert "--browser-hide-window" in argv
+    assert "--remote-chrome" in argv
+    assert argv[argv.index("--remote-chrome") + 1].startswith("127.0.0.1:")
+    assert "--browser-keep-browser" not in argv
+    assert "--browser-hide-window" not in argv
     assert "--copy-profile" not in argv
-    assert Path(argv[argv.index("--browser-manual-login-profile-dir") + 1]) == run_root / config.run_id / "browser-profile"
+    assert "--browser-manual-login-profile-dir" not in argv
+    assert "--browser-tab" not in argv
     assert argv[argv.index("--prompt") + 1] == "<mission-handoff>"
     assert "TASK_OUTCOME" not in " ".join(argv)
 
@@ -338,6 +415,39 @@ def test_one_latest_model_check_covers_model_and_effort(executor, tmp_path: Path
         "effort": effort,
         "source": "oracle-picker-dom-log",
     }
+
+
+@pytest.mark.parametrize(
+    "effort,model_label,effort_label",
+    [("pro", "Latest", "Pro"), ("extra-high", "최신", "매우 높음")],
+)
+def test_latest_model_check_prefers_native_020_evidence(
+    executor, tmp_path: Path, effort: str, model_label: str, effort_label: str
+):
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text(native_latest_evidence(effort, model_label, effort_label), encoding="utf-8")
+    result = executor.observed_model_check(stdout, model="latest", effort=effort)
+    assert result["verified"] is True
+    assert result["source"] == "oracle-native-selection-log"
+
+
+def test_latest_native_evidence_fails_closed_when_thinking_is_unverified(executor, tmp_path: Path):
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text(
+        native_latest_evidence("extra-high").replace(
+            "status=already-selected; resolvedLabel=Extra High; verified=yes",
+            "status=unverified; resolvedLabel=(none); verified=no",
+        ),
+        encoding="utf-8",
+    )
+    assert executor.observed_model_check(stdout, model="latest", effort="extra-high")["verified"] is False
+
+
+@pytest.mark.parametrize("key,verified", [("gpt-6-astra", True), ("gpt-5.6-sol", False)])
+def test_native_latest_alias_uses_oracle_normalized_request_key(executor, tmp_path: Path, key: str, verified: bool):
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text(native_latest_evidence("extra-high").replace("requestedKey=latest;", f"requestedKey={key};"), encoding="utf-8")
+    assert executor.observed_model_check(stdout, model="latest", effort="extra-high")["verified"] is verified
 
 
 @pytest.mark.parametrize("label, verified", [("Thinking effort", True), ("추론 수준", True), ("5.6 Pro", False)])
@@ -420,44 +530,140 @@ def test_capture_state_is_durable_before_owned_tab_close(executor, execution_pat
     state_path = run_root / config.run_id / "state.json"
 
     def popen(argv, **kwargs):
+        assert argv[argv.index("--browser-tab") + 1] == "B" * 32
         output = Path(argv[argv.index("--write-output") + 1])
         output.write_text("Complete captured answer.\n", encoding="utf-8")
-        kwargs["stdout"].write(
-            f"[browser] Picker DOM proof: {json.dumps(picker_proof())}\n".encode()
-        )
+        kwargs["stdout"].write(native_latest_evidence().encode())
         kwargs["stdout"].flush()
         write_session_meta(
             session_root,
             argv[argv.index("--slug") + 1],
             status="completed",
-            port=int(argv[argv.index("--browser-port") + 1]),
+            port=browser_port(argv),
         )
         return Process(0)
 
-    close_calls = []
+    cleanup_calls = []
 
-    def closer(binding):
+    def cleanup(preflight, command, *, expected_url):
         persisted = json.loads(state_path.read_text(encoding="utf-8"))
         assert persisted["status"] == "captured"
         assert persisted["capture"] == "durable"
         assert persisted["artifacts"]["output_sha256"]
-        close_calls.append(binding["target_id"])
-        return {"status": "closed", "target_id": binding["target_id"]}
+        cleanup_calls.append((preflight["target_id"], command, expected_url))
+        return {"status": "closed", "target_id": preflight["target_id"]}
 
     result = executor.execute_config(
         config,
         command_resolver=lambda: ["oracle"],
-        version_resolver=lambda command: "oracle 0.18.0",
+        version_resolver=lambda command: "oracle 0.20.0",
         compat_factory=lambda version: {"ok": True},
         popen_factory=popen,
-        tab_closer=closer,
+        tab_closer=lambda binding: pytest.fail("preflight run must not close a tab separately"),
+        browser_preflight=fake_preflight,
+        browser_cleanup=cleanup,
     )
 
     assert result["ok"] is True
     assert result["status"] == "captured"
     assert result["result"]["semantic_outcome"] == "unknown"
-    assert result["result"]["tab_close"]["status"] == "closed"
-    assert close_calls == ["A" * 32]
+    assert result["result"]["tab_close"]["status"] == "not_attempted"
+    assert result["result"]["browser_cleanup"]["status"] == "closed"
+    assert cleanup_calls == [("B" * 32, ["oracle"], "https://chatgpt.com/c/owned-temporary-run")]
+
+
+def test_preflight_target_mismatch_blocks_capture_and_preserves_browser(executor, execution_paths):
+    root, mission, run_root, session_root = execution_paths
+    config = executor.make_config(
+        project_root=root, mission_path=mission, run_root=run_root, run_id="ordinary-run-mismatch"
+    )
+
+    def popen(argv, **kwargs):
+        Path(argv[argv.index("--write-output") + 1]).write_text("Answer from wrong tab.\n", encoding="utf-8")
+        kwargs["stdout"].write(native_latest_evidence().encode())
+        kwargs["stdout"].flush()
+        write_session_meta(
+            session_root,
+            argv[argv.index("--slug") + 1],
+            status="completed",
+            port=browser_port(argv),
+            target_id="A" * 32,
+        )
+        return Process(0)
+
+    result = executor.execute_config(
+        config,
+        command_resolver=lambda: ["oracle"],
+        version_resolver=lambda command: "oracle 0.20.0",
+        compat_factory=lambda version: {"ok": True},
+        popen_factory=popen,
+        tab_closer=lambda binding: pytest.fail("mismatched target must be preserved"),
+        browser_preflight=fake_preflight,
+        browser_cleanup=lambda *_args: pytest.fail("uncertain target must preserve browser"),
+    )
+
+    assert result["status"] == "attention_required"
+    assert result["result"]["capture"] == "durable"
+    assert result["result"]["submission"] == "unknown"
+    assert result["result"]["oracle"]["binding"] is None
+
+
+def test_popen_failure_cleans_owned_preflight_before_submission(executor, execution_paths):
+    root, mission, run_root, _ = execution_paths
+    config = executor.make_config(
+        project_root=root, mission_path=mission, run_root=run_root, run_id="ordinary-run-popen-fail"
+    )
+    cleanup_calls = []
+
+    def cleanup(preflight, command):
+        cleanup_calls.append((preflight["target_id"], command))
+        return {"status": "closed", "target_id": preflight["target_id"]}
+
+    result = executor.execute_config(
+        config,
+        command_resolver=lambda: ["oracle"],
+        version_resolver=lambda command: "oracle 0.20.0",
+        compat_factory=lambda version: {"ok": True},
+        popen_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("popen failed")),
+        tab_closer=lambda binding: pytest.fail("Popen failure must use browser cleanup only"),
+        browser_preflight=fake_preflight,
+        browser_cleanup=cleanup,
+    )
+
+    assert result["result"]["submission"] == "not_observed"
+    assert result["result"]["browser_cleanup"]["status"] == "closed"
+    assert cleanup_calls == [("B" * 32, ["oracle"])]
+
+
+def test_historical_run_without_preflight_keeps_exact_tab_close(executor, execution_paths):
+    root, mission, run_root, session_root = execution_paths
+    config = executor.make_config(
+        project_root=root, mission_path=mission, run_root=run_root, run_id="historical-run-0001"
+    )
+    run_dir = run_root / config.run_id
+    run_dir.mkdir(parents=True)
+    output = run_dir / "output.md"
+    stdout = run_dir / "stdout.log"
+    output.write_text("Historical captured answer.\n", encoding="utf-8")
+    stdout.write_text(f"{executor.PICKER_PROOF_PREFIX} {json.dumps(picker_proof())}\n", encoding="utf-8")
+    state = executor._initial_state(config, run_dir, executor._slug(config), output, ["oracle"], cdp_port=43123)
+    state_path = run_dir / "state.json"
+    write_session_meta(
+        session_root, state["oracle"]["slug"], status="completed", port=43123, target_id="A" * 32
+    )
+    closed = []
+
+    result = executor._finalize_capture(
+        state_path,
+        state,
+        stdout_path=stdout,
+        output_path=output,
+        tab_closer=lambda binding: closed.append(binding["target_id"]) or {"status": "closed"},
+    )
+
+    assert result["status"] == "captured"
+    assert result["tab_close"]["status"] == "closed"
+    assert closed == ["A" * 32]
 
 
 def test_timeout_keeps_same_tab_and_never_resubmits(executor, execution_paths):
@@ -476,17 +682,19 @@ def test_timeout_keeps_same_tab_and_never_resubmits(executor, execution_paths):
             session_root,
             argv[argv.index("--slug") + 1],
             status="running",
-            port=int(argv[argv.index("--browser-port") + 1]),
+            port=browser_port(argv),
         )
         return Process(1)
 
     result = executor.execute_config(
         config,
         command_resolver=lambda: ["oracle"],
-        version_resolver=lambda command: "oracle 0.18.0",
+        version_resolver=lambda command: "oracle 0.20.0",
         compat_factory=lambda version: {"ok": True},
         popen_factory=popen,
         tab_closer=lambda binding: pytest.fail("incomplete run must not close its tab"),
+        browser_preflight=fake_preflight,
+        browser_cleanup=fake_cleanup,
     )
 
     assert result["ok"] is False
@@ -507,25 +715,25 @@ def test_reconnect_is_prompt_free_and_uses_original_slug(executor, execution_pat
     )
 
     def initial_popen(argv, **kwargs):
-        kwargs["stdout"].write(
-            f"[browser] Picker DOM proof: {json.dumps(picker_proof())}\n".encode()
-        )
+        kwargs["stdout"].write(native_latest_evidence().encode())
         kwargs["stdout"].flush()
         write_session_meta(
             session_root,
             argv[argv.index("--slug") + 1],
             status="running",
-            port=int(argv[argv.index("--browser-port") + 1]),
+            port=browser_port(argv),
         )
         return Process(1)
 
     first = executor.execute_config(
         config,
         command_resolver=lambda: ["oracle"],
-        version_resolver=lambda command: "oracle 0.18.0",
+        version_resolver=lambda command: "oracle 0.20.0",
         compat_factory=lambda version: {"ok": True},
         popen_factory=initial_popen,
         tab_closer=lambda binding: pytest.fail("initial incomplete run must retain tab"),
+        browser_preflight=fake_preflight,
+        browser_cleanup=fake_cleanup,
     )
     run_dir = Path(first["run_dir"])
     original = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
@@ -551,6 +759,7 @@ def test_reconnect_is_prompt_free_and_uses_original_slug(executor, execution_pat
         run_dir,
         popen_factory=reconnect_popen,
         tab_closer=lambda binding: {"status": "closed", "target_id": binding["target_id"]},
+        browser_cleanup=fake_cleanup,
     )
 
     assert recovered["ok"] is True
@@ -568,7 +777,7 @@ def test_unresolved_observed_run_blocks_duplicate_submission(executor, execution
             session_root,
             argv[argv.index("--slug") + 1],
             status="running",
-            port=int(argv[argv.index("--browser-port") + 1]),
+            port=browser_port(argv),
         )
         return Process(1)
 
@@ -578,9 +787,11 @@ def test_unresolved_observed_run_blocks_duplicate_submission(executor, execution
     executor.execute_config(
         first_config,
         command_resolver=lambda: ["oracle"],
-        version_resolver=lambda command: "oracle 0.18.0",
+        version_resolver=lambda command: "oracle 0.20.0",
         compat_factory=lambda version: {"ok": True},
         popen_factory=popen,
+        browser_preflight=fake_preflight,
+        browser_cleanup=fake_cleanup,
     )
     mission.write_text("A changed mission must not bypass an uncertain submission.\n", encoding="utf-8")
     second_config = executor.make_config(

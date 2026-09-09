@@ -160,22 +160,25 @@ def test_version_resolution_recovers_from_npx_failure_with_exact_cached_package(
 def test_version_resolution_recovers_current_oracle_from_exact_cached_package() -> None:
     runner = load_runner()
     resolved = runner.resolve_oracle_version(
-        ["npx.cmd", "-y", "@steipete/oracle@0.18.0"],
+        ["npx.cmd", "-y", "@steipete/oracle@0.20.0"],
         run_factory=lambda command, **kwargs: subprocess.CompletedProcess(
             command, 1, stdout="", stderr="network unavailable"
         ),
-        cache_resolver=lambda command: "oracle 0.18.0",
+        cache_resolver=lambda command: "oracle 0.20.0",
     )
-    assert resolved == "oracle 0.18.0"
+    assert resolved == "oracle 0.20.0"
 
 
 def test_explicit_oracle_command_validation_keeps_current_and_lkg_pins() -> None:
     runner = load_runner()
 
     assert runner.STATE.validate_oracle_command(
+        ["npx.cmd", "-y", "@steipete/oracle@0.20.0"]
+    ) == ("npx.cmd", "-y", "@steipete/oracle@0.20.0")
+    assert runner.STATE.validate_oracle_command(
         ["npx.cmd", "-y", "@steipete/oracle@0.18.0"]
     ) == ("npx.cmd", "-y", "@steipete/oracle@0.18.0")
-    with pytest.raises(runner.STATE.OracleStateError, match="0.17.1.*0.18.0|0.18.0.*0.17.1"):
+    with pytest.raises(runner.STATE.OracleStateError, match="0.17.1.*0.18.0.*0.20.0|0.20.0.*0.18.0.*0.17.1"):
         runner.STATE.validate_oracle_command(["npx.cmd", "-y", "@steipete/oracle@0.17.0"])
 
 
@@ -1329,7 +1332,7 @@ def test_default_command_is_resolved_only_at_live_version_boundary(tmp_path: Pat
         ),
     )
     assert dry_run["argv"][:3] == [
-        "npx.cmd" if os.name == "nt" else "npx", "-y", "@steipete/oracle@0.18.0",
+        "npx.cmd" if os.name == "nt" else "npx", "-y", "@steipete/oracle@0.20.0",
     ]
 
     observed_version_commands: list[list[str]] = []

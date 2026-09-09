@@ -43,7 +43,7 @@ def test_portable_lifecycle_is_exact_inverse(tmp_path: Path) -> None:
         assert kwargs["timeout"] == module.ORACLE_VERSION_PROBE_TIMEOUT_SECONDS
         assert kwargs["stdin"] == subprocess.DEVNULL
         probes.append(command)
-        return subprocess.CompletedProcess(command, 0, "oracle 0.18.0\n", "")
+        return subprocess.CompletedProcess(command, 0, "oracle 0.20.0\n", "")
 
     diagnosis = module.doctor(
         codex_home, oracle_resolver=lambda: runtime_command, oracle_run_factory=runtime_probe,
@@ -179,7 +179,7 @@ def test_receipt_owned_unchanged_file_is_retired_and_rollback_restores_it(tmp_pa
     assert record["retired_sha256"] == record["backup_sha256"]
 
     health = module.doctor(codex_home, oracle_resolver=lambda: [sys.executable],
-                           oracle_run_factory=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "0.18.0\n", ""))
+                           oracle_run_factory=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "0.20.0\n", ""))
     assert not [issue for issue in health["issues"] if issue.get("path") == relative]
 
     result = module.rollback(codex_home, Path(installed["receipt"]))
@@ -220,7 +220,7 @@ def test_rollback_preserves_path_recreated_after_retirement(tmp_path: Path) -> N
     destination.write_bytes(b"new user file\n")
 
     health = module.doctor(codex_home, oracle_resolver=lambda: [sys.executable],
-                           oracle_run_factory=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "0.18.0\n", ""))
+                           oracle_run_factory=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "0.20.0\n", ""))
     assert {"code": "RETIRED_FILE_REAPPEARED", "path": relative} in health["issues"]
 
     result = module.rollback(codex_home, Path(installed["receipt"]))

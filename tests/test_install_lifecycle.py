@@ -371,7 +371,7 @@ def test_portable_doctor_proves_resolved_oracle_version_without_requiring_path_n
 
     def runner(command, **kwargs):
         calls.append((list(command), kwargs))
-        return subprocess.CompletedProcess(command, 0, stdout='0.18.0\n', stderr='')
+        return subprocess.CompletedProcess(command, 0, stdout='0.20.0\n', stderr='')
 
     monkeypatch.setattr(lifecycle, '_resolve_python_tool', lambda: sys.executable)
     monkeypatch.setattr(lifecycle.shutil, 'which', lambda _name: None)
@@ -383,7 +383,7 @@ def test_portable_doctor_proves_resolved_oracle_version_without_requiring_path_n
 
     assert result['oracle_runtime'] == {
         'command': [str(node), str(entry)],
-        'version': '0.18.0',
+        'version': '0.20.0',
         'exit_code': 0,
         'timeout_seconds': lifecycle.ORACLE_VERSION_PROBE_TIMEOUT_SECONDS,
     }

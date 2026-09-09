@@ -54,7 +54,7 @@ PROMOTION_KEYS = {
 }
 REQUIRED_GATES = {
     "published-archive-integrity",
-    "exact-package-tree-and-patch-hashes",
+    "exact-package-tree-and-pristine-or-patch-hashes",
     "syntax-and-focused-compatibility",
     "oracle-no-submission-canary",
     "devspace-open-workspace-same-id-read",

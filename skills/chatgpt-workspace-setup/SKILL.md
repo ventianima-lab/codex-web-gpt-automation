@@ -26,10 +26,9 @@ an actual access failure, not ordinary GPT runs or repeated daily qualification.
    Save the actual result before closing the owned tab.
 
 Do not require a non-Pro preliminary run, a command canary, a fixed outcome
-marker, or a recurring freshness test. An Oracle version change alone does not
-prove native Latest/6 Pro support. The current compatibility carrier remains
-`gpt-5.6-sol`, `model_strategy=current`, `thinking_time=pro`; the browser
-must explicitly select Latest rather than the numeric older model.
+marker, or a recurring freshness test. Oracle 0.20.0's exact published bytes
+provide native `latest/select` and Pro effort support; the browser must
+explicitly select Latest rather than the numeric older model.
 
 ## Diagnosis
 

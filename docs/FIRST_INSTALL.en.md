@@ -44,9 +44,9 @@ cannot establish successful authenticated file access.
 
 Use the normal temporary-chat flow. Explicitly select Latest, then the requested
 effort (default Pro / 6 Pro). Automatically enable temporary-chat personalization before submission.
-Oracle's current compatibility carrier is `gpt-5.6-sol` with
-`model_strategy=current` and `thinking_time=pro`; it must click Latest, not the
-numeric GPT-5.6 row. Do not invent `gpt-6` or `latest` CLI model identifiers.
+Oracle 0.20.0 receives `model=latest`, `model_strategy=select`, and
+`thinking_time=pro` directly; it must click Latest, not the numeric GPT-5.6 row,
+and verify the `6 Pro` result.
 
 Save the complete answer before closing the owned tab. A timeout retains that
 same run; never automatically resend. Read access does not require a prescribed

@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-automation",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": false,
   "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
   "license": "MIT",
@@ -44,6 +44,7 @@
     "bin/chatgpt_oracle_run.py",
     "bin/chatgpt_oracle_execute.py",
     "bin/oracle_temporary_personalization.mjs",
+    "bin/oracle_temporary_personalization_preflight.mjs",
     "bin/chatgpt_devspace_compat.py",
     "bin/devspace-compat/",
     "bin/chatgpt_oracle_compat.py",
@@ -110,6 +111,7 @@
     "scripts/check_upstream_runtime_policy.py",
     "scripts/verify_upstream_runtime_maintainer.py",
     "scripts/prepare_devspace_108_ci.py",
+    "scripts/prepare_oracle_020_ci.py",
     "upstream-runtime-policy.json",
     "upstream-runtime-maintainer-automation.json",
     "contracts/install/",

@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -12,6 +12,7 @@
     "bin/chatgpt_oracle_run.py",
     "bin/chatgpt_oracle_execute.py",
     "bin/oracle_temporary_personalization.mjs",
+    "bin/oracle_temporary_personalization_preflight.mjs",
     "bin/chatgpt_devspace_compat.py",
     "bin/chatgpt_devspace_preflight.py",
     "bin/devspace-compat/1.0.4/oauth-refresh-replay.patch",
@@ -34,6 +35,8 @@
     "bin/devspace-compat/1.0.8/widget-domain.patch",
     "bin/devspace-compat/1.0.8/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
+    "bin/oracle-compat/0.20.0/modelSelection.korean-latest-label.patch",
+    "bin/oracle-compat/0.20.0/thinkingTime.direct-slider-account-maximum.patch",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.patch",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.v1.19.6.patch",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.v1.19.2.patch",
@@ -225,9 +228,9 @@
     },
     "oracle": {
       "package": "@steipete/oracle",
-      "tested_version": "0.18.0",
+      "tested_version": "0.20.0",
       "license": "MIT",
-      "integrity": "sha512-o8KFd66zNt36jw5zdtQAV74bgrOlJibbyvnLsVikIWDamesYtez/dIUhQ4zqtD9jkx+7A6vcP9+JgcJt0H5pOw==",
+      "integrity": "sha512-BcrY4W6Wp1qwAZ1H1wD9vMLHhrzMKXYn82ArTC2ISBFSRZsK5WN+udXTXIeDpTkONfOu0SUsrVYthApoEJ9gWg==",
       "last_known_good": {
         "version": "0.17.1",
         "integrity": "sha512-bq4SqMvRtT5Im+R57UPSXTV5p/BFTU24OXgGXqx2ckABWFX9uLDuKeJLoOdfBm7RzllrzjrlSSGgiMsrrvh+9Q=="
@@ -239,7 +242,7 @@
           "node": ">=24 <27"
         }
       },
-      "installation": "new runs resolve explicit npx @steipete/oracle@0.18.0 and apply its exact hash-gated compatibility contract; 0.17.1 is retained only as rollback LKG and exact historical recovery; the webjjonku-linux profile additionally verifies the complete published 0.18.0 archive; unknown versions and hash mismatches fail closed"
+      "installation": "new runs resolve exact @steipete/oracle@0.20.0 with only hash-bound Korean Latest and quota-limited effort UI compatibility fixes; the remaining critical upstream files stay pristine. The retired 0.18.0 patch contract and 0.17.1 LKG remain historical recovery only; unknown versions and hash mismatches fail closed"
     },
     "devspace": {
       "package": "@waishnav/devspace",

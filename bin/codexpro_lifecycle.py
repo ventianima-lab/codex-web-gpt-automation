@@ -49,7 +49,7 @@ SUPPORTED_ROOTS = {
 ROOT_FILE_ALLOWLIST = frozenset(
     {"upstream-runtime-policy.json", "upstream-runtime-maintainer-automation.json"}
 )
-ORACLE_SUPPORTED_VERSION = "0.18.0"
+ORACLE_SUPPORTED_VERSION = "0.20.0"
 ORACLE_VERSION_PROBE_TIMEOUT_SECONDS = 30
 
 

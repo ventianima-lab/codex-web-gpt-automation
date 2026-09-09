@@ -23,11 +23,11 @@ CodexPro, in-app Browser, custom CDP/Playwright, or `@chrome` fallback.
 
 All non-implementation cognitive requirements use this route under standing
 approval; do not request per-run Pro opt-in. Oracle uses the manually registered
-`@codex` DevSpace app and the validated CLI carrier `model: gpt-5.6-sol`,
-`model_strategy: current`, and `thinking_time: pro`. Browser proof requires
+`@codex` DevSpace app and native `model: latest`, `model_strategy: select`, and
+`thinking_time: pro`. Browser proof requires
 exact `Latest` checked, full `5/5` qualification, the composer's
 `Thinking effort` control, and a `6 Pro` signal in either the model menu or
-composer. Never fall back to GPT-5.6/5.5 or invent a `gpt-6`/`latest` CLI slug.
+composer. Never fall back to GPT-5.6/5.5 or invent a `gpt-6` CLI slug.
 The mission must bind one
 exact absolute project root. After one-time qualification, do not inspect,
 register, repair, select, or otherwise verify ChatGPT app/settings state on
