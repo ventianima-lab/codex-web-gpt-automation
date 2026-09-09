@@ -73,6 +73,12 @@ cd codex-web-gpt-automation
 python doctor.py
 ```
 
+Windows에서 별도로 수정한 전역 파일을 유지하려면 설치 시
+`-PreserveExistingPath 'skills/mcp-update-guard/SKILL.md','skills/mcp-update-guard/agents/openai.yaml'`
+처럼 정확한 매니페스트 상대 경로를 지정하세요. 기존 일반 파일만 허용하며,
+보존 파일은 설치 소유권과 분리하여 영수증에 기록합니다. `-WhatIf`로 먼저
+확인할 수 있고, 다음 설치에서도 보존할 경로를 명시해야 합니다.
+
 ### macOS
 
 ```bash

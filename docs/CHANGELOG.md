@@ -2,6 +2,9 @@
 
 ## 2.0.1 - Oracle 0.20 and single-tab temporary chats
 
+- Windows installation accepts explicit `-PreserveExistingPath` entries for
+  local customizations. Existing regular manifest files can remain user-owned,
+  with separate preserved-file receipt metadata and no rollback/uninstall ownership.
 - Promote official `@steipete/oracle@0.20.0` with its published npm integrity
   and exact critical-file hashes. Retire the large 0.18 selector/lifecycle
   patches; retain only narrow Korean Latest and four-tier quota compatibility
